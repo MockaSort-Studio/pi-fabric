@@ -110,7 +110,7 @@ The foundation is the `fabric-exec` reference skill: the model loads it before i
 Fabric adds a live activity surface to Pi, no extra extension required:
 
 - A compact widget above the chat (like `pi-supervisor`) whose header follows the current phase while its rows show active/completed agents, active actors, and their recent nested tool or code-change activity.
-- `/fabric` (or `/fabric dashboard`) — **Activity** and **Topology** views where the user-facing Pi session is always present as **Main**. Queue/steer Main, active children, actors, and observed mesh agents; inspect bounded Run/Project-mesh topologies, paged full agent/actor transcripts, topics, state, and routes.
+- `/fabric` (or `/fabric dashboard`) — **Activity** and **Topology** views where the user-facing Pi session is always present as **Main**. Queue/steer Main, active children, actors, and observed mesh agents; navigate a spring-followed unified topology of runs and project mesh, with paged transcripts, topics, state, and routes.
 - `/fabric settings` — mirrors Pi's `/settings` and writes changes to `fabric.json`.
 
 See the [interface & commands reference](docs/interface.md) for every view, keybinding, and slash command.

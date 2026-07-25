@@ -30,13 +30,13 @@ import {
   type Pane,
   type PhasePanel,
   type StatusFilter,
-  type TopologyView,
 } from "./dashboard-model.js";
 import { colorStatus, entityTail, statusGlyph } from "./dashboard-presentation.js";
 import {
-  renderProjectMeshPanel,
-  renderRunTopologyPanel,
-} from "./dashboard-topology-view.js";
+  directionalGraphTarget,
+  renderFabricTopologyPanel,
+  type FabricGraphPoint,
+} from "./dashboard-fabric-graph.js";
 import { FabricHostEventSelector } from "./fabric-host-event-selector.js";
 import { FabricActorDeliverySelector } from "./fabric-actor-delivery-selector.js";
 import { FabricActorToolSelector } from "./fabric-actor-tool-selector.js";
@@ -89,6 +89,17 @@ const transcriptMarkdownTheme = (theme: Theme, invalidate: () => void): Markdown
 
 const TRANSCRIPT_EXPANDED_TOOL_LINES = 40;
 const TRANSCRIPT_STRUCTURED_LINES = 40;
+const DASHBOARD_OVERLAY_HEIGHT_PERCENT = 90;
+const DASHBOARD_OVERLAY_VERTICAL_MARGIN = 1;
+
+const dashboardOverlayRows = (terminalRows: number): number =>
+  Math.max(
+    1,
+    Math.min(
+      Math.floor((terminalRows * DASHBOARD_OVERLAY_HEIGHT_PERCENT) / 100),
+      terminalRows - DASHBOARD_OVERLAY_VERTICAL_MARGIN * 2,
+    ),
+  );
 
 const safeMarkdownText = (value: string): string =>
   value
@@ -113,7 +124,13 @@ export class FabricDashboard implements Component, Focusable {
   focused = false;
   private pane: Pane = "phases";
   private overviewView: OverviewView = "activity";
-  private topologyView: TopologyView = "run";
+  private graphPositions = new Map<string, FabricGraphPoint>();
+  private graphCamera: FabricGraphPoint = { x: 0, y: 0 };
+  private graphCameraTarget: FabricGraphPoint = { x: 0, y: 0 };
+  private graphVelocity: FabricGraphPoint = { x: 0, y: 0 };
+  private graphCameraInitialized = false;
+  private graphAnimation: ReturnType<typeof setInterval> | undefined;
+  private graphAnimationAt = 0;
   private phaseIndex = 0;
   private entityIndex = 0;
   private runIndex = 0;
@@ -346,7 +363,6 @@ export class FabricDashboard implements Component, Focusable {
       run,
       panel,
       this.overviewView,
-      this.topologyView,
       projectMesh,
     );
     const entities = allEntities.filter(
@@ -491,9 +507,8 @@ export class FabricDashboard implements Component, Focusable {
       return;
     }
 
-    const directTopologyView: TopologyView | undefined =
-      data === "2" ? "run" : data === "3" ? "mesh" : undefined;
-    if (data === "1" || directTopologyView || data === "r") {
+    const opensTopology = data === "2" || data === "3";
+    if (data === "1" || opensTopology || data === "r") {
       const nextOverview: OverviewView =
         data === "1"
           ? "activity"
@@ -502,13 +517,9 @@ export class FabricDashboard implements Component, Focusable {
               ? "topology"
               : "activity"
             : "topology";
-      const nextTopology =
-        data === "r" && this.overviewView === "activity"
-          ? "run"
-          : directTopologyView ?? this.topologyView;
-      if (nextOverview !== this.overviewView || nextTopology !== this.topologyView) {
+      if (nextOverview !== this.overviewView) {
+        if (nextOverview === "activity") this.stopGraphAnimation();
         this.overviewView = nextOverview;
-        this.topologyView = nextTopology;
         this.pane = nextOverview === "activity" ? "phases" : "entities";
         this.entityIndex = 0;
         this.selectedEntityId = undefined;
@@ -525,35 +536,32 @@ export class FabricDashboard implements Component, Focusable {
         this.done();
         return;
       }
+    } else if (
+      this.overviewView === "topology" &&
+      (matchesKey(data, Key.left) || matchesKey(data, Key.right) ||
+        matchesKey(data, Key.up) || matchesKey(data, Key.down) || data === "h" || data === "l")
+    ) {
+      const direction =
+        matchesKey(data, Key.left) || data === "h"
+          ? "left"
+          : matchesKey(data, Key.right) || data === "l"
+            ? "right"
+            : matchesKey(data, Key.up)
+              ? "up"
+              : "down";
+      const target = directionalGraphTarget(this.graphPositions, this.selectedEntityId, direction);
+      const targetIndex = target ? entities.findIndex((entity) => entity.id === target) : -1;
+      if (targetIndex >= 0) {
+        this.entityIndex = targetIndex;
+        this.selectedEntityId = target;
+        this.pendingStop = undefined;
+      }
+      this.tui.requestRender();
+      return;
     } else if (matchesKey(data, Key.tab) && this.overviewView === "topology") {
-      this.topologyView = this.topologyView === "run" ? "mesh" : "run";
-      this.entityIndex = 0;
-      this.selectedEntityId = undefined;
+      this.entityIndex = entities.length > 0 ? (this.entityIndex + 1) % entities.length : 0;
+      this.selectedEntityId = entities[this.entityIndex]?.id;
       this.pendingStop = undefined;
-      this.tui.requestRender();
-      return;
-    } else if (
-      this.overviewView === "topology" &&
-      (matchesKey(data, Key.left) || data === "h")
-    ) {
-      if (this.topologyView !== "run") {
-        this.topologyView = "run";
-        this.entityIndex = 0;
-        this.selectedEntityId = undefined;
-        this.pendingStop = undefined;
-      }
-      this.tui.requestRender();
-      return;
-    } else if (
-      this.overviewView === "topology" &&
-      (matchesKey(data, Key.right) || data === "l")
-    ) {
-      if (this.topologyView !== "mesh") {
-        this.topologyView = "mesh";
-        this.entityIndex = 0;
-        this.selectedEntityId = undefined;
-        this.pendingStop = undefined;
-      }
       this.tui.requestRender();
       return;
     } else if (matchesKey(data, Key.tab) && this.overviewView === "activity") {
@@ -670,20 +678,14 @@ export class FabricDashboard implements Component, Focusable {
       this.selectedEntityId = undefined;
       this.tui.requestRender();
       return;
-    } else if (
-      data === "[" &&
-      !(this.overviewView === "topology" && this.topologyView === "mesh")
-    ) {
+    } else if (data === "[") {
       this.runIndex = Math.min(Math.max(0, snapshot.runs.length - 1), this.runIndex + 1);
       this.selectedRunId = snapshot.runs[this.runIndex]?.id;
       this.runSelectionTouched = true;
       this.resetSelection();
       this.tui.requestRender();
       return;
-    } else if (
-      data === "]" &&
-      !(this.overviewView === "topology" && this.topologyView === "mesh")
-    ) {
+    } else if (data === "]") {
       this.runIndex = Math.max(0, this.runIndex - 1);
       this.selectedRunId = snapshot.runs[this.runIndex]?.id;
       this.runSelectionTouched = true;
@@ -747,7 +749,6 @@ export class FabricDashboard implements Component, Focusable {
       run,
       panel,
       this.overviewView,
-      this.topologyView,
       projectMesh,
     );
     const entities = allEntities.filter(
@@ -780,6 +781,7 @@ export class FabricDashboard implements Component, Focusable {
     this.editorActorName = undefined;
     this.agentMessageTarget = undefined;
     this.pendingStop = undefined;
+    this.stopGraphAnimation();
     this.transcriptMarkdown.clear();
     this.mode = "overview";
   }
@@ -993,9 +995,9 @@ export class FabricDashboard implements Component, Focusable {
       this.onRemoveGlobalActor ? "d delete" : undefined,
     ].filter((value): value is string => Boolean(value));
     const help = [
-      ["Navigate", "↑↓/jk select · ←→/tab switch Activity pane · enter inspect · esc back"],
-      ["Views", "1 Activity · 2 Topology (Run) · 3 Topology (Project mesh) · r toggles Activity/Topology Run"],
-      ["Topology", "Run follows recursive selection · Project mesh maps actors, topics, shared state, and routes"],
+      ["Navigate", "Topology: arrows/h/l move spatially · j/k ordered selection · tab next · enter inspect · esc back"],
+      ["Views", "1 Activity · 2 unified Topology · r toggles Activity/Topology"],
+      ["Topology", "One spring-followed graph maps Main, peers, agents, actors, topics, shared state, and recent routes"],
       ["Runs", "[ older · ] newer · f cycle status filter"],
       ...(mainActions.length > 1 ? [["Main", mainActions.join(" · ")]] : []),
       ...(agentActions.length > 1 ? [["Agents", agentActions.join(" · ")]] : []),
@@ -1238,7 +1240,7 @@ export class FabricDashboard implements Component, Focusable {
   }
 
   private projectMesh(snapshot: FabricDashboardSnapshot): FabricProjectMeshModel | undefined {
-    if (this.overviewView !== "topology" || this.topologyView !== "mesh") return undefined;
+    if (this.overviewView !== "topology") return undefined;
     return buildProjectMeshTopology({
       main: snapshot.main,
       actors: snapshot.actors,
@@ -1248,6 +1250,65 @@ export class FabricDashboard implements Component, Focusable {
       ...(snapshot.participants ? { participants: snapshot.participants } : {}),
       now: snapshot.now,
     });
+  }
+
+  private setGraphCameraTarget(point: FabricGraphPoint): void {
+    if (!this.graphCameraInitialized) {
+      this.graphCamera = { ...point };
+      this.graphCameraTarget = { ...point };
+      this.graphCameraInitialized = true;
+      return;
+    }
+    if (this.graphCameraTarget.x === point.x && this.graphCameraTarget.y === point.y) return;
+    this.graphCameraTarget = { ...point };
+    this.graphAnimationAt = Date.now();
+    if (this.graphAnimation) return;
+    this.graphAnimation = setInterval(() => this.stepGraphCamera(), 16);
+    this.graphAnimation.unref?.();
+  }
+
+  private stopGraphAnimation(): void {
+    if (this.graphAnimation) clearInterval(this.graphAnimation);
+    this.graphAnimation = undefined;
+    this.graphAnimationAt = 0;
+    this.graphVelocity = { x: 0, y: 0 };
+    this.graphCameraTarget = { ...this.graphCamera };
+  }
+
+  private stepGraphCamera(): void {
+    const now = Date.now();
+    const elapsed = this.graphAnimationAt > 0 ? (now - this.graphAnimationAt) / 1_000 : 0.016;
+    const dt = Math.max(0.008, Math.min(0.032, elapsed));
+    this.graphAnimationAt = now;
+    const stiffness = 115;
+    const damping = 19;
+    const stepAxis = (position: number, target: number, velocity: number): [number, number] => {
+      const acceleration = stiffness * (target - position) - damping * velocity;
+      const nextVelocity = velocity + acceleration * dt;
+      return [position + nextVelocity * dt, nextVelocity];
+    };
+    [this.graphCamera.x, this.graphVelocity.x] = stepAxis(
+      this.graphCamera.x,
+      this.graphCameraTarget.x,
+      this.graphVelocity.x,
+    );
+    [this.graphCamera.y, this.graphVelocity.y] = stepAxis(
+      this.graphCamera.y,
+      this.graphCameraTarget.y,
+      this.graphVelocity.y,
+    );
+    const distance = Math.hypot(
+      this.graphCameraTarget.x - this.graphCamera.x,
+      this.graphCameraTarget.y - this.graphCamera.y,
+    );
+    const speed = Math.hypot(this.graphVelocity.x, this.graphVelocity.y);
+    if (distance < 0.025 && speed < 0.025) {
+      this.graphCamera = { ...this.graphCameraTarget };
+      this.graphVelocity = { x: 0, y: 0 };
+      if (this.graphAnimation) clearInterval(this.graphAnimation);
+      this.graphAnimation = undefined;
+    }
+    this.tui.requestRender();
   }
 
   private renderOverview(
@@ -1267,6 +1328,7 @@ export class FabricDashboard implements Component, Focusable {
       1,
       this.tui.terminal?.rows ?? process.stdout.rows ?? 28,
     );
+    const overlayRows = dashboardOverlayRows(terminalRows);
     const lines: string[] = [];
     const title =
       this.overviewView === "activity"
@@ -1288,11 +1350,16 @@ export class FabricDashboard implements Component, Focusable {
     const summary = (
       meshModel
         ? [
+            run?.name ? `focus ${run.name}` : undefined,
+            run?.currentPhaseId
+              ? `current ${run.phases.find((phase) => phase.id === run.currentPhaseId)?.name ?? run.currentPhaseId}`
+              : undefined,
+            `${snapshot.agents.filter((agent) => isActiveStatus(agent.status)).length}/${snapshot.agents.length} agents active`,
             `${activeActors}/${snapshot.actors.length} actors active`,
-            `${meshModel.participants.length} participants`,
+            `${meshModel.participants.length} remote participants`,
             `${meshModel.topics.length} topics`,
-            `${snapshot.state.length} shared state`,
-            `${meshModel.routes.length} recent routes`,
+            `${snapshot.state.length} state`,
+            snapshot.runs.length > 1 ? `run ${this.runIndex + 1}/${snapshot.runs.length}` : undefined,
           ]
         : [
             this.overviewView === "topology" ? run?.name : undefined,
@@ -1313,7 +1380,7 @@ export class FabricDashboard implements Component, Focusable {
     let headerLine = summaryText;
     if (
       run?.description &&
-      !(this.overviewView === "topology" && this.topologyView === "mesh")
+      this.overviewView === "activity"
     ) {
       const gap = "  ";
       const availableDescription = innerWidth - visibleWidth(summaryText) - gap.length;
@@ -1328,27 +1395,23 @@ export class FabricDashboard implements Component, Focusable {
       headerLine = this.theme.fg("dim", summaryText);
     }
     const minimumRows = 8;
-    if (terminalRows < minimumRows) {
+    if (overlayRows < minimumRows) {
       return [
         title,
         summaryText || "No Fabric activity yet",
-        "1 activity · 2 topology/run · 3 topology/mesh · esc close",
+        "1 activity · 2 topology · arrows move · esc close",
       ]
-        .slice(0, terminalRows)
+        .slice(0, overlayRows)
         .map((line) => truncateToWidth(line, width, ""));
     }
     lines.push(this.row(width, headerLine || this.theme.fg("muted", "No Fabric activity yet")));
     lines.push(this.middleBorder(width));
 
-    const projectMeshView =
-      this.overviewView === "topology" && this.topologyView === "mesh";
-    const desiredRunEvents = projectMeshView ? [] : (run?.events.slice(-2) ?? []);
-    const desiredMeshEventCount = projectMeshView
-      ? 2
-      : Math.max(0, 2 - desiredRunEvents.length);
+    const desiredRunEvents = run?.events.slice(-2) ?? [];
+    const desiredMeshEventCount = Math.max(0, 2 - desiredRunEvents.length);
     const desiredMeshEvents =
       desiredMeshEventCount > 0 ? snapshot.events.slice(-desiredMeshEventCount) : [];
-    const optionalEventRoom = Math.max(0, terminalRows - minimumRows);
+    const optionalEventRoom = Math.max(0, overlayRows - minimumRows);
     const eventRows = optionalEventRoom >= 2 ? Math.min(2, optionalEventRoom - 1) : 0;
     const runEventRows = Math.min(desiredRunEvents.length, eventRows);
     const meshEventRows = Math.max(0, eventRows - runEventRows);
@@ -1356,35 +1419,39 @@ export class FabricDashboard implements Component, Focusable {
     const meshEvents =
       meshEventRows > 0 ? desiredMeshEvents.slice(-meshEventRows) : [];
     const eventChromeRows = eventRows > 0 ? eventRows + 1 : 0;
-    const maxBody = Math.max(1, Math.min(22, terminalRows - 7 - eventChromeRows));
-    if (this.overviewView === "topology" && this.topologyView === "run") {
-      for (const line of renderRunTopologyPanel({
-        theme: this.theme,
-        filter: this.filter,
-        selectedEntityId: this.selectedEntityId,
-        run,
-        allEntities,
-        entities,
-        width: innerWidth,
-        height: maxBody,
+    const maxBody = Math.max(
+      1,
+      Math.min(this.overviewView === "topology" ? 30 : 22, overlayRows - 7 - eventChromeRows),
+    );
+    if (this.overviewView === "topology") {
+      const topology = meshModel ?? buildProjectMeshTopology({
+        main: snapshot.main,
+        actors: snapshot.actors,
+        agents: snapshot.agents,
+        state: snapshot.state,
+        events: snapshot.events,
+        ...(snapshot.participants ? { participants: snapshot.participants } : {}),
         now: snapshot.now,
-      })) {
-        lines.push(this.row(width, line));
-      }
-    } else if (this.overviewView === "topology") {
-      for (const line of renderProjectMeshPanel({
+      });
+      const renderGraph = () => renderFabricTopologyPanel({
         theme: this.theme,
         filter: this.filter,
         selectedEntityId: this.selectedEntityId,
         snapshot,
+        run,
+        mesh: topology,
         allEntities,
         entities,
         width: innerWidth,
         height: maxBody,
-        ...(meshModel ? { model: meshModel } : {}),
-      })) {
-        lines.push(this.row(width, line));
-      }
+        camera: this.graphCamera,
+      });
+      const cameraWasInitialized = this.graphCameraInitialized;
+      let rendered = renderGraph();
+      this.graphPositions = rendered.positions;
+      if (rendered.selectedPosition) this.setGraphCameraTarget(rendered.selectedPosition);
+      if (!cameraWasInitialized && this.graphCameraInitialized) rendered = renderGraph();
+      for (const line of rendered.lines) lines.push(this.row(width, line));
     } else if (innerWidth >= 88) {
       const leftWidth = Math.min(38, Math.max(28, Math.floor((innerWidth - 1) * 0.34)));
       const rightWidth = innerWidth - leftWidth - 1;
@@ -1455,10 +1522,8 @@ export class FabricDashboard implements Component, Focusable {
     lines.push(this.middleBorder(width));
     const navigationHint =
       this.overviewView === "topology"
-        ? this.topologyView === "run"
-          ? `↑↓/jk agent · enter inspect · f filter:${this.filter} · 1 activity · [ older · ] newer · ? help`
-          : `↑↓/jk node · enter inspect · f filter:${this.filter} · 1 activity · ? help`
-        : `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · 2 topology · 3 mesh · r topology · [ older · ] newer · ? help`;
+        ? `arrows/h/l move · j/k order · enter inspect · f filter:${this.filter} · [ older · ] newer · 1 activity · ? help`
+        : `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · 2 topology · r topology · [ older · ] newer · ? help`;
     lines.push(this.row(width, this.theme.fg("dim", navigationHint)));
     const selectedEntity = entities[this.entityIndex];
     const actionHint =

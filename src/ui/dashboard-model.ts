@@ -17,7 +17,6 @@ import type {
 import { isActiveStatus, orderAgentsByCreation } from "./types.js";
 import {
   buildProjectMeshTopology,
-  buildRunTopologyRows,
   type FabricProjectMeshModel,
   type FabricProjectMeshParticipant,
   type FabricProjectMeshRoute,
@@ -78,7 +77,6 @@ export interface PhasePanel {
 
 export type Pane = "phases" | "entities";
 export type OverviewView = "activity" | "topology";
-export type TopologyView = "run" | "mesh";
 
 type EntityGroupKind =
   | FabricActivityKind
@@ -309,24 +307,6 @@ const entitiesFor = (
   ]);
 };
 
-const runTopologyEntitiesFor = (
-  snapshot: FabricDashboardSnapshot,
-  run: FabricActivityRun | undefined,
-): Entity[] => {
-  if (!run) return [mainEntity(snapshot)];
-  const agents = orderAgentsByCreation(snapshot.agents).filter((agent) => agent.runId === run.id);
-  const agentEntities: Entity[] = buildRunTopologyRows(run, agents)
-    .filter((row) => row.kind === "agent")
-    .map((row) => ({
-      id: row.entityId,
-      kind: "agent" as const,
-      label: row.agent.name,
-      status: row.agent.status,
-      value: row.agent,
-    }));
-  return [mainEntity(snapshot), ...agentEntities];
-};
-
 const projectMeshEntitiesFor = (
   snapshot: FabricDashboardSnapshot,
   topology?: FabricProjectMeshModel,
@@ -343,73 +323,111 @@ const projectMeshEntitiesFor = (
   return model.rows.flatMap((row): Entity[] => {
     if (row.kind === "meshRoot") return [mainEntity(snapshot)];
     if (row.kind === "meshActor") {
-      return [
-        {
-          id: row.entityId,
-          kind: "actor",
-          label: row.actor.name,
-          status: row.actor.lastError ? "failed" : row.actor.status,
-          value: row.actor,
-        },
-      ];
+      return [{
+        id: row.entityId,
+        kind: "actor",
+        label: row.actor.name,
+        status: row.actor.lastError ? "failed" : row.actor.status,
+        value: row.actor,
+      }];
     }
     if (row.kind === "meshAgent") {
       if (row.participant.agent) {
-        return [
-          {
-            id: row.entityId,
-            kind: "agent",
-            label: row.participant.agent.name,
-            status: row.participant.agent.status,
-            value: row.participant.agent,
-          },
-        ];
-      }
-      return [
-        {
+        return [{
           id: row.entityId,
-          kind: "meshParticipant",
-          label: row.participant.name,
-          status: row.participant.status,
-          value: row.participant,
-        },
-      ];
+          kind: "agent",
+          label: row.participant.agent.name,
+          status: row.participant.agent.status,
+          value: row.participant.agent,
+        }];
+      }
+      return [{
+        id: row.entityId,
+        kind: "meshParticipant",
+        label: row.participant.name,
+        status: row.participant.status,
+        value: row.participant,
+      }];
     }
     if (row.kind === "meshTopic") {
-      return [
-        {
-          id: row.entityId,
-          kind: "meshTopic",
-          label: row.topic.name,
-          status: row.topic.status,
-          value: row.topic,
-        },
-      ];
+      return [{
+        id: row.entityId,
+        kind: "meshTopic",
+        label: row.topic.name,
+        status: row.topic.status,
+        value: row.topic,
+      }];
     }
     if (row.kind === "meshState") {
-      return [
-        {
-          id: row.entityId,
-          kind: "state",
-          label: row.state.label,
-          status: row.state.status,
-          value: row.state,
-        },
-      ];
+      return [{
+        id: row.entityId,
+        kind: "state",
+        label: row.state.label,
+        status: row.state.status,
+        value: row.state,
+      }];
     }
     if (row.kind === "meshRoute") {
-      return [
-        {
-          id: row.entityId,
-          kind: "meshRoute",
-          label: `${row.route.fromName} → ${row.route.targetName}`,
-          status: row.route.status,
-          value: row.route,
-        },
-      ];
+      return [{
+        id: row.entityId,
+        kind: "meshRoute",
+        label: `${row.route.fromName} → ${row.route.targetName}`,
+        status: row.route.status,
+        value: row.route,
+      }];
     }
     return [];
   });
+};
+
+const unifiedTopologyEntitiesFor = (
+  snapshot: FabricDashboardSnapshot,
+  run: FabricActivityRun | undefined,
+  topology?: FabricProjectMeshModel,
+): Entity[] => {
+  const orderedAgents = orderAgentsByCreation(snapshot.agents).sort(
+    (left, right) =>
+      Number(right.runId === run?.id) - Number(left.runId === run?.id) ||
+      Number(isActiveStatus(right.status)) - Number(isActiveStatus(left.status)),
+  );
+  const canonical: Entity[] = [
+    mainEntity(snapshot),
+    ...orderedAgents.map((agent): Entity => ({
+      id: `agent:${agent.id}`,
+      kind: "agent",
+      label: agent.name,
+      status: agent.status,
+      value: agent,
+    })),
+    ...snapshot.actors.map((actor): Entity => ({
+      id: `actor:${actor.id}`,
+      kind: "actor",
+      label: actor.name,
+      status: actor.lastError ? "failed" : actor.status,
+      value: actor,
+    })),
+    ...snapshot.peers.map((peer): Entity => ({
+      id: `peer:${peer.id}`,
+      kind: "peer",
+      label: peer.name,
+      status: peer.status,
+      value: peer,
+    })),
+  ];
+  const seen = new Set(canonical.map((entity) => entity.id));
+  const seenParticipantIds = new Set([
+    snapshot.main.id,
+    ...snapshot.agents.map((agent) => agent.id),
+    ...snapshot.actors.map((actor) => actor.id),
+    ...snapshot.peers.map((peer) => peer.id),
+  ]);
+  for (const entity of projectMeshEntitiesFor(snapshot, topology)) {
+    if (seen.has(entity.id)) continue;
+    if (entity.kind === "meshParticipant" && seenParticipantIds.has(entity.value.id)) continue;
+    seen.add(entity.id);
+    canonical.push(entity);
+  }
+  return canonical;
 };
 
 export const entitiesForOverview = (
@@ -417,18 +435,11 @@ export const entitiesForOverview = (
   run: FabricActivityRun | undefined,
   panel: PhasePanel | undefined,
   view: OverviewView,
-  topologyView: TopologyView,
   projectMesh?: FabricProjectMeshModel,
 ): Entity[] => {
-  if (view === "topology" && topologyView === "run") {
-    return runTopologyEntitiesFor(snapshot, run);
-  }
-  if (view === "topology" && topologyView === "mesh") {
-    return projectMeshEntitiesFor(snapshot, projectMesh);
-  }
+  if (view === "topology") return unifiedTopologyEntitiesFor(snapshot, run, projectMesh);
   return entitiesFor(snapshot, run, panel);
 };
-
 const panelStatus = (entities: Entity[], fallback: string): string => {
   if (entities.some((entity) => ["failed", "timed_out", "error"].includes(entity.status))) {
     return "failed";

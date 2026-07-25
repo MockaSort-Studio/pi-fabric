@@ -1688,6 +1688,7 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput("g");
       dashboard.handleInput("j");
       dashboard.handleInput("j");
+      dashboard.handleInput("j");
       dashboard.handleInput("s");
       dashboard.handleInput("continue remotely");
       dashboard.handleInput("\r");
@@ -2154,18 +2155,25 @@ describe("Fabric dynamic UI", () => {
     }
   });
 
-  it("bounds dashboard height using the overlay terminal", () => {
-    for (const rows of [5, 7, 8, 9, 12]) {
+  it("bounds dashboard height to the effective overlay and keeps its footer", () => {
+    for (const rows of [5, 7, 8, 9, 10, 12, 43]) {
       const dashboard = new FabricDashboard(
         { requestRender: vi.fn(), terminal: { rows } } as unknown as TUI,
         theme,
         snapshot,
         vi.fn(),
       );
+      const overlayRows = Math.max(1, Math.min(Math.floor(rows * 0.9), rows - 2));
       try {
-        expect(dashboard.render(100).length).toBeLessThanOrEqual(rows);
+        expect(dashboard.render(100).length).toBeLessThanOrEqual(overlayRows);
         dashboard.handleInput("3");
-        expect(dashboard.render(100).length).toBeLessThanOrEqual(rows);
+        const topology = dashboard.render(100);
+        expect(topology.length).toBeLessThanOrEqual(overlayRows);
+        if (rows === 10) expect(topology.join("\n")).toContain("security-revi");
+        if (rows === 43) {
+          expect(topology.at(-1)).toContain("╰");
+          expect(topology.join("\n")).toContain("arrows/h/l move");
+        }
       } finally {
         dashboard.dispose();
       }
@@ -2181,7 +2189,7 @@ describe("Fabric dynamic UI", () => {
     expect(wrapPlainText("👩‍💻x", 2)).toEqual(["👩‍💻", "x"]);
   });
 
-  it("keeps Main available in Activity and both topologies without child agents", () => {
+  it("keeps Main available in Activity and the unified topology without children", () => {
     const current = snapshot();
     current.runs = [];
     current.agents = [];
@@ -2203,29 +2211,21 @@ describe("Fabric dynamic UI", () => {
       const activity = dashboard.render(100).join("\n");
       expect(activity).toContain("Agents (1)");
       expect(activity).toContain("Main");
-      expect(activity).toContain("s message/steer");
 
       dashboard.handleInput("2");
-      const runTopology = dashboard.render(100).join("\n");
-      expect(runTopology).toContain("Run topology");
-      expect(runTopology).toContain("Main");
-      expect(runTopology).toContain("no Fabric run selected");
-
-      dashboard.handleInput("3");
-      const meshTopology = dashboard.render(100).join("\n");
-      expect(meshTopology).toContain("Project mesh");
-      expect(meshTopology).toContain("Main");
+      const topology = dashboard.render(100).join("\n");
+      expect(topology).toContain("Fabric · Topology");
+      expect(topology).toContain("◆ Main");
+      expect(topology).toContain("selected");
+      expect(topology).not.toContain("Run topology");
+      expect(topology).not.toContain("Project mesh");
     } finally {
       dashboard.dispose();
     }
   });
 
-  it("renders recursive agents in a phase-grouped Run topology", () => {
+  it("renders recursive agents and mesh resources in one graph", () => {
     const current = snapshot();
-    current.actors = [];
-    current.globalActors = [];
-    current.state = [];
-    current.events = [];
     const parent = {
       ...current.agents[0]!,
       id: "flow-parent",
@@ -2243,7 +2243,6 @@ describe("Fabric dynamic UI", () => {
       startedAt: current.now - 19_000,
     };
     current.agents = [parent, child];
-
     const dashboard = new FabricDashboard(
       { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI,
       theme,
@@ -2251,81 +2250,65 @@ describe("Fabric dynamic UI", () => {
       vi.fn(),
     );
     try {
-      dashboard.handleInput("r");
-      const flowLines = dashboard.render(120);
-      const flow = flowLines.join("\n");
-      expect(flow).toContain("Fabric · Topology");
-      expect(flow).toContain("Run topology");
-      expect(flow).toContain("Run topology");
-      expect(flow).toContain("Discover");
-      expect(flow).toContain("Audit");
-      expect(flow).toContain("flow-parent");
-      expect(flow).toContain("flow-child");
-      expect(flow.indexOf("flow-parent")).toBeLessThan(flow.indexOf("flow-child"));
-      expect(flow).toMatch(/[├└]─ .*flow-child/);
-      expect(flowLines.every((line) => visibleWidth(line) <= 120)).toBe(true);
+      dashboard.handleInput("2");
+      const lines = dashboard.render(140);
+      const graph = lines.join("\n");
+      expect(graph).toContain("Fabric · Topology");
+      expect(graph).toContain("╭ selected");
+      expect(graph).not.toContain("│╭ selected");
+      expect(graph).toContain("flow-parent");
+      expect(graph).toContain("flow-child");
+      expect(graph).toContain("advisor");
+      expect(graph).toContain("team.review");
+      expect(graph).toContain("Package A");
+      expect(graph).toContain("phase Audit");
+      expect(graph.indexOf("flow-parent")).toBeLessThan(graph.lastIndexOf("flow-child"));
+      expect(lines.every((line) => visibleWidth(line) <= 140)).toBe(true);
 
       dashboard.handleInput("\r");
-      expect(dashboard.render(120).join("\n")).toContain("agent · flow-child");
-
-      dashboard.handleInput("\x1b");
-      dashboard.handleInput("f");
-      const activeFlow = dashboard.render(120).join("\n");
-      expect(activeFlow).toContain("flow-parent");
-      expect(activeFlow).toContain("flow-child");
-      expect(activeFlow).toContain("context");
+      expect(dashboard.render(140).join("\n")).toContain("agent · flow-child");
     } finally {
       dashboard.dispose();
     }
   });
 
-  it("keeps an empty current phase visible in the Run topology heading", () => {
+  it("keeps current workflow phase context in the merged topology", () => {
     const current = snapshot();
-    current.actors = [];
-    current.globalActors = [];
-    current.state = [];
-    current.events = [];
     current.agents[0] = {
       ...current.agents[0]!,
       status: "completed",
       phaseId: "discover",
       finishedAt: current.now - 1_000,
     };
-
     const dashboard = new FabricDashboard(
-      { requestRender: vi.fn(), terminal: { rows: 12 } } as unknown as TUI,
+      { requestRender: vi.fn(), terminal: { rows: 14 } } as unknown as TUI,
       theme,
       () => current,
       vi.fn(),
     );
     try {
       dashboard.handleInput("r");
-      expect(dashboard.render(80).join("\n")).toContain("current Audit");
+      expect(dashboard.render(100).join("\n")).toContain("current Audit");
     } finally {
       dashboard.dispose();
     }
   });
 
-  it("centers a large Run topology on attention and summarizes omitted agents", () => {
+  it("centers large graphs on attention and summarizes off-canvas nodes", () => {
     const current = snapshot();
     const run = current.runs[0]!;
     current.actors = [];
-    current.globalActors = [];
     current.state = [];
     current.events = [];
-    run.phases = [
-      {
-        id: "fanout",
-        name: "Fan out",
-        status: "running",
-        total: 80,
-        startedAt: current.now - 80_000,
-        updatedAt: current.now,
-      },
-    ];
+    run.phases = [{
+      id: "fanout",
+      name: "Fan out",
+      status: "running",
+      total: 80,
+      startedAt: current.now - 80_000,
+      updatedAt: current.now,
+    }];
     run.currentPhaseId = "fanout";
-    run.calls = [];
-    run.items = [];
     const base = current.agents[0]!;
     current.agents = Array.from({ length: 80 }, (_, index) => ({
       ...base,
@@ -2336,7 +2319,6 @@ describe("Fabric dynamic UI", () => {
       startedAt: current.now - 80_000 + index,
       ...(index === 56 ? {} : { finishedAt: current.now - 1_000 }),
     }));
-
     const dashboard = new FabricDashboard(
       { requestRender: vi.fn(), terminal: { rows: 24 } } as unknown as TUI,
       theme,
@@ -2344,45 +2326,31 @@ describe("Fabric dynamic UI", () => {
       vi.fn(),
     );
     try {
-      dashboard.handleInput("r");
-      const centeredLines = dashboard.render(120);
-      const centered = centeredLines.join("\n");
-      expect(centered).toContain("flow-worker-56");
-      expect(centered).toContain("agents hidden");
-      expect(centered).not.toContain("flow-worker-0 ");
-      expect(centeredLines.length).toBeLessThanOrEqual(24);
-      expect(centeredLines.every((line) => visibleWidth(line) <= 120)).toBe(true);
-
-      dashboard.handleInput("G");
-      const bottom = dashboard.render(120).join("\n");
-      expect(bottom).toContain("flow-worker-79");
-      expect(bottom).toContain("↑ …");
-
-      dashboard.handleInput("g");
-      const top = dashboard.render(120).join("\n");
-      expect(top).toContain("flow-worker-0");
-      expect(top).toContain("↓ …");
+      dashboard.handleInput("2");
+      const lines = dashboard.render(120);
+      const graph = lines.join("\n");
+      expect(graph).toContain("flow-worker-56");
+      expect(graph).toMatch(/\d+ off-canvas/);
+      expect(lines.length).toBeLessThanOrEqual(24);
+      expect(lines.every((line) => visibleWidth(line) <= 120)).toBe(true);
     } finally {
       dashboard.dispose();
     }
   });
 
-  it("keeps a deeply nested selected agent readable in a narrow Run topology", () => {
+  it("keeps deeply nested selected agents readable in narrow topologies", () => {
     const current = snapshot();
     const run = current.runs[0]!;
     current.actors = [];
-    current.globalActors = [];
     current.state = [];
     current.events = [];
-    run.phases = [
-      {
-        id: "deep",
-        name: "Deep recursion",
-        status: "running",
-        startedAt: current.now - 30_000,
-        updatedAt: current.now,
-      },
-    ];
+    run.phases = [{
+      id: "deep",
+      name: "Deep recursion",
+      status: "running",
+      startedAt: current.now - 30_000,
+      updatedAt: current.now,
+    }];
     run.currentPhaseId = "deep";
     const base = current.agents[0]!;
     current.agents = Array.from({ length: 20 }, (_, index) => ({
@@ -2394,7 +2362,6 @@ describe("Fabric dynamic UI", () => {
       startedAt: current.now - 30_000 + index,
       ...(index > 0 ? { parentId: `deep-node-${index - 1}` } : {}),
     }));
-
     const dashboard = new FabricDashboard(
       { requestRender: vi.fn(), terminal: { rows: 24 } } as unknown as TUI,
       theme,
@@ -2402,17 +2369,66 @@ describe("Fabric dynamic UI", () => {
       vi.fn(),
     );
     try {
-      dashboard.handleInput("r");
+      dashboard.handleInput("2");
       const lines = dashboard.render(40);
       expect(lines.join("\n")).toContain("deep-node-19");
-      expect(lines.join("\n")).toMatch(/\d+ hidden/);
-      expect(lines.join("\n")).toContain("Deep recursion");
+      expect(lines.join("\n")).toMatch(/\d+ off-canvas/);
       expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
     } finally {
       dashboard.dispose();
     }
   });
-  it("renders and inspects the project mesh topology", () => {
+
+  it("moves the topology camera with a damped spring", () => {
+    vi.useFakeTimers();
+    const current = snapshot();
+    current.actors = [];
+    current.state = [];
+    current.events = [];
+    const root = {
+      ...current.agents[0]!,
+      id: "thread-a",
+      name: "thread-a",
+      status: "completed",
+    };
+    const leaf = {
+      ...current.agents[0]!,
+      id: "thread-d",
+      name: "thread-d",
+      parentId: root.id,
+      status: "running",
+    };
+    current.agents = [root, leaf];
+    const requestRender = vi.fn();
+    const dashboard = new FabricDashboard(
+      { requestRender, terminal: { rows: 24 } } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      dashboard.handleInput("2");
+      const initial = dashboard.render(80).join("\n");
+      dashboard.handleInput("h");
+      const springStart = dashboard.render(80).join("\n");
+      expect(springStart).toContain("▣ thread-a");
+      vi.advanceTimersByTime(160);
+      const springMoved = dashboard.render(80).join("\n");
+      expect(springMoved).not.toBe(springStart);
+      expect(springMoved).not.toBe(initial);
+      expect(requestRender).toHaveBeenCalled();
+
+      dashboard.handleInput("1");
+      const rendersAfterLeaving = requestRender.mock.calls.length;
+      vi.advanceTimersByTime(500);
+      expect(requestRender).toHaveBeenCalledTimes(rendersAfterLeaving);
+    } finally {
+      dashboard.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("inspects topics and routes without switching topology modes", () => {
     const current = snapshot();
     current.events.push(
       {
@@ -2442,72 +2458,37 @@ describe("Fabric dynamic UI", () => {
     );
     try {
       dashboard.handleInput("2");
-      const runHeight = dashboard.render(120).length;
-      dashboard.handleInput("3");
-      const lines = dashboard.render(120);
-      const mesh = lines.join("\n");
-      expect(mesh).toContain("Fabric · Topology");
-      expect(mesh).toContain("▸ Project mesh");
-      expect(mesh).toContain("Main");
-      expect(mesh).toContain("Persistent actors");
-      expect(mesh).toContain("advisor");
-      expect(mesh).toContain("Project participants");
-      expect(mesh).toContain("security-reviewer");
-      expect(mesh).toContain("Topics");
-      expect(mesh).toContain("team.review");
-      expect(mesh).toContain("subscribes");
-      expect(mesh).toContain("Shared state");
-      expect(mesh).toContain("Package A");
-      expect(mesh).toContain("Package A ← security-reviewer");
-      expect(mesh).toContain("Recent routes");
-      expect(mesh).toContain("advisor ─finding→ team.review");
-      expect(mesh).toContain(
-        "fabric.actor.output · topology-coordinator · Recent mesh feed stays visible",
-      );
-      expect(lines).toHaveLength(runHeight);
-      expect(lines.every((line) => visibleWidth(line) <= 120)).toBe(true);
+      const lines = dashboard.render(140);
+      const graph = lines.join("\n");
+      expect(graph).toContain("Fabric · Topology");
+      expect(graph).toContain("security-revi");
+      expect(graph).toContain("advisor");
+      expect(graph).toContain("team.review");
+      expect(graph).toContain("Package A");
+      expect(graph).toContain("Recent mesh feed stays visible");
+      expect(lines.every((line) => visibleWidth(line) <= 140)).toBe(true);
 
+      dashboard.handleInput("g");
+      dashboard.handleInput("j");
+      dashboard.handleInput("j");
       dashboard.handleInput("j");
       dashboard.handleInput("\r");
-      const topicDetail = dashboard.render(120).join("\n");
+      const topicDetail = dashboard.render(140).join("\n");
       expect(topicDetail).toContain("topic · team.review");
       expect(topicDetail).toContain("Subscribers: advisor");
-      expect(topicDetail).toContain("Recent events: 2");
 
       dashboard.handleInput("\x1b");
-      dashboard.handleInput("f");
-      dashboard.handleInput("\r");
-      expect(dashboard.render(120).join("\n")).toContain("agent · security-reviewer");
-      dashboard.handleInput("\x1b");
-      dashboard.handleInput("f");
-      dashboard.handleInput("f");
-      dashboard.handleInput("f");
       dashboard.handleInput("G");
       dashboard.handleInput("\r");
-      const routeDetail = dashboard.render(120).join("\n");
+      const routeDetail = dashboard.render(140).join("\n");
       expect(routeDetail).toContain("recent project mesh route");
       expect(routeDetail).toContain("From: security-reviewer (agent:agent-1)");
-      expect(routeDetail).toContain("To: team.review (topic:team.review)");
 
       dashboard.handleInput("\x1b");
       dashboard.handleInput("1");
-      expect(dashboard.render(120).join("\n")).toContain("· Activity");
+      expect(dashboard.render(140).join("\n")).toContain("· Activity");
       dashboard.handleInput("r");
-      const topology = dashboard.render(120).join("\n");
-      expect(topology).toContain("Fabric · Topology");
-      expect(topology).toContain("Run topology");
-      dashboard.handleInput("l");
-      expect(dashboard.render(120).join("\n")).toContain("▸ Project mesh");
-      dashboard.handleInput("h");
-      expect(dashboard.render(120).join("\n")).toContain("Run topology");
-      dashboard.handleInput("\t");
-      expect(dashboard.render(120).join("\n")).toContain("▸ Project mesh");
-      dashboard.handleInput("r");
-      expect(dashboard.render(120).join("\n")).toContain("· Activity");
-      dashboard.handleInput("2");
-      const directRun = dashboard.render(120).join("\n");
-      expect(directRun).toContain("Fabric · Topology");
-      expect(directRun).toContain("Run topology");
+      expect(dashboard.render(140).join("\n")).toContain("Fabric · Topology");
     } finally {
       dashboard.dispose();
     }
