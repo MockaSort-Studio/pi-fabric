@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { CodePreviewSettings } from "pi-code-previews";
+import type { CodePreviewSettings } from "../src/ui/code-preview.js";
 import { Box, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { configureHighlighting, initHighlighting } from "../src/ui/highlight.js";

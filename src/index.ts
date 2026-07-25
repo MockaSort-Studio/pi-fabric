@@ -2,11 +2,11 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { loadCodePreviewSettings } from "./ui/code-preview.js";
 import {
-  loadCodePreviewSettings,
   type FabricToolShellDecorator,
-  withLightweightCodePreviewShell,
-} from "./ui/code-preview.js";
+  withCodePreviewShell,
+} from "./ui/code-preview-shell.js";
 import { registerFabricActorHostEventObservers } from "./actors/host-event-observer.js";
 import { CapturedToolCatalog } from "./capture/catalog.js";
 import { installRegisteredToolCapture } from "./capture/interceptor.js";
@@ -78,16 +78,7 @@ const registrationFrom = (value: unknown): FabricProviderRegistration | undefine
 
 export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   const codePreviewSettings = await loadCodePreviewSettings();
-  let decorateShell: FabricToolShellDecorator = withLightweightCodePreviewShell;
-  let refreshBorderSettings: ((cwd?: string, trusted?: boolean) => Promise<void>) | undefined;
-  if (codePreviewSettings.toolCallBackground === "border") {
-    const codePreviews = await import("pi-code-previews");
-    await codePreviews.loadCodePreviewSettings();
-    decorateShell = codePreviews.withCodePreviewShell;
-    refreshBorderSettings = async (cwd, trusted) => {
-      await codePreviews.loadCodePreviewSettings(cwd, trusted);
-    };
-  }
+  const decorateShell: FabricToolShellDecorator = withCodePreviewShell;
   let compatibilityWarningShown = false;
   configureHighlighting(
     codePreviewSettings.shikiTheme,
@@ -235,7 +226,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         codePreviewSettings,
         await loadCodePreviewSettings(context.cwd, projectTrusted),
       );
-      await refreshBorderSettings?.(context.cwd, projectTrusted);
       configureHighlighting(
         codePreviewSettings.shikiTheme,
         codePreviewSettings.syntaxHighlighting,

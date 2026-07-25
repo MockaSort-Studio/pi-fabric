@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { CodePreviewSettings } from "pi-code-previews";
+import type { CodePreviewSettings } from "../src/ui/code-preview.js";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { configureHighlighting } from "../src/ui/highlight.js";

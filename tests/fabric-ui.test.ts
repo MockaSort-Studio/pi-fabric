@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import type { CodePreviewSettings } from "pi-code-previews";
+import type { CodePreviewSettings } from "../src/ui/code-preview.js";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { FabricDashboard } from "../src/ui/dashboard.js";

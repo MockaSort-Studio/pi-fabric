@@ -3,11 +3,11 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
+import type { CodePreviewSettings } from "./ui/code-preview.js";
 import {
-  type CodePreviewSettings,
   type FabricToolShellDecorator,
-  withLightweightCodePreviewShell,
-} from "./ui/code-preview.js";
+  withCodePreviewShell,
+} from "./ui/code-preview-shell.js";
 import { Type } from "typebox";
 import {
   createFabricPersistedExecutionDetails,
@@ -84,7 +84,7 @@ export const createFabricExecTool = (
   state: FabricState,
   codePreviewSettings: CodePreviewSettings,
   pendingHandoffs: Map<string, PendingFabricHandoff>,
-  decorateShell: FabricToolShellDecorator = withLightweightCodePreviewShell,
+  decorateShell: FabricToolShellDecorator = withCodePreviewShell,
 ): ToolDefinition<any, any, any> => decorateShell(
   defineTool({
     name: "fabric_exec",

@@ -1,8 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getAgentDir, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 type DiffBackgroundIntensity = "off" | "subtle" | "medium";
 type DiffWordEmphasis = "all" | "smart" | "off";
@@ -159,69 +158,3 @@ export async function loadCodePreviewSettings(
   }
   return { ...settings, tools: [...new Set(settings.tools)] };
 }
-
-type AnyTool = ToolDefinition<any, any, any>;
-export type FabricToolShellDecorator = <TTool extends AnyTool>(
-  tool: TTool,
-  options?: {
-    mode?: ToolCallBackgroundMode;
-    preserveSelfShell?: boolean;
-    toolCallTiming?: boolean;
-  },
-) => TTool;
-
-type TimingState = Record<string, unknown> & {
-  fabricPreviewStartedAt?: number;
-  fabricPreviewEndedAt?: number;
-};
-
-class TimingFooter implements Component {
-  constructor(private readonly component: Component, private readonly footer: string) {}
-  render(width: number): string[] {
-    return [...this.component.render(width), truncateToWidth(this.footer, width, "")];
-  }
-  invalidate(): void {
-    this.component.invalidate?.();
-  }
-}
-
-const formatDuration = (milliseconds: number): string => {
-  const ms = Math.max(0, Math.round(milliseconds));
-  if (ms < 1_000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1_000).toFixed(1)}s`;
-  const seconds = Math.round(ms / 1_000);
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-};
-
-export const withLightweightCodePreviewShell: FabricToolShellDecorator = (tool, options = {}) => {
-  const mode = options.mode ?? "on";
-  const timingEnabled = options.toolCallTiming ?? true;
-  if ((options.preserveSelfShell ?? true) && tool.renderShell === "self") return tool;
-  const originalRenderCall = tool.renderCall;
-  const originalRenderResult = tool.renderResult;
-  return {
-    ...tool,
-    renderShell: mode === "on" ? "default" : "self",
-    renderCall(args, theme, context) {
-      const state = context?.state as TimingState | undefined;
-      if (state && context.executionStarted && state.fabricPreviewStartedAt === undefined) {
-        state.fabricPreviewStartedAt = Date.now();
-      }
-      return originalRenderCall
-        ? originalRenderCall.call(tool, args, theme, context)
-        : new Text(theme.fg("toolTitle", theme.bold(tool.label || tool.name)), 0, 0);
-    },
-    renderResult(result, resultOptions, theme, context) {
-      const component = originalRenderResult
-        ? originalRenderResult.call(tool, result, resultOptions, theme, context)
-        : new Text("", 0, 0);
-      const state = context.state as TimingState;
-      if (!timingEnabled || !state.fabricPreviewStartedAt || resultOptions.isPartial) return component;
-      state.fabricPreviewEndedAt ??= Date.now();
-      return new TimingFooter(
-        component,
-        theme.fg("muted", `╰─ Took ${formatDuration(state.fabricPreviewEndedAt - state.fabricPreviewStartedAt)}`),
-      );
-    },
-  } as typeof tool;
-};
