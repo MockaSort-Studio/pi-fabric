@@ -4,11 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  DEFAULT_FABRIC_CONFIG,
   MAX_AGENT_TIMEOUT_MS,
   MIN_AGENT_TIMEOUT_MS,
   type FabricAgentRunner,
   type FabricAgentConfig,
   type FabricAgentTransport,
+  type FabricRetentionConfig,
 } from "../config.js";
 import {
   discoverClaudeModels,
@@ -49,6 +51,12 @@ import {
 import type { BudgetLedgerState } from "./budget-ledger.js";
 import { readJsonlPage } from "../log-tail.js";
 import {
+  heartbeatRunRoot,
+  markRunRootActive,
+  markRunRootClosed,
+  sweepTempRunRoots,
+} from "../storage/retention.js";
+import {
   isFabricLifecycleEventType,
   type FabricLifecycleEventType,
   type FabricLifecyclePublishRequest,
@@ -68,6 +76,7 @@ const MAX_RETAINED_UI_RUNS = 240;
 const MAX_RETAINED_RUN_HANDLES = 1_000;
 const MAX_LOG_SUMMARY_CHARS = 7_000;
 const MAX_LOG_DETAIL_CHARS = 900;
+const RETENTION_SWEEP_INTERVAL_MS = 15 * 60 * 1_000;
 
 export const effectiveAgentTimeoutMs = (
   configuredTimeoutMs: number,
@@ -295,6 +304,8 @@ export class AgentManager {
   readonly #semaphore: Semaphore;
   readonly #worktrees = new WorktreeManager();
   readonly #runRoot: string;
+  readonly #managedTempRoot: boolean;
+  readonly #retention: FabricRetentionConfig;
   readonly #workerPath: string;
   readonly #fabricExtensionPath: string;
   readonly #piBinary: string;
@@ -314,6 +325,8 @@ export class AgentManager {
   readonly #budget: BudgetLedgerState | undefined;
   readonly #budgetOwned: boolean;
   readonly #uiListeners = new Set<() => void>();
+  #retentionTimer: NodeJS.Timeout | undefined;
+  #retentionSweep: Promise<void> | undefined;
   #budgetSummaryCache: { at: number; value: FabricBudgetSummary } | undefined;
   #claudeModelsCache: { at: number; value: ClaudeModelInfo[] } | undefined;
   #uiListRevision = 0;
@@ -337,14 +350,17 @@ export class AgentManager {
       projectRoot?: string;
       hostId?: string;
       identityId?: string;
+      retention?: FabricRetentionConfig;
       onBackgroundComplete?: (result: AgentRunResult) => void;
       onLifecycle?: (event: FabricLifecyclePublishRequest) => void;
       preparePiModel?: (model: string) => Promise<void>;
     } = {},
   ) {
     this.#semaphore = new Semaphore(config.maxConcurrent);
+    this.#managedTempRoot = options.runRoot === undefined && process.env.PI_FABRIC_RUN_ROOT === undefined;
     this.#runRoot =
       options.runRoot ?? process.env.PI_FABRIC_RUN_ROOT ?? fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-runs-"));
+    this.#retention = options.retention ?? DEFAULT_FABRIC_CONFIG.retention;
     this.#workerPath =
       options.workerPath ?? fileURLToPath(new URL("../worker.js", import.meta.url));
     this.#fabricExtensionPath =
@@ -380,6 +396,17 @@ export class AgentManager {
       new HerdrTransport(),
     ];
     this.#transports = new Map(adapters.map((adapter) => [adapter.kind, adapter]));
+    if (this.#managedTempRoot) {
+      markRunRootActive(this.#runRoot);
+      sweepTempRunRoots({
+        tempRoot: os.tmpdir(),
+        currentRoot: this.#runRoot,
+        orphanedTempRunRetentionMs: this.#retention.orphanedTempRunMs,
+        oneShotRunRetentionMs: this.#retention.oneShotRunMs,
+      });
+      this.#retentionTimer = setInterval(() => this.#scheduleRetentionSweep(), RETENTION_SWEEP_INTERVAL_MS);
+      this.#retentionTimer.unref();
+    }
   }
 
   async #prepareModel(model: string): Promise<void> {
@@ -829,15 +856,54 @@ export class AgentManager {
   async close(): Promise<void> {
     this.#closing = true;
     this.#uiListeners.clear();
+    if (this.#retentionTimer) clearInterval(this.#retentionTimer);
+    this.#retentionTimer = undefined;
+    await this.#retentionSweep?.catch(() => undefined);
     const running = [...this.#runs.values()].filter((managed) => !managed.settled);
     await Promise.allSettled(running.map((managed) => this.stop(managed.id)));
     await Promise.allSettled(running.map((managed) => this.#waitForTransportExit(managed)));
-    if (!this.config.retainRuns) {
+    if (this.#managedTempRoot) {
+      markRunRootClosed(this.#runRoot);
+    } else if (!this.config.retainRuns) {
       await removeTree(this.#runRoot);
     }
     if (this.#budgetOwned && this.#budget) {
       await removeTree(path.dirname(this.#budget.file));
       clearOwnedBudgetEnv();
+    }
+  }
+
+  #scheduleRetentionSweep(): void {
+    if (this.#closing || this.#retentionSweep) return;
+    this.#retentionSweep = this.#runRetentionSweep().finally(() => {
+      this.#retentionSweep = undefined;
+    });
+  }
+
+  async #runRetentionSweep(now = Date.now()): Promise<void> {
+    if (this.#managedTempRoot) {
+      heartbeatRunRoot(this.#runRoot, now);
+      sweepTempRunRoots({
+        tempRoot: os.tmpdir(),
+        currentRoot: this.#runRoot,
+        orphanedTempRunRetentionMs: this.#retention.orphanedTempRunMs,
+        oneShotRunRetentionMs: this.#retention.oneShotRunMs,
+        now,
+      });
+    }
+    const expired = [...this.#runs.values()].filter((managed) => {
+      if (!managed.settled || managed.actorId) return false;
+      const record = readRecord(managed.statusFile) ?? managed.latestRecord;
+      const finishedAt = record?.finishedAt ?? record?.updatedAt;
+      return typeof finishedAt === "number" && now - finishedAt >= this.#retention.oneShotRunMs;
+    });
+    for (const managed of expired) {
+      await removeTree(managed.runDirectory).catch(() => undefined);
+      if (!fs.existsSync(managed.runDirectory)) this.#runs.delete(managed.id);
+    }
+    if (expired.length > 0) {
+      this.#pruneRetainedUiRecords();
+      this.#invalidateUiList();
     }
   }
 

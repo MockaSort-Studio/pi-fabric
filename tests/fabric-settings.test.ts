@@ -98,6 +98,7 @@ describe("FabricSettingsComponent", () => {
     const items = buildItems();
     const component = new FabricSettingsComponent(theme, items, () => {}, () => {});
     const lines = component.render(80).join("\n");
+    const labels = items.map((item) => item.label).join("\n");
 
     for (const label of [
       "Full code mode",
@@ -109,11 +110,12 @@ describe("FabricSettingsComponent", () => {
       "Capture",
       "UI",
       "Compaction",
+      "Retention",
       "Mesh",
     ]) {
-      expect(lines).toContain(label);
+      expect(labels).toContain(label);
     }
-    expect(items.length).toBe(10);
+    expect(items.length).toBe(11);
   });
 
   it("marks submenu rows with a drill-in marker and leaves inline toggles plain", () => {
@@ -164,6 +166,20 @@ describe("FabricSettingsComponent", () => {
     expect(lines).toContain("fabric");
     expect(lines).toContain("Target occupancy");
     expect(lines).toContain("0.65");
+  });
+
+  it("exposes temporal retention defaults", () => {
+    const items = buildItems();
+    const retention = items.find((item) => item.id === "retention");
+    expect(retention?.currentValue).toBe("6h · 1d · 7d");
+    const lines = retention!.submenu!("", () => {}).render(100).join("\n");
+    expect(lines).toContain("Orphaned temp runs");
+    expect(lines).toContain("6h");
+    expect(lines).toContain("One-shot runs");
+    expect(lines).toContain("1d");
+    expect(lines).toContain("Actor run archives");
+    expect(lines).toContain("7d");
+    expect(lines).toContain("session.jsonl");
   });
 
   it("surfaces nested-tool visibility and the global debounce in UI settings", () => {
@@ -251,6 +267,7 @@ describe("FabricSettingsComponent", () => {
     expect(parseFormattedNumericValue("128 MB")).toBe(128 * 1024 * 1024);
     expect(parseFormattedNumericValue("250ms")).toBe(250);
     expect(parseFormattedNumericValue("2m")).toBe(120_000);
+    expect(parseFormattedNumericValue("7d")).toBe(7 * 24 * 60 * 60 * 1_000);
     expect(parseFormattedNumericValue("$0.25")).toBe(0.25);
     expect(parseFormattedNumericValue("500k")).toBe(500_000);
     expect(parseFormattedNumericValue("2M")).toBe(2_000_000);

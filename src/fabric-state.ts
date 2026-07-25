@@ -378,6 +378,7 @@ export class FabricState {
       projectRoot,
       hostId,
       identityId: identity.id,
+      retention: this.#config.retention,
       preparePiModel: async (modelKey) => {
         const separator = modelKey.indexOf("/");
         if (separator <= 0 || separator === modelKey.length - 1) return;
@@ -457,8 +458,9 @@ export class FabricState {
             persistent: true,
             mainAgent,
             canManageActor,
+            retention: this.#config.retention,
           }
-        : { persistent: false, mainAgent, canManageActor },
+        : { persistent: false, mainAgent, canManageActor, retention: this.#config.retention },
     );
     this.#lifecycle = new LifecycleBroker(
       this.#mesh,

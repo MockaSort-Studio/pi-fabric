@@ -90,6 +90,11 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
   "compaction": {
     "engine": "fabric"
   },
+  "retention": {
+    "orphanedTempRunMs": 21600000,
+    "oneShotRunMs": 86400000,
+    "actorRunArchiveMs": 604800000
+  },
   "mesh": {
     "enabled": true,
     "actorScope": "project",
@@ -238,6 +243,16 @@ Choosing **Inherit** in the model picker omits `approvals.model` and uses the ac
 The classifier receives the exact action, bounded prepared arguments, cwd, user-message text, and assistant tool calls. Assistant prose and tool outputs are excluded so model-authored reasoning and retrieved hostile content cannot directly instruct the classifier. It has no executable tools and must return a structured `allow` or `escalate` verdict. `allow` applies only to that call. `escalate`, malformed output, missing authentication, timeout, cancellation, or any classifier error falls back to the explicit **Allow once** / **Allow for this session** / **Deny** prompt; headless runs fail closed when that prompt cannot be shown. Classifier token usage and cost are attached to the outer `fabric_exec` result, and each verdict is recorded as `fabric.approval.auto` in the execution trace.
 
 `deny` remains deterministic and is evaluated before the classifier. Schema enforcement, project trust, budgets, and other host gates also remain authoritative. Auto mode is a model-based policy advisor, not a stronger sandbox boundary. Its initial conservative policy escalates destructive or irreversible actions, shared/external/production changes, credential or sensitive-data exposure, safety bypasses, actions beyond explicit user intent, and actions whose safety is uncertain. This follows the architecture described in Claude Code’s [permission modes](https://code.claude.com/docs/en/permission-modes), [auto-mode configuration](https://code.claude.com/docs/en/auto-mode-config), and Anthropic’s [auto-mode engineering write-up](https://www.anthropic.com/engineering/claude-code-auto-mode), adapted to Pi’s model registry and Fabric’s existing per-risk policy gate.
+
+## Temporal retention
+
+Fabric clears inactive run artifacts by age rather than truncating active JSONL files. The defaults are:
+
+- `retention.orphanedTempRunMs` — remove a temporary run root six hours after its owner process dies. Active roots carry a heartbeat marker and are never removed.
+- `retention.oneShotRunMs` — retain terminal one-shot agent run artifacts for 24 hours. Explicit `agents.cleanup()` may remove them sooner; otherwise graceful shutdown marks their temporary root closed for temporal cleanup.
+- `retention.actorRunArchiveMs` — retain terminal actor run archives for seven days. The latest run for each actor is always preserved.
+
+Cleanup runs during active Fabric sessions and when a new top-level run manager starts. It never truncates active run logs or actor `session.jsonl` files. `/fabric settings` exposes all three values under **Retention**; changing them requires `/fabric reload`.
 
 ## Agents
 

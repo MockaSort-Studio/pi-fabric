@@ -120,6 +120,12 @@ interface FabricCompactionConfig {
   targetContextRatio: number;
 }
 
+export interface FabricRetentionConfig {
+  orphanedTempRunMs: number;
+  oneShotRunMs: number;
+  actorRunArchiveMs: number;
+}
+
 export interface FabricMeshConfig {
   enabled: boolean;
   root?: string;
@@ -162,6 +168,7 @@ export interface FabricConfig {
   capture: FabricToolCaptureConfig;
   ui: FabricUiConfig;
   compaction: FabricCompactionConfig;
+  retention: FabricRetentionConfig;
   mesh: FabricMeshConfig;
   memory: FabricMemoryConfig;
   schema: FabricSchemaConfig;
@@ -252,6 +259,11 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   compaction: {
     engine: "fabric",
     targetContextRatio: 0.65,
+  },
+  retention: {
+    orphanedTempRunMs: 6 * 60 * 60 * 1_000,
+    oneShotRunMs: 24 * 60 * 60 * 1_000,
+    actorRunArchiveMs: 7 * 24 * 60 * 60 * 1_000,
   },
   mesh: {
     enabled: true,
@@ -432,6 +444,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const capture = objectValue(input.capture);
   const ui = objectValue(input.ui);
   const compaction = objectValue(input.compaction);
+  const retention = objectValue(input.retention);
   const mesh = objectValue(input.mesh);
   const memory = objectValue(input.memory);
   const schema = objectValue(input.schema);
@@ -640,6 +653,26 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         DEFAULT_FABRIC_CONFIG.compaction.targetContextRatio,
         0.25,
         0.85,
+      ),
+    },
+    retention: {
+      orphanedTempRunMs: boundedInteger(
+        retention.orphanedTempRunMs,
+        DEFAULT_FABRIC_CONFIG.retention.orphanedTempRunMs,
+        60 * 60 * 1_000,
+        365 * 24 * 60 * 60 * 1_000,
+      ),
+      oneShotRunMs: boundedInteger(
+        retention.oneShotRunMs,
+        DEFAULT_FABRIC_CONFIG.retention.oneShotRunMs,
+        60 * 60 * 1_000,
+        365 * 24 * 60 * 60 * 1_000,
+      ),
+      actorRunArchiveMs: boundedInteger(
+        retention.actorRunArchiveMs,
+        DEFAULT_FABRIC_CONFIG.retention.actorRunArchiveMs,
+        60 * 60 * 1_000,
+        365 * 24 * 60 * 60 * 1_000,
       ),
     },
     mesh: {

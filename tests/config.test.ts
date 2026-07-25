@@ -168,6 +168,30 @@ describe("Fabric configuration", () => {
     expect(nonString.agents.thinking).toBe("medium");
   });
 
+  it("defaults and validates temporal retention windows", () => {
+    expect(DEFAULT_FABRIC_CONFIG.retention).toEqual({
+      orphanedTempRunMs: 6 * 60 * 60 * 1_000,
+      oneShotRunMs: 24 * 60 * 60 * 1_000,
+      actorRunArchiveMs: 7 * 24 * 60 * 60 * 1_000,
+    });
+    expect(
+      normalizeFabricConfig({
+        retention: {
+          orphanedTempRunMs: 2 * 60 * 60 * 1_000,
+          oneShotRunMs: 2 * 24 * 60 * 60 * 1_000,
+          actorRunArchiveMs: 30 * 24 * 60 * 60 * 1_000,
+        },
+      }).retention,
+    ).toEqual({
+      orphanedTempRunMs: 2 * 60 * 60 * 1_000,
+      oneShotRunMs: 2 * 24 * 60 * 60 * 1_000,
+      actorRunArchiveMs: 30 * 24 * 60 * 60 * 1_000,
+    });
+    expect(
+      normalizeFabricConfig({ retention: { orphanedTempRunMs: 1 } }).retention.orphanedTempRunMs,
+    ).toBe(60 * 60 * 1_000);
+  });
+
   it("defaults actor scope to project and validates the value", () => {
     expect(DEFAULT_FABRIC_CONFIG.mesh.actorScope).toBe("project");
     const session = normalizeFabricConfig({ mesh: { actorScope: "session" } });

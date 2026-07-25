@@ -75,9 +75,10 @@ const ROOT_ITEM_IDS = [
   "capture",
   "ui",
   "compaction",
+  "retention",
   "mesh",
 ] as const;
-const RELOAD_SECTIONS = new Set(["mesh", "agents", "mcp"]);
+const RELOAD_SECTIONS = new Set(["mesh", "agents", "mcp", "retention"]);
 
 const unique = (values: readonly string[]): string[] => [...new Set(values)];
 
@@ -110,6 +111,11 @@ const formatMs = (ms: number): string =>
       : ms < 3_600_000
         ? `${ms / 60_000}m`
         : `${ms / 3_600_000}h`;
+
+const formatRetention = (ms: number): string =>
+  ms >= 24 * 60 * 60 * 1_000 && ms % (24 * 60 * 60 * 1_000) === 0
+    ? `${ms / (24 * 60 * 60 * 1_000)}d`
+    : formatMs(ms);
 
 const formatBytes = (bytes: number): string =>
   bytes >= 1024 * 1024 * 1024
@@ -186,10 +192,10 @@ export const parseFormattedNumericValue = (value: string): number => {
     return Math.round(amount * units[bytes[2] as keyof typeof units]);
   }
 
-  const duration = normalized.match(/^([0-9]+(?:\.[0-9]+)?)(ms|s|m|h)$/);
+  const duration = normalized.match(/^([0-9]+(?:\.[0-9]+)?)(ms|s|m|h|d)$/);
   if (duration) {
     const amount = Number(duration[1]);
-    const units = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 } as const;
+    const units = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
     return Math.round(amount * units[duration[2] as keyof typeof units]);
   }
 
@@ -255,6 +261,8 @@ const summaryFor = (id: string, config: FabricConfig): string => {
       return config.ui.widget;
     case "compaction":
       return config.compaction.engine;
+    case "retention":
+      return `${formatRetention(config.retention.orphanedTempRunMs)} · ${formatRetention(config.retention.oneShotRunMs)} · ${formatRetention(config.retention.actorRunArchiveMs)}`;
     case "mesh":
       return config.mesh.enabled ? "enabled" : "disabled";
     default:
@@ -1022,6 +1030,62 @@ export const buildFabricSettingsItems = (
               description:
                 "Fraction of the advertised model window Fabric targets after compaction.",
               values: COMPACTION_TARGET_RATIOS,
+            },
+          ),
+        ],
+        persist,
+      ),
+    }),
+    setting("retention", "Retention", summaryFor("retention", config), {
+      description: "Age-based cleanup for inactive Fabric run artifacts.",
+      submenu: sectionSubmenu(
+        theme,
+        "Retention",
+        "Cleanup only removes dead temporary roots and terminal run artifacts. Active runs and actor session.jsonl files are never modified.",
+        [
+          setting(
+            "retention.orphanedTempRunMs",
+            "Orphaned temp runs",
+            formatRetention(config.retention.orphanedTempRunMs),
+            {
+              description: "Remove temporary run roots this long after their owner process dies.",
+              submenu: numericSubmenu(
+                theme,
+                [3_600_000, 3 * 3_600_000, 6 * 3_600_000, 12 * 3_600_000, 24 * 3_600_000],
+                formatRetention,
+                "Orphaned temp runs",
+                "Remove temporary run roots this long after their owner process dies.",
+              ),
+            },
+          ),
+          setting(
+            "retention.oneShotRunMs",
+            "One-shot runs",
+            formatRetention(config.retention.oneShotRunMs),
+            {
+              description: "Retain completed one-shot agent run artifacts for this duration.",
+              submenu: numericSubmenu(
+                theme,
+                [6 * 3_600_000, 12 * 3_600_000, 24 * 3_600_000, 2 * 86_400_000, 3 * 86_400_000, 7 * 86_400_000],
+                formatRetention,
+                "One-shot runs",
+                "Retain completed one-shot agent run artifacts for this duration.",
+              ),
+            },
+          ),
+          setting(
+            "retention.actorRunArchiveMs",
+            "Actor run archives",
+            formatRetention(config.retention.actorRunArchiveMs),
+            {
+              description: "Retain terminal actor run archives for this duration; the latest run is always preserved.",
+              submenu: numericSubmenu(
+                theme,
+                [86_400_000, 3 * 86_400_000, 7 * 86_400_000, 14 * 86_400_000, 30 * 86_400_000, 90 * 86_400_000],
+                formatRetention,
+                "Actor run archives",
+                "Retain terminal actor run archives for this duration; the latest run is always preserved.",
+              ),
             },
           ),
         ],

@@ -3,12 +3,19 @@ import { randomUUID } from "node:crypto";
 import fs, { type FSWatcher } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { FabricAgentRunner, FabricMeshConfig, FabricAgentTransport } from "../config.js";
+import {
+  DEFAULT_FABRIC_CONFIG,
+  type FabricAgentRunner,
+  type FabricAgentTransport,
+  type FabricMeshConfig,
+  type FabricRetentionConfig,
+} from "../config.js";
 import { MeshStore, type MeshEvent, type MeshIdentity } from "../mesh/store.js";
 import type { FabricMainAgentTarget } from "../main-agent.js";
 import { AgentManager } from "../agents/manager.js";
 import type { AgentRunRecord, AgentRunRequest, AgentRunResult } from "../agents/types.js";
 import { readJsonlPage } from "../log-tail.js";
+import { pruneActorRunArchives } from "../storage/retention.js";
 import { FABRIC_ACTOR_HOST_EVENTS } from "./types.js";
 import type {
   FabricActorDelivery,
@@ -87,6 +94,7 @@ const MESSAGE_HISTORY_LIMIT = 100;
 const MESH_WATCH_RECONCILE_MS = 2_000;
 const ACTOR_REGISTRY_LOCK_TIMEOUT_MS = 5_000;
 const ACTOR_REGISTRY_STALE_LOCK_MS = 30_000;
+const RETENTION_SWEEP_INTERVAL_MS = 15 * 60 * 1_000;
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -105,8 +113,6 @@ const atomicWrite = (filePath: string, value: unknown): void => {
   });
   fs.renameSync(temporaryPath, filePath);
 };
-
-const MAX_RETAINED_RUNS = 10;
 
 const readRunRecord = (filePath: string): AgentRunRecord | undefined => {
   try {
@@ -160,10 +166,12 @@ export class ActorManager {
   readonly #persistent: boolean;
   readonly #mainAgent: FabricMainAgentTarget | undefined;
   readonly #canManageActor: ((id: string) => boolean | undefined) | undefined;
+  readonly #retention: FabricRetentionConfig;
   readonly #locallyCreated = new Set<string>();
   readonly #ownership = new Map<string, boolean>();
   readonly #listeners = new Set<() => void>();
   #pollTimer: NodeJS.Timeout | undefined;
+  #retentionTimer: NodeJS.Timeout | undefined;
   #meshWatcher: FSWatcher | undefined;
   #meshOffset: number;
   #meshPollScheduled = false;
@@ -192,6 +200,7 @@ export class ActorManager {
       persistent?: boolean;
       mainAgent?: FabricMainAgentTarget;
       canManageActor?: (id: string) => boolean | undefined;
+      retention?: FabricRetentionConfig;
     } = {},
   ) {
     this.#actorRoot =
@@ -205,6 +214,10 @@ export class ActorManager {
     for (const actor of this.#actors.values()) {
       this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
     }
+    this.#retention = options.retention ?? DEFAULT_FABRIC_CONFIG.retention;
+    this.#sweepRetainedRuns();
+    this.#retentionTimer = setInterval(() => this.#sweepRetainedRuns(), RETENTION_SWEEP_INTERVAL_MS);
+    this.#retentionTimer.unref();
     this.#meshOffset = mesh.latestOffset();
     this.#startMeshMonitor();
   }
@@ -795,6 +808,8 @@ export class ActorManager {
     this.#closing = true;
     if (this.#pollTimer) clearInterval(this.#pollTimer);
     this.#pollTimer = undefined;
+    if (this.#retentionTimer) clearInterval(this.#retentionTimer);
+    this.#retentionTimer = undefined;
     this.#meshWatcher?.close();
     this.#meshWatcher = undefined;
     this.#listeners.clear();
@@ -1385,25 +1400,20 @@ export class ActorManager {
     this.#pruneRetainedRuns(actor);
   }
 
-  #pruneRetainedRuns(actor: ManagedActor): void {
-    const runsDir = path.join(path.dirname(actor.sessionFile), "runs");
-    let entries: string[];
-    try {
-      entries = fs.readdirSync(runsDir);
-    } catch {
-      return;
-    }
-    const ranked = entries
-      .map((name) => {
-        try {
-          return { name, mtime: fs.statSync(path.join(runsDir, name)).mtimeMs };
-        } catch {
-          return { name, mtime: 0 };
-        }
-      })
-      .sort((a, b) => b.mtime - a.mtime);
-    for (const entry of ranked.slice(MAX_RETAINED_RUNS)) {
-      fs.rmSync(path.join(runsDir, entry.name), { recursive: true, force: true });
+  #pruneRetainedRuns(actor: ManagedActor, now = Date.now()): void {
+    pruneActorRunArchives({
+      runsDirectory: path.join(path.dirname(actor.sessionFile), "runs"),
+      ...(actor.lastRunId ? { latestRunId: actor.lastRunId } : {}),
+      retentionMs: this.#retention.actorRunArchiveMs,
+      now,
+    });
+  }
+
+  #sweepRetainedRuns(now = Date.now()): void {
+    if (this.#closing) return;
+    this.#refreshOwnership();
+    for (const actor of this.#actors.values()) {
+      if (this.#canManage(actor.id)) this.#pruneRetainedRuns(actor, now);
     }
   }
 
