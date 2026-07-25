@@ -153,7 +153,7 @@ return {
 };
 ```
 
-Pi core calls reject when the native tool reports an error; the `{ ok: true, output, details }` shape describes successful `bash`, `edit`, and `write` calls. Catch a rejection when recovery is local. `bash` does not reject on an ordinary nonzero exit by default — it returns `{ ok: false, output, details: null, exitCode, error }`; pass `settle: false` (for example `pi.bash({ command, settle: false })`) to restore rejection. Timeout, cancellation, approval, security, and spawn failures still reject.
+Pi core calls reject when the native tool reports an error; the `{ ok: true, output, details }` shape describes successful `bash`, `edit`, and `write` calls. Catch a rejection when recovery is local. `bash` rejects on an ordinary nonzero exit; pass `settle: true` (for example `pi.bash({ command, settle: true })`) to get `{ ok: false, output, details: null, exitCode, error }` instead of a rejection. Timeout, cancellation, approval, security, and spawn failures still reject.
 
 ### Full code mode (default)
 

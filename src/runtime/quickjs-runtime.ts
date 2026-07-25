@@ -199,10 +199,10 @@ globalThis.pi = new Proxy({}, {
       } else {
         args = __positionalToArgs(name, rest);
       }
-      // bash returns {ok:false, exitCode, ...} for an ordinary nonzero exit
-      // instead of rejecting (on by default); settle:false restores rejection.
+      // bash rejects on an ordinary nonzero exit; settle:true returns
+      // {ok:false, exitCode, ...} instead (opt-in). Other failures still reject.
       const settle = name === "bash" &&
-        !(typeof args === "object" && args !== null && args.settle === false);
+        typeof args === "object" && args !== null && args.settle === true;
       const call = __call("pi." + name, __normalizePiArgs(name, args));
       if (!settle) return call;
       return call.catch((error) => {
