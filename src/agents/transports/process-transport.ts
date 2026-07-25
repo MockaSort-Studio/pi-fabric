@@ -13,7 +13,7 @@ export class ProcessTransport implements AgentTransportAdapter {
   }
 
   async launch(request: AgentTransportLaunch): Promise<AgentTransportHandle> {
-    const processHandle = spawnDetached(
+    const processHandle = await spawnDetached(
       request.workerPath,
       request.workerArguments,
       request.cwd,

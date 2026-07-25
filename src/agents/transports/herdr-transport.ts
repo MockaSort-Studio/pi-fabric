@@ -6,6 +6,7 @@ import type {
   AgentTransportLaunch,
 } from "../types.js";
 import { EXTERNAL_TRANSPORT_LIVENESS_POLL_INTERVAL_MS } from "../constants.js";
+import { scriptSpawnArgs } from "./process-utils.js";
 
 const REQUEST_TIMEOUT_MS = 3_000;
 const MAX_RESPONSE_BYTES = 1 * 1024 * 1024;
@@ -74,7 +75,7 @@ export class HerdrTransport implements AgentTransportAdapter {
           type: "pane",
           label: request.name,
           cwd: request.cwd,
-          command: [process.execPath, request.workerPath, ...request.workerArguments],
+          command: await scriptSpawnArgs(request.workerPath, request.workerArguments),
         },
       },
     })) as HerdrLayoutApplyResponse;

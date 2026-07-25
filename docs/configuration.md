@@ -258,6 +258,8 @@ Cleanup runs during active Fabric sessions and when a new top-level run manager 
 
 `agents.runner` selects the default harness (`"pi"` or `"claude"`). `agents.model` is the optional Pi `provider/id` override; `agents.claude.model` is the optional canonical Claude runtime key. `agents.claude.binary` defaults to `claude` and can be an absolute path or wrapper; `PI_FABRIC_CLAUDE_BINARY` overrides it for the current process. `/fabric settings` enumerates Claude models from that binary in the background and stores the two runner defaults independently.
 
+Fabric worker processes are JavaScript modules launched by a JS runtime. When Pi runs as a generic Node.js or Bun runtime (`process.execPath` is `node`/`bun`), that runtime is reused. When Pi ships as a Bun-compiled single-file binary (`process.execPath` is the `pi` executable, not node/bun), Fabric resolves a runtime from `PI_FABRIC_NODE_BINARY`, otherwise from the first `node` or `bun` on `PATH`, and only the resolved runtime launches workers — never the bundled binary itself. `PI_FABRIC_NODE_BINARY` overrides this for the current process. The Node-process executor (`executor.runtime: "node-process"`) always requires Node.js specifically, since its `--eval`/`--input-type=module` flags are Node-only.
+
 Other agent settings:
 
 - `thinking` — default reasoning effort (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), default `medium`.

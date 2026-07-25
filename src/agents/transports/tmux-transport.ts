@@ -28,7 +28,7 @@ export class TmuxTransport implements AgentTransportAdapter {
       session,
       "-c",
       request.cwd,
-      workerCommand(request.workerPath, request.workerArguments),
+      await workerCommand(request.workerPath, request.workerArguments),
     ]);
     return {
       kind: this.kind,

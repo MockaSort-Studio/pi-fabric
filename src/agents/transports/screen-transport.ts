@@ -4,7 +4,7 @@ import type {
   AgentTransportLaunch,
 } from "../types.js";
 import { EXTERNAL_TRANSPORT_LIVENESS_POLL_INTERVAL_MS } from "../constants.js";
-import { commandAvailable, executeFile } from "./process-utils.js";
+import { commandAvailable, executeFile, scriptSpawnArgs } from "./process-utils.js";
 
 const sessionName = (id: string): string => `pi-fabric-${id.slice(0, 12)}`;
 
@@ -19,7 +19,7 @@ export class ScreenTransport implements AgentTransportAdapter {
     const session = sessionName(request.id);
     await executeFile(
       "screen",
-      ["-DmS", session, process.execPath, request.workerPath, ...request.workerArguments],
+      ["-DmS", session, ...(await scriptSpawnArgs(request.workerPath, request.workerArguments))],
       { cwd: request.cwd },
     );
     return {

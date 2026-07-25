@@ -30,7 +30,7 @@ export class LocaltermTransport implements AgentTransportAdapter {
   }
 
   async launch(request: AgentTransportLaunch): Promise<AgentTransportHandle> {
-    const command = `${workerCommand(request.workerPath, request.workerArguments)}; exit $?`;
+    const command = `${await workerCommand(request.workerPath, request.workerArguments)}; exit $?`;
     const { stdout } = await executeFile("localterm", [
       "session",
       "new",
