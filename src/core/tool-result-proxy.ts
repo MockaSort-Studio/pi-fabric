@@ -1,3 +1,4 @@
+import { runAbortable } from "../async-settlement.js";
 import type {
   AgentToolResult,
   ExtensionRunner,
@@ -16,6 +17,7 @@ export interface FabricToolResultProxyRequest {
   args: Record<string, unknown>;
   toolCallId: string;
   value: unknown;
+  signal?: AbortSignal;
 }
 
 export interface FabricNestedToolResultProxy {
@@ -58,7 +60,7 @@ export class FabricToolResultProxy implements FabricNestedToolResultProxy {
       ref: request.action.ref,
       result: request.value,
     };
-    const patch = await runner.emitToolResult({
+    const patch = await runAbortable(request.signal, () => runner.emitToolResult({
       type: "tool_result",
       toolName: request.action.ref,
       toolCallId: request.toolCallId,
@@ -66,7 +68,7 @@ export class FabricToolResultProxy implements FabricNestedToolResultProxy {
       content,
       details,
       isError: false,
-    });
+    }));
     if (!patch) return request.value;
 
     const patchedContent = patch.content ?? content;

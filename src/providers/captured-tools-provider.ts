@@ -1,4 +1,5 @@
 import path from "node:path";
+import { runAbortable, throwIfAborted } from "../async-settlement.js";
 import type { AgentToolResult, SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CapturedToolCatalog, type CapturedToolEntry } from "../capture/catalog.js";
 import type {
@@ -129,7 +130,7 @@ export class CapturedToolsProvider implements FabricProvider {
   ): Promise<CapturedToolInvocationResult> {
     const entry = this.catalog.require(actionName);
     return this.#scheduler.run(entry.definition.executionMode, () =>
-      this.#invokeCaptured(entry, args, context),
+      runAbortable(context.signal, () => this.#invokeCaptured(entry, args, context)),
     );
   }
 
@@ -140,43 +141,45 @@ export class CapturedToolsProvider implements FabricProvider {
   ): Promise<CapturedToolInvocationResult> {
     const { runner, wrappedTool } = entry;
     const toolCallId = context.nestedToolCallId;
-    await runner.emit({
+    await runAbortable(context.signal, () => runner.emit({
       type: "tool_execution_start",
       toolCallId,
       toolName: entry.name,
       args,
-    });
+    }));
 
     let result: AgentToolResult<unknown>;
     let isError = false;
     let thrown: unknown;
     let updateTail: Promise<void> = Promise.resolve();
     try {
-      const preflight = await runner.emitToolCall({
+      const preflight = await runAbortable(context.signal, () => runner.emitToolCall({
         type: "tool_call",
         toolName: entry.name,
         toolCallId,
         input: args,
-      });
+      }));
       context.updateArguments?.(args);
       if (preflight?.block) {
         throw new Error(preflight.reason || `Captured tool ${entry.name} was blocked`);
       }
-      result = await wrappedTool.execute(toolCallId, args, context.signal, (partialResult) => {
+      result = await runAbortable(context.signal, () =>
+        wrappedTool.execute(toolCallId, args, context.signal, (partialResult) => {
         const progress = textFromContent(partialResult.content).trim();
         if (progress) context.update(`${entry.name}: ${progress.slice(0, 500)}`);
         updateTail = updateTail
           .then(() =>
-            runner.emit({
+            runAbortable(context.signal, () => runner.emit({
               type: "tool_execution_update",
               toolCallId,
               toolName: entry.name,
               args,
               partialResult,
-            }),
+            })),
           )
           .catch(() => undefined);
-      });
+        }),
+      );
     } catch (error) {
       thrown = error;
       isError = true;
@@ -192,7 +195,8 @@ export class CapturedToolsProvider implements FabricProvider {
     }
 
     await updateTail;
-    const patch = await runner.emitToolResult({
+    throwIfAborted(context.signal);
+    const patch = await runAbortable(context.signal, () => runner.emitToolResult({
       type: "tool_result",
       toolName: entry.name,
       toolCallId,
@@ -200,7 +204,7 @@ export class CapturedToolsProvider implements FabricProvider {
       content: result.content,
       details: result.details,
       isError,
-    });
+    }));
     if (patch) {
       result = {
         ...result,
@@ -210,13 +214,13 @@ export class CapturedToolsProvider implements FabricProvider {
       isError = patch.isError ?? isError;
     }
 
-    await runner.emit({
+    await runAbortable(context.signal, () => runner.emit({
       type: "tool_execution_end",
       toolCallId,
       toolName: entry.name,
       result,
       isError,
-    });
+    }));
 
     if (isError) {
       const text = textFromContent(result.content).trim();

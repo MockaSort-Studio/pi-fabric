@@ -69,6 +69,24 @@ describe("PiToolsProvider lifecycle", () => {
     expect(toolResult.toolCallId.startsWith(NESTED_TOOL_CALL_ID_PREFIX)).toBe(true);
   });
 
+  it("stops waiting for a hanging lifecycle handler when the invocation is aborted", async () => {
+    const controller = new AbortController();
+    const runner = makeRunner({
+      emitToolResult: vi.fn(async () => new Promise(() => undefined)),
+    });
+    const registry = registerWithRunner(runner);
+    const invocation = registry.invoke(
+      "pi.ls",
+      { path: process.cwd() },
+      { ...baseContext, signal: controller.signal },
+    );
+
+    await vi.waitFor(() => expect(runner.emitToolResult).toHaveBeenCalledOnce());
+    controller.abort(new Error("cancel nested lifecycle"));
+
+    await expect(invocation).rejects.toThrow("cancel nested lifecycle");
+  });
+
   it("synchronizes tool_call argument mutations across audit surfaces", async () => {
     const runner = makeRunner({
       emitToolCall: vi.fn(async (event: { input: Record<string, unknown> }) => {

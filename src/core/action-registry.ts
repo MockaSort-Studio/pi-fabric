@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Value } from "typebox/value";
+import { runAbortable, settleWithin } from "../async-settlement.js";
 import {
   executionOutcomeFromError,
   type FabricExecutionTraceOperationHandle,
@@ -440,19 +441,26 @@ export class ActionRegistry {
     const traceOperation = context.traceOperation ?? context.trace?.issueCall(ref, args);
     let failureStage: "resolve" | "guard" | "prepare" | "validate" | "approve" | "invoke" = "resolve";
     let audit: FabricCallAudit | undefined;
+    let invocationActive = false;
     try {
       const { provider, actionName } = this.#parseRef(ref);
-      const descriptor = await provider.describe(actionName, context);
+      const descriptor = await runAbortable(context.signal, () =>
+        provider.describe(actionName, context),
+      );
       if (!descriptor) throw new Error(`Unknown Fabric action: ${ref}`);
       const action = resolveDescriptor(provider, descriptor);
       traceOperation?.resolved(action.provider, action.name);
 
       failureStage = "guard";
-      await context.authorize?.(action);
+      if (context.authorize) {
+        await runAbortable(context.signal, () => context.authorize!(action));
+      }
 
       failureStage = "prepare";
       const preparedArgs = provider.prepareArguments
-        ? await provider.prepareArguments(actionName, args, context)
+        ? await runAbortable(context.signal, () =>
+            provider.prepareArguments!(actionName, args, context),
+          )
         : args;
       if (typeof preparedArgs !== "object" || preparedArgs === null || Array.isArray(preparedArgs)) {
         throw new Error(`Argument preparation for ${ref} did not return an object`);
@@ -464,7 +472,7 @@ export class ActionRegistry {
       if (invalid) throw new Error(`Invalid arguments for ${ref}: ${invalid}`);
 
       failureStage = "approve";
-      await context.approve(action, preparedArgs);
+      await runAbortable(context.signal, () => context.approve(action, preparedArgs));
 
       failureStage = "invoke";
       const nestedToolCallId = `${NESTED_TOOL_CALL_ID_PREFIX}${randomUUID()}`;
@@ -481,6 +489,7 @@ export class ActionRegistry {
         ) as Record<string, unknown>,
       };
       audit = activeAudit;
+      invocationActive = true;
       context.audits.push(activeAudit);
       context.observeInvocation?.({
         type: "call_start",
@@ -489,54 +498,62 @@ export class ActionRegistry {
         args: argsPreview,
       });
       context.update(`Calling ${ref}`);
-      const providerValue = await provider.invoke(actionName, preparedArgs, {
-        ...context,
-        nestedToolCallId,
-        update(message) {
-          context.update(message);
-          context.observeInvocation?.({
-            type: "call_update",
-            callId: nestedToolCallId,
-            update: { type: "progress", message },
-          });
-        },
-        activity(update) {
-          context.activity?.(update);
-          context.observeInvocation?.({
-            type: "call_update",
-            callId: nestedToolCallId,
-            update,
-          });
-        },
-        attachMedia(blocks, note) {
-          if (!activeAudit.media) activeAudit.media = [];
-          for (const block of blocks) activeAudit.media.push(block);
-          if (note) activeAudit.mediaNote = note;
-        },
-        updateArguments(updatedArgs) {
-          const updatedPreview = previewArgs(ref, updatedArgs);
-          activeAudit.args = boundedPreviewValue(
-            updatedPreview,
-            MAX_AUDIT_VALUE_CHARS,
-          ) as Record<string, unknown>;
-          traceOperation?.prepared(updatedArgs);
-          context.observeInvocation?.({
-            type: "call_args",
-            callId: nestedToolCallId,
-            args: updatedPreview,
-          });
-        },
-        attachPreview(preview) {
-          activeAudit.preview = preview;
-        },
-      });
+      const providerValue = await runAbortable(context.signal, () =>
+        provider.invoke(actionName, preparedArgs, {
+          ...context,
+          nestedToolCallId,
+          update(message) {
+            if (!invocationActive) return;
+            context.update(message);
+            context.observeInvocation?.({
+              type: "call_update",
+              callId: nestedToolCallId,
+              update: { type: "progress", message },
+            });
+          },
+          activity(update) {
+            if (!invocationActive) return;
+            context.activity?.(update);
+            context.observeInvocation?.({
+              type: "call_update",
+              callId: nestedToolCallId,
+              update,
+            });
+          },
+          attachMedia(blocks, note) {
+            if (!invocationActive) return;
+            if (!activeAudit.media) activeAudit.media = [];
+            for (const block of blocks) activeAudit.media.push(block);
+            if (note) activeAudit.mediaNote = note;
+          },
+          updateArguments(updatedArgs) {
+            if (!invocationActive) return;
+            const updatedPreview = previewArgs(ref, updatedArgs);
+            activeAudit.args = boundedPreviewValue(
+              updatedPreview,
+              MAX_AUDIT_VALUE_CHARS,
+            ) as Record<string, unknown>;
+            traceOperation?.prepared(updatedArgs);
+            context.observeInvocation?.({
+              type: "call_args",
+              callId: nestedToolCallId,
+              args: updatedPreview,
+            });
+          },
+          attachPreview(preview) {
+            if (!invocationActive) return;
+            activeAudit.preview = preview;
+          },
+        }),
+      );
       const value = this.toolResultProxy
-        ? await this.toolResultProxy.proxy({
+        ? await runAbortable(context.signal, () => this.toolResultProxy!.proxy({
             action,
             args: preparedArgs,
             toolCallId: nestedToolCallId,
             value: providerValue,
-          })
+            ...(context.signal ? { signal: context.signal } : {}),
+          }))
         : providerValue;
       const bounded = boundedResult(value, context.maxResultChars);
       const resultError = failedResultError(value);
@@ -577,16 +594,18 @@ export class ActionRegistry {
       }
       throw error;
     } finally {
+      invocationActive = false;
       if (audit) audit.endedAt ??= Date.now();
     }
   }
 
-  async endInvocation(parentToolCallId: string): Promise<void> {
-    await Promise.allSettled(
-      [...this.#providers.values()].map((provider) =>
-        provider.invocationEnded?.(parentToolCallId),
-      ),
+  async endInvocation(parentToolCallId: string, timeoutMs = 1_000): Promise<void> {
+    const finalizers = [...this.#providers.values()].flatMap((provider) =>
+      provider.invocationEnded
+        ? [Promise.resolve().then(() => provider.invocationEnded!(parentToolCallId))]
+        : [],
     );
+    await settleWithin(finalizers, timeoutMs);
   }
 
   async close(excludedProviderNames: Set<string> = new Set()): Promise<void> {

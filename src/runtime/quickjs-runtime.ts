@@ -1,5 +1,6 @@
 import releaseSyncVariant from "@jitl/quickjs-singlefile-mjs-release-sync";
 import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
+import { runAbortable, settleWithin } from "../async-settlement.js";
 import { transpileFabricCode } from "./type-checker.js";
 
 export type FabricSandboxTerminationReason =
@@ -581,6 +582,8 @@ const jsonHandle = (
   }
 };
 
+const HOST_TASK_SETTLE_GRACE_MS = 250;
+
 export class QuickJsRuntime {
   async execute(
     code: string,
@@ -715,7 +718,9 @@ export class QuickJsRuntime {
             void promise.settled.then(() => pendingTimers.delete(timer));
             return promise.handle;
           }
-          const task = hostCall(reference, args, hostAbortController.signal)
+          const task = runAbortable(hostAbortController.signal, () =>
+            hostCall(reference, args, hostAbortController.signal),
+          )
             .then((value) => {
               if (closing || promise.alive === false) return;
               const handle = jsonHandle(context, jsonObject, jsonParse, value);
@@ -882,17 +887,24 @@ export class QuickJsRuntime {
       if (timeout) clearTimeout(timeout);
       for (const timer of pendingTimers) clearTimeout(timer);
       if (abortHandler) options.signal?.removeEventListener("abort", abortHandler);
-      if (!timedOut && !cancelled && hostTasks.size > 0) {
-        await Promise.allSettled(hostTasks);
+      if (hostTasks.size > 0) {
+        const settled = await settleWithin(hostTasks, HOST_TASK_SETTLE_GRACE_MS);
+        if (!settled) {
+          abortHostCalls("Fabric guest execution ended before its host calls settled");
+          await settleWithin(hostTasks, HOST_TASK_SETTLE_GRACE_MS);
+        }
         runtime.executePendingJobs();
       }
       closing = true;
-      if (timedOut || cancelled) {
-        if (!hostAbortController.signal.aborted) hostAbortController.abort();
-        rejectExecutionGate(cancelled ? "Execution cancelled" : timeoutMessage());
-        const errorHandle = context.newError(
-          cancelled ? "Execution cancelled" : timeoutMessage(),
-        );
+      if (timedOut || cancelled || pendingHostPromises.size > 0) {
+        const cleanupMessage = cancelled
+          ? "Execution cancelled"
+          : timedOut
+            ? timeoutMessage()
+            : "Fabric guest execution ended before its host calls settled";
+        if (!hostAbortController.signal.aborted) hostAbortController.abort(new Error(cleanupMessage));
+        rejectExecutionGate(cleanupMessage);
+        const errorHandle = context.newError(cleanupMessage);
         for (const promise of pendingHostPromises) promise.reject(errorHandle);
         errorHandle.dispose();
         runtime.executePendingJobs();

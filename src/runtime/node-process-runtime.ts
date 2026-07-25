@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { runAbortable, settleWithin } from "../async-settlement.js";
 import {
   GUEST_SETUP,
   type FabricHostCall,
@@ -21,6 +22,8 @@ interface ChildResultMessage {
 }
 
 type ChildMessage = ChildCallMessage | ChildResultMessage;
+
+const HOST_TASK_SETTLE_GRACE_MS = 250;
 
 const send = (child: ChildProcess, message: any): void => {
   if (!child.connected) return;
@@ -68,6 +71,7 @@ export class NodeProcessRuntime {
     let deadline: NodeJS.Timeout | undefined;
     let abortHandler: (() => void) | undefined;
     let settled = false;
+    let finishing = false;
     const hostTasks = new Set<Promise<void>>();
 
     return new Promise<FabricSandboxResult>((resolve) => {
@@ -76,7 +80,7 @@ export class NodeProcessRuntime {
         settled = true;
         if (deadline) clearTimeout(deadline);
         if (abortHandler) options.signal?.removeEventListener("abort", abortHandler);
-        if (!hostAbortController.signal.aborted && result.terminationReason !== "completed") {
+        if (!hostAbortController.signal.aborted && hostTasks.size > 0) {
           hostAbortController.abort(new Error(result.error ?? "Node process execution stopped"));
         }
         child.removeAllListeners();
@@ -113,18 +117,31 @@ export class NodeProcessRuntime {
       options.signal?.addEventListener("abort", abortHandler, { once: true });
 
       child.on("message", (raw: unknown) => {
-        if (settled || typeof raw !== "object" || raw === null) return;
+        if (settled || finishing || typeof raw !== "object" || raw === null) return;
         const message = raw as ChildMessage;
         if (message.type === "result") {
+          finishing = true;
+          if (deadline) clearTimeout(deadline);
           if (message.result.terminationReason !== "completed" && !hostAbortController.signal.aborted) {
             hostAbortController.abort(new Error(message.result.error ?? "Node process execution stopped"));
           }
-          void Promise.allSettled([...hostTasks]).then(() => finish(message.result));
+          void (async () => {
+            const completed = await settleWithin(hostTasks, HOST_TASK_SETTLE_GRACE_MS);
+            if (!completed && !hostAbortController.signal.aborted) {
+              hostAbortController.abort(
+                new Error("Fabric guest execution ended before its host calls settled"),
+              );
+              await settleWithin(hostTasks, HOST_TASK_SETTLE_GRACE_MS);
+            }
+            finish(message.result);
+          })();
           return;
         }
         if (message.type !== "call") return;
         extendDeadline(message.ref, message.args);
-        const task = hostCall(message.ref, message.args, hostAbortController.signal).then(
+        const task = runAbortable(hostAbortController.signal, () =>
+          hostCall(message.ref, message.args, hostAbortController.signal),
+        ).then(
           (value) => send(child, { type: "response", id: message.id, ok: true, value }),
           (error) =>
             send(child, {

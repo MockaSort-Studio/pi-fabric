@@ -349,6 +349,21 @@ describe("ActionRegistry", () => {
     expect(approve).not.toHaveBeenCalled();
   });
 
+  it("bounds non-cooperative provider invocation finalizers", async () => {
+    const registry = new ActionRegistry();
+    registry.register({
+      ...provider(),
+      async invocationEnded() {
+        await new Promise(() => undefined);
+      },
+    });
+    const startedAt = Date.now();
+
+    await registry.endInvocation("parent", 20);
+
+    expect(Date.now() - startedAt).toBeLessThan(500);
+  });
+
   it("rejects duplicate and malformed provider names", () => {
     const registry = new ActionRegistry();
     registry.register(provider());

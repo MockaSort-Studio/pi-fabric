@@ -9,6 +9,7 @@ import {
   type ExtensionRunner,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { runAbortable, throwIfAborted } from "../async-settlement.js";
 import { CapturedToolCatalog } from "../capture/catalog.js";
 import { PI_CORE_TOOL_NAMES, type PiCoreToolName } from "../core/pi-tools.js";
 import { expandSkillDirMarkersForRead } from "../core/skill-dir.js";
@@ -199,12 +200,14 @@ export class PiToolsProvider implements FabricProvider {
     // catalog) fall back to a direct execute — no extension hooks fire, but
     // the call still works. Once tools are refreshed the runner is available.
     if (!runner) {
-      const result = await tool.execute(
-        context.nestedToolCallId,
-        args,
-        context.signal,
-        (partialResult) => this.#attachPartialPreview(name, partialResult, args, context),
-        context.extensionContext,
+      const result = await runAbortable(context.signal, () =>
+        tool.execute(
+          context.nestedToolCallId,
+          args,
+          context.signal,
+          (partialResult) => this.#attachPartialPreview(name, partialResult, args, context),
+          context.extensionContext,
+        ),
       );
       this.#attachReadMedia(name, result, context);
       this.#attachReadNote(name, result, context);
@@ -230,28 +233,28 @@ export class PiToolsProvider implements FabricProvider {
     runner: ExtensionRunner,
   ): Promise<unknown> {
     const toolCallId = context.nestedToolCallId;
-    await runner.emit({
+    await runAbortable(context.signal, () => runner.emit({
       type: "tool_execution_start",
       toolCallId,
       toolName: name,
       args,
-    });
+    }));
     let result: PiToolResult;
     let isError = false;
     let thrown: unknown;
     let updateTail: Promise<void> = Promise.resolve();
     try {
-      const preflight = await runner.emitToolCall({
+      const preflight = await runAbortable(context.signal, () => runner.emitToolCall({
         type: "tool_call",
         toolName: name,
         toolCallId,
         input: args,
-      });
+      }));
       context.updateArguments?.(args);
       if (preflight?.block) {
         throw new Error(preflight.reason || `Pi tool ${name} was blocked`);
       }
-      result = (await tool.execute(
+      result = (await runAbortable(context.signal, () => tool.execute(
         toolCallId,
         args,
         context.signal,
@@ -259,18 +262,18 @@ export class PiToolsProvider implements FabricProvider {
           this.#attachPartialPreview(name, partialResult, args, context);
           updateTail = updateTail
             .then(() =>
-              runner.emit({
+              runAbortable(context.signal, () => runner.emit({
                 type: "tool_execution_update",
                 toolCallId,
                 toolName: name,
                 args,
                 partialResult,
-              }),
+              })),
             )
             .catch(() => undefined);
         },
         context.extensionContext,
-      )) as PiToolResult;
+      ))) as PiToolResult;
     } catch (error) {
       thrown = error;
       isError = true;
@@ -283,13 +286,14 @@ export class PiToolsProvider implements FabricProvider {
     }
 
     await updateTail;
+    throwIfAborted(context.signal);
 
     // Capture the read's image blocks BEFORE any tool_result patch —
     // pi-vision-handoff swaps image→description here, which would leave
     // nothing to re-attach for the kitty preview.
     this.#attachReadMedia(name, result, context);
 
-    const patch = await runner.emitToolResult({
+    const patch = await runAbortable(context.signal, () => runner.emitToolResult({
       type: "tool_result",
       toolName: name,
       toolCallId,
@@ -297,7 +301,7 @@ export class PiToolsProvider implements FabricProvider {
       content: result.content,
       details: result.details,
       isError,
-    });
+    }));
     if (patch) {
       result = {
         ...result,
@@ -312,13 +316,13 @@ export class PiToolsProvider implements FabricProvider {
     // surviving text block is the short read note (not the verbose description).
     this.#attachReadNote(name, result, context);
 
-    await runner.emit({
+    await runAbortable(context.signal, () => runner.emit({
       type: "tool_execution_end",
       toolCallId,
       toolName: name,
       result,
       isError,
-    });
+    }));
 
     if (isError) {
       const text = textContent(result.content).trim();

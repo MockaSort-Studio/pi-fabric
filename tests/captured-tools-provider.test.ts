@@ -154,6 +154,61 @@ describe("CapturedToolsProvider", () => {
     );
   });
 
+  it("releases scheduler barriers after an aborted non-cooperative tool", async () => {
+    const hangingExecute = vi.fn(async () => new Promise<never>(() => undefined));
+    const hanging = defineTool({
+      name: "hanging_parallel",
+      label: "Hanging parallel",
+      description: "Never settles",
+      parameters: Type.Object({}),
+      execute: hangingExecute,
+    });
+    const sequential = defineTool({
+      name: "sequential_after_abort",
+      label: "Sequential after abort",
+      description: "Runs after cancellation",
+      parameters: Type.Object({}),
+      executionMode: "sequential",
+      async execute() {
+        return { content: [{ type: "text" as const, text: "recovered" }], details: {} };
+      },
+    });
+    const runner = {
+      createContext: () => ({ cwd: process.cwd() }),
+      emit: vi.fn(async () => {}),
+      emitToolCall: vi.fn(async () => undefined),
+      emitToolResult: vi.fn(async () => undefined),
+    } as unknown as ExtensionRunner;
+    const catalog = new CapturedToolCatalog();
+    catalog.replace(
+      [hanging, sequential].map((definition) => ({
+        definition,
+        sourceInfo: createSyntheticSourceInfo(`/extensions/${definition.name}.ts`, {
+          source: "test",
+        }),
+      })),
+      runner,
+      DEFAULT_FABRIC_CONFIG.capture,
+      "/extensions/pi-fabric/index.ts",
+    );
+    const provider = new CapturedToolsProvider(catalog);
+    const controller = new AbortController();
+    const hangingInvocation = provider.invoke(
+      "hanging_parallel",
+      {},
+      { ...context, signal: controller.signal },
+    );
+    await vi.waitFor(() => expect(hangingExecute).toHaveBeenCalledOnce());
+    controller.abort(new Error("cancel hanging tool"));
+    await expect(hangingInvocation).rejects.toThrow("cancel hanging tool");
+
+    await expect(provider.invoke(
+      "sequential_after_abort",
+      {},
+      { ...context, signal: new AbortController().signal },
+    )).resolves.toMatchObject({ text: "recovered", isError: false });
+  });
+
   it("honors sequential execution barriers from captured definitions", async () => {
     const timeline: string[] = [];
     let releaseFirst: (() => void) | undefined;

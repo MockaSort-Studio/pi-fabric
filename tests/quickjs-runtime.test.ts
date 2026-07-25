@@ -366,6 +366,37 @@ await Promise.all([
     expect(hostCallAborted).toBe(true);
   });
 
+  it("does not wait for a non-cooperative sibling host call after guest failure", async () => {
+    const startedAt = Date.now();
+    const result = await new QuickJsRuntime().execute(
+      `
+await Promise.all([
+  tools.call({ ref: "demo.never" }),
+  Promise.reject(new Error("branch failed")),
+]);
+`,
+      async () => new Promise(() => undefined),
+      options,
+    );
+
+    expect(result.terminationReason).toBe("runtime_error");
+    expect(result.error).toContain("branch failed");
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
+
+  it("bounds non-cooperative fire-and-forget host calls", async () => {
+    const startedAt = Date.now();
+    const result = await new QuickJsRuntime().execute(
+      'void tools.call({ ref: "demo.never" }); return "done";',
+      async () => new Promise(() => undefined),
+      options,
+    );
+
+    expect(result.terminationReason).toBe("completed");
+    expect(result.value).toBe("done");
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
+
   it("aborts in-flight host calls when the sandbox deadline expires", async () => {
     let hostCallAborted = false;
     const result = await new QuickJsRuntime().execute(
