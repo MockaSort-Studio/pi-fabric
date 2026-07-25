@@ -157,6 +157,12 @@ const __normalizePiArgs = (name, args) => {
     }
     delete out.timeoutMs;
   }
+  // settle is a guest-only directive (settles nonzero exits instead of
+  // rejecting); strip it so it never reaches the host/bash schema.
+  if (name === "bash" && "settle" in out) {
+    if (out === args) out = Object.assign({}, args);
+    delete out.settle;
+  }
   if (aliases) {
     for (const alias in aliases) {
       const canonical = aliases[alias];
@@ -186,16 +192,19 @@ globalThis.pi = new Proxy({}, {
     if (property === "then") return undefined;
     const name = String(property);
     return (...rest) => {
-      const toolName = name === "bashSettled" ? "bash" : name;
       let args;
       if (rest.length <= 1) {
         const first = rest.length === 1 ? rest[0] : undefined;
         args = first === undefined ? {} : first;
       } else {
-        args = __positionalToArgs(toolName, rest);
+        args = __positionalToArgs(name, rest);
       }
-      const call = __call("pi." + toolName, __normalizePiArgs(toolName, args));
-      if (name !== "bashSettled") return call;
+      // bash returns {ok:false, exitCode, ...} for an ordinary nonzero exit
+      // instead of rejecting (on by default); settle:false restores rejection.
+      const settle = name === "bash" &&
+        !(typeof args === "object" && args !== null && args.settle === false);
+      const call = __call("pi." + name, __normalizePiArgs(name, args));
+      if (!settle) return call;
       return call.catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         const match = /(?:^|\\n\\n)Command exited with code (\\d+)$/.exec(message);

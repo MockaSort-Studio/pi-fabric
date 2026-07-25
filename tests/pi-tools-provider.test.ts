@@ -122,6 +122,20 @@ describe("PiToolsProvider lifecycle", () => {
     });
   });
 
+  it("real bash nonzero-exit message matches the guest settle regex", async () => {
+    const runner = makeRunner();
+    const registry = registerWithRunner(runner);
+    const error = await registry
+      .invoke("pi.bash", { command: "exit 7" }, baseContext)
+      .then(() => undefined, (e: unknown) => e as Error);
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    // Mirrors the settle catch in src/runtime/quickjs-runtime.ts.
+    const match = /(?:^|\n\n)Command exited with code (\d+)$/.exec(message);
+    expect(match).not.toBeNull();
+    expect(Number(match![1])).toBe(7);
+  });
+
   it("applies a tool_result content patch to a core tool result", async () => {
     const runner = makeRunner({
       emitToolResult: vi.fn(async () => ({

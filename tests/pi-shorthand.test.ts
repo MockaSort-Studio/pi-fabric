@@ -45,9 +45,9 @@ describe("pi bare-string shorthand", () => {
     expect(result.value).toEqual({ a: "echo hi", b: "ls", c: "/x" });
   });
 
-  it("settles only ordinary Bash nonzero exits", async () => {
+  it("settles ordinary Bash nonzero exits by default", async () => {
     const checked = typeCheckFabricCode(
-      `const result = await pi.bashSettled({ command: "exit 7" });
+      `const result = await pi.bash({ command: "exit 7" });
        return result.ok ? result.output : result.exitCode;`,
       GUEST_TYPE_DECLARATIONS,
     );
@@ -60,9 +60,9 @@ describe("pi bare-string shorthand", () => {
       throw new Error("Command timed out after 1000ms");
     });
     const result = await new QuickJsRuntime().execute(
-      `const settled = await pi.bashSettled({ command: "exit 7" });
+      `const settled = await pi.bash({ command: "exit 7" });
        let timeoutError;
-       try { await pi.bashSettled({ command: "sleep 2", timeout: 1 }); }
+       try { await pi.bash({ command: "sleep 2", timeout: 1 }); }
        catch (error) { timeoutError = error instanceof Error ? error.message : String(error); }
        return { settled, timeoutError };`,
       hostCall,
@@ -81,6 +81,29 @@ describe("pi bare-string shorthand", () => {
       timeoutError: "Command timed out after 1000ms",
     });
     expect(hostCall.mock.calls.map((call) => call[0])).toEqual(["pi.bash", "pi.bash"]);
+  });
+
+  it("opts out of bash settle and keeps settle off the host", async () => {
+    const hostCall = vi.fn(async (_ref: string, _args: Record<string, unknown>) => {
+      throw new Error("Command exited with code 3");
+    });
+    const result = await new QuickJsRuntime().execute(
+      `const settled = await pi.bash({ command: "exit 3" });
+       let rejected;
+       try { await pi.bash({ command: "exit 3", settle: false }); }
+       catch (error) { rejected = error instanceof Error ? error.message : String(error); }
+       return { settled, rejected };`,
+      hostCall,
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.value).toEqual({
+      settled: { ok: false, output: "", details: null, exitCode: 3, error: "Command exited with code 3" },
+      rejected: "Command exited with code 3",
+    });
+    expect(hostCall.mock.calls[0]?.[1]).toEqual({ command: "exit 3" });
+    expect(hostCall.mock.calls[1]?.[1]).toEqual({ command: "exit 3" });
   });
 });
 
