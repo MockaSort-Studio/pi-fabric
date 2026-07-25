@@ -1684,7 +1684,7 @@ describe("Fabric dynamic UI", () => {
       );
 
       dashboard.handleInput("\x1b");
-      dashboard.handleInput("3");
+      dashboard.handleInput("2");
       dashboard.handleInput("g");
       dashboard.handleInput("j");
       dashboard.handleInput("j");
@@ -2166,7 +2166,7 @@ describe("Fabric dynamic UI", () => {
       const overlayRows = Math.max(1, Math.min(Math.floor(rows * 0.9), rows - 2));
       try {
         expect(dashboard.render(100).length).toBeLessThanOrEqual(overlayRows);
-        dashboard.handleInput("3");
+        dashboard.handleInput("2");
         const topology = dashboard.render(100);
         expect(topology.length).toBeLessThanOrEqual(overlayRows);
         if (rows === 10) expect(topology.join("\n")).toContain("security-revi");
@@ -2212,6 +2212,10 @@ describe("Fabric dynamic UI", () => {
       expect(activity).toContain("Agents (1)");
       expect(activity).toContain("Main");
 
+      dashboard.handleInput("3");
+      dashboard.handleInput("r");
+      expect(dashboard.render(100).join("\n")).toContain("· Activity");
+
       dashboard.handleInput("2");
       const topology = dashboard.render(100).join("\n");
       expect(topology).toContain("Fabric · Topology");
@@ -2219,6 +2223,10 @@ describe("Fabric dynamic UI", () => {
       expect(topology).toContain("selected");
       expect(topology).not.toContain("Run topology");
       expect(topology).not.toContain("Project mesh");
+
+      dashboard.handleInput("3");
+      dashboard.handleInput("r");
+      expect(dashboard.render(100).join("\n")).toContain("Fabric · Topology");
     } finally {
       dashboard.dispose();
     }
@@ -2287,7 +2295,7 @@ describe("Fabric dynamic UI", () => {
       vi.fn(),
     );
     try {
-      dashboard.handleInput("r");
+      dashboard.handleInput("2");
       expect(dashboard.render(100).join("\n")).toContain("current Audit");
     } finally {
       dashboard.dispose();
@@ -2487,7 +2495,7 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput("\x1b");
       dashboard.handleInput("1");
       expect(dashboard.render(140).join("\n")).toContain("· Activity");
-      dashboard.handleInput("r");
+      dashboard.handleInput("2");
       expect(dashboard.render(140).join("\n")).toContain("Fabric · Topology");
     } finally {
       dashboard.dispose();

@@ -507,16 +507,8 @@ export class FabricDashboard implements Component, Focusable {
       return;
     }
 
-    const opensTopology = data === "2" || data === "3";
-    if (data === "1" || opensTopology || data === "r") {
-      const nextOverview: OverviewView =
-        data === "1"
-          ? "activity"
-          : data === "r"
-            ? this.overviewView === "activity"
-              ? "topology"
-              : "activity"
-            : "topology";
+    if (data === "1" || data === "2") {
+      const nextOverview: OverviewView = data === "1" ? "activity" : "topology";
       if (nextOverview !== this.overviewView) {
         if (nextOverview === "activity") this.stopGraphAnimation();
         this.overviewView = nextOverview;
@@ -996,7 +988,7 @@ export class FabricDashboard implements Component, Focusable {
     ].filter((value): value is string => Boolean(value));
     const help = [
       ["Navigate", "Topology: arrows/h/l move spatially · j/k ordered selection · tab next · enter inspect · esc back"],
-      ["Views", "1 Activity · 2 unified Topology · r toggles Activity/Topology"],
+      ["Views", "1 Activity · 2 unified Topology"],
       ["Topology", "One spring-followed graph maps Main, peers, agents, actors, topics, shared state, and recent routes"],
       ["Runs", "[ older · ] newer · f cycle status filter"],
       ...(mainActions.length > 1 ? [["Main", mainActions.join(" · ")]] : []),
@@ -1523,7 +1515,7 @@ export class FabricDashboard implements Component, Focusable {
     const navigationHint =
       this.overviewView === "topology"
         ? `arrows/h/l move · j/k order · enter inspect · f filter:${this.filter} · [ older · ] newer · 1 activity · ? help`
-        : `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · 2 topology · r topology · [ older · ] newer · ? help`;
+        : `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · 2 topology · [ older · ] newer · ? help`;
     lines.push(this.row(width, this.theme.fg("dim", navigationHint)));
     const selectedEntity = entities[this.entityIndex];
     const actionHint =
