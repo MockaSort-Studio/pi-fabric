@@ -1912,6 +1912,10 @@ describe("Fabric dynamic UI", () => {
       expect(collapsedVisible).not.toContain("const before = 1;");
       expect(collapsedVisible).not.toContain("const after = 2;");
       expect(collapsedVisible).toContain("ctrl+o expand tools");
+      const collapsedRows = collapsedVisible.split("\n");
+      const collapsedGrepRow = collapsedRows.findIndex((line) => line.includes("actorValue"));
+      expect(collapsedGrepRow).toBeGreaterThan(0);
+      expect(collapsedRows[collapsedGrepRow - 1]!.slice(1, -1).trim()).not.toBe("");
 
       dashboard.handleInput("\x0f");
       const expanded = dashboard.render(100).join("\n");
@@ -1923,6 +1927,10 @@ describe("Fabric dynamic UI", () => {
       expect(expandedVisible).toContain("const after = 2;");
       expect(expandedVisible).toContain("const actorValue = true;");
       expect(expandedVisible).toContain("ctrl+o collapse tools");
+      const expandedRows = expandedVisible.split("\n");
+      const expandedGrepRow = expandedRows.findIndex((line) => line.includes("actorValue"));
+      expect(expandedGrepRow).toBeGreaterThan(0);
+      expect(expandedRows[expandedGrepRow - 1]!.slice(1, -1).trim()).toBe("");
 
       dashboard.handleInput("g");
       dashboard.handleInput("k");

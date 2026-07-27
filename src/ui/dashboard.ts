@@ -1796,8 +1796,11 @@ export class FabricDashboard implements Component, Focusable {
     if (transcript.hasMore ?? transcript.truncated) {
       lines.push(this.theme.fg("dim", "↑ older activity available · scroll past the top to load"));
     }
+    let firstTool = true;
     for (const entry of transcript.entries) {
       if (entry.kind === "tool") {
+        if (this.transcriptToolsExpanded && !firstTool) lines.push("");
+        firstTool = false;
         lines.push(...this.transcriptToolLines(entry, width, transcriptCwd));
         continue;
       }
