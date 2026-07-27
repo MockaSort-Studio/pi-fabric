@@ -139,14 +139,13 @@ export interface FabricExecutionOptions {
 export class FabricExecutionService {
   #runtime: QuickJsRuntime | NodeProcessRuntime | undefined;
   #runtimeKind: FabricConfig["executor"]["runtime"] | undefined;
-  readonly #sessionApprovals = new FabricSessionApprovals();
-
   constructor(
     readonly registry: ActionRegistry,
     readonly config: FabricConfig,
     readonly activity?: FabricActivityStore,
     readonly authorizer?: FabricExecutionAuthorizer,
     readonly autoApprovalClassifier = new FabricAutoApprovalClassifier(),
+    readonly sessionApprovals = new FabricSessionApprovals(),
   ) {}
 
   async execute(options: FabricExecutionOptions): Promise<FabricExecutionResult> {
@@ -189,7 +188,7 @@ export class FabricExecutionService {
     const approval = new ApprovalController(
       this.config.approvals,
       options.context,
-      this.#sessionApprovals,
+      this.sessionApprovals,
       this.autoApprovalClassifier,
       recordAutoDecision,
     );

@@ -651,11 +651,11 @@ export const buildFabricSettingsItems = (
       ),
     }),
     setting("approvals", "Approvals", summaryFor("approvals", config), {
-      description: "Per-action approval policy for tools invoked from inside fabric_exec.",
+      description: "Per-action approval policy for Fabric and model-requested native tool calls.",
       submenu: sectionSubmenu(
         theme,
         "Approvals",
-        "Per-action approval policy for tools invoked from inside fabric_exec. Auto routes each call through a dedicated safety classifier and escalates uncertain actions to you.",
+        "Approval policy for Fabric and model-requested native tool calls. Auto routes each call through a dedicated safety classifier and escalates uncertain actions to you.",
         [
           setting("approvals.model", "Auto model", config.approvals.model || INHERIT_VALUE, {
             description:
@@ -923,13 +923,13 @@ export const buildFabricSettingsItems = (
             values: BOOLEANS,
           }),
           setting("capture.defaultRisk", "Default risk", config.capture.defaultRisk, {
-            description: "Approval risk level applied to captured tools without an explicit override.",
+            description: "Approval risk level applied to registered tools without an explicit override.",
             values: RISKS,
           }),
           keepVisibleItem,
           ...CORE_RISK_TOOLS.map((tool) =>
             setting(`capture.risks.${tool}`, `${tool} risk`, config.capture.risks[tool] ?? config.capture.defaultRisk, {
-              description: `Approval risk level for the ${tool} tool when captured.`,
+              description: `Approval risk level for the ${tool} tool on native and captured paths.`,
               values: RISKS,
             }),
           ),

@@ -1,3 +1,4 @@
+import type { Usage } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -27,6 +28,10 @@ import {
   expandSkillDirMarkersInSkillBlock,
 } from "./core/skill-dir.js";
 import { restoreSkillsForFullCodePrompt } from "./core/skill-prompt.js";
+import {
+  FabricDirectToolApproval,
+  mergeFabricApprovalUsage,
+} from "./core/direct-tool-approval.js";
 import { buildSkillReferenceGuidance } from "./core/skill-references.js";
 import { createFabricExecTool } from "./fabric-exec-tool.js";
 import { FabricState } from "./fabric-state.js";
@@ -86,6 +91,11 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   );
   const capturedTools = new CapturedToolCatalog();
   const state = new FabricState(pi, capturedTools);
+  const directToolApproval = new FabricDirectToolApproval(
+    pi,
+    () => state.config,
+    state.sessionApprovals,
+  );
   const pendingHandoffs = new Map<string, PendingFabricHandoff>();
   const toolOwnership = new FabricToolOwnership(pi);
   const fabricUi = new FabricUiController(state, codePreviewSettings);
@@ -116,6 +126,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   const fabricToolLifecycle = new FabricToolLifecycle(
     () => ownsFabricToolSource(pi.getAllTools(), FABRIC_EXTENSION_ENTRY_PATH),
     () => state.initialized ? state.execution.authorizer : undefined,
+    () => state.initialized ? directToolApproval : undefined,
   );
 
   const inactiveCapturePolicy = {
@@ -209,6 +220,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
 
   pi.on("session_start", async (_event, context) => {
     pendingHandoffs.clear();
+    directToolApproval.clear();
     fabricUi.stop();
     suspendToolCapture();
     if (!compatibilityWarningShown) {
@@ -285,7 +297,8 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     await state.publishHostLifecycle("pi.agent_settled", event);
   });
 
-  pi.on("tool_call", (event) => fabricToolLifecycle.toolCall(event));
+  pi.on("tool_call", (event, context) =>
+    fabricToolLifecycle.toolCall(event, context));
 
   // Pi 0.80.6 intentionally ignores `isError` returned by custom-tool
   // execute(). Repair the finalized outer result through official middleware.
@@ -306,6 +319,19 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       return { ...part, text };
     });
     return changed ? { content } : undefined;
+  });
+
+  pi.on("message_end", (event) => {
+    if (event.message.role !== "toolResult") return undefined;
+    const message = event.message as AgentToolResultMessage & { usage?: Usage };
+    const usage = directToolApproval.takeUsage(message.toolCallId);
+    if (!usage) return undefined;
+    return {
+      message: {
+        ...message,
+        usage: mergeFabricApprovalUsage(message.usage, usage),
+      },
+    };
   });
 
   // message_end runs after all tool-result middleware and tool_execution_end but
@@ -443,6 +469,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     unsubscribeProviderRegistration();
     try {
       pendingHandoffs.clear();
+      directToolApproval.clear();
       uninstallHaltOnEscape();
       fabricUi.stop();
       suspendToolCapture();

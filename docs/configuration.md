@@ -175,8 +175,8 @@ Users who want Fabric for MCP, agents, ambient actors, parallel workflows, counc
 
 In orchestration-only mode:
 
-- Pi's `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls` tools stay on Pi's normal model-facing and execution paths.
-- Registered extension tools also remain in Pi's native registry; Fabric does not hide, wrap, or expose them through `extensions.*`.
+- Pi's `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls` tools stay on Pi's normal model-facing and execution paths. Fabric applies the configured risk approval policy through Pi's native `tool_call` preflight without replacing their execution or rendering.
+- Registered extension tools also remain in Pi's native registry; Fabric does not hide, wrap, or expose them through `extensions.*`. Model-requested direct calls use exact `capture.risks` overrides or the conservative `capture.defaultRisk` approval class.
 - `pi.*`, `extensions.*`, and equivalent `tools.call()` references are unavailable inside `fabric_exec`, including when TypeScript checks are bypassed.
 - MCP and stable Fabric providers remain available through `mcp.*`, `memory.*`, `state.*`, `schema.*`, and `compact.*`; generic discovery and computed refs remain available through `tools.*`. One-shot and recursive agents, persistent ambient actors, dynamic workflows, mesh coordination, councils, explicit Fabric providers, and the Fabric TUI also remain available.
 - Child agents continue using their allowed Pi tools directly, so parallel and ambient setups do not route their coding operations back through Fabric code mode.
@@ -214,13 +214,13 @@ Extension overrides of core tools are captured and hidden with their built-in co
 
 ## Approvals and risk
 
-Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`; approval policy values are `allow`, `ask`, `auto`, or `deny`.
+Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`; approval policy values are `allow`, `ask`, `auto`, or `deny`. Policies apply both to actions invoked inside `fabric_exec` and to top-level model-requested tools left on Pi's native path. Native calls keep Pi's original implementation, result shape, and renderer; only the supported pre-execution interception hook is added.
 
-- Captured tools default to the conservative `execute` risk because Pi tool definitions do not declare effects. Add exact tool-name overrides under `capture.risks`.
+- Captured and directly registered tools default to the conservative `execute` risk because Pi tool definitions do not declare effects. Add exact tool-name overrides under `capture.risks`.
 - Set `capture.hideFromModel` to `false` to index non-core extension tools without hiding them.
 - `capture.keepVisible` names stay in both Fabric and Pi's direct registry, except that Pi core names are always Fabric-owned in full code mode.
 - An `ask` policy emits a warning notification and opens an explicit **Allow once** / **Allow for this session** / **Deny** permission prompt, matching Claude-style approval scopes. **Allow once** authorizes only the requested action. **Allow for this session** authorizes that risk class until the current Pi session ends. The TUI uses an inline wizard; RPC clients receive the equivalent `select` dialog.
-- Concurrent requests are serialized so a one-time approval never silently widens to sibling calls. Escape, dismissal, unavailable interactive UI, and session restart all fail closed.
+- Concurrent requests are serialized so a one-time approval never silently widens to sibling calls. Session-wide grants are shared between native calls and `fabric_exec`. Escape, dismissal, unavailable interactive UI, and session restart all fail closed.
 
 ### Auto approval mode
 

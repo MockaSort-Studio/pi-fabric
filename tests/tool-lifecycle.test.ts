@@ -1,9 +1,10 @@
 import {
   ExtensionRunner,
+  type ExtensionContext,
   type ToolCallEvent,
   type ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createFabricPersistedExecutionDetails,
   FabricExecutionTraceRecorder,
@@ -152,6 +153,43 @@ describe("Fabric outer tool lifecycle", () => {
     expect(nested).toBeUndefined();
     // Partial execute updates are tool_execution_update events, not
     // tool_result events, so this middleware has no partial-result surface.
+  });
+});
+
+describe("Direct top-level tool approval gate", () => {
+  it("approves native calls while preserving owned and nested Fabric boundaries", async () => {
+    const approve = vi.fn(async () => {});
+    const lifecycle = new FabricToolLifecycle(
+      () => true,
+      () => ({ authorize: async () => {} }),
+      () => ({ approve }),
+    );
+    const context = {} as ExtensionContext;
+
+    await lifecycle.toolCall({
+      type: "tool_call",
+      toolCallId: "call-read",
+      toolName: "read",
+      input: { path: "README.md" },
+    }, context);
+    expect(approve).toHaveBeenCalledWith(
+      expect.objectContaining({ toolName: "read" }),
+      context,
+    );
+
+    await lifecycle.toolCall({
+      type: "tool_call",
+      toolCallId: "call-outer",
+      toolName: "fabric_exec",
+      input: { code: "return 1" },
+    }, context);
+    await lifecycle.toolCall({
+      type: "tool_call",
+      toolCallId: `${NESTED_TOOL_CALL_ID_PREFIX}nested`,
+      toolName: "write",
+      input: { path: "out.txt", content: "ok" },
+    }, context);
+    expect(approve).toHaveBeenCalledOnce();
   });
 });
 

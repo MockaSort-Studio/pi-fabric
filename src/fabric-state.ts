@@ -15,6 +15,7 @@ import {
   type FabricResultFormat,
 } from "./config.js";
 import { ActionRegistry } from "./core/action-registry.js";
+import { FabricSessionApprovals } from "./core/approval-controller.js";
 import { CompactController, type CompactLastCommit, type CompactPendingIntent } from "./core/compact-controller.js";
 import { FabricToolResultProxy } from "./core/tool-result-proxy.js";
 import { FabricExecutionService, type FabricExecutionResult } from "./execution-service.js";
@@ -178,6 +179,7 @@ export class FabricState {
   readonly #externalProviders = new Map<string, FabricProvider>();
   readonly activity = new FabricActivityStore();
   readonly prewalk = new PrewalkController();
+  readonly sessionApprovals = new FabricSessionApprovals();
   #widgetDismissedAt = 0;
 
   constructor(
@@ -278,6 +280,7 @@ export class FabricState {
     this.prewalk.cancel();
     context.ui.setStatus("fabric-prewalk", undefined);
     this.activity.reset();
+    this.sessionApprovals.approvedRisks.clear();
     this.#cwd = context.cwd;
     const projectTrusted = context.isProjectTrusted();
     this.#config = loadFabricConfig({
@@ -537,6 +540,8 @@ export class FabricState {
       this.#config,
       this.activity,
       this.#schema,
+      undefined,
+      this.sessionApprovals,
     );
     const discovery: FabricProviderDiscovery = {
       version: 1,

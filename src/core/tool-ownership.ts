@@ -3,6 +3,7 @@ import type {
   ToolCallEvent,
   ToolCallEventResult,
   ToolResultEvent,
+  ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { readFabricExecutionTraceV1 } from "../audit/index.js";
 import { NESTED_TOOL_CALL_ID_PREFIX } from "./action-registry.js";
@@ -15,6 +16,10 @@ export interface FabricToolOwnershipHost {
 
 export interface FabricTopLevelToolAuthorizer {
   authorize(ref: string, parentToolCallId: string): Promise<void>;
+}
+
+export interface FabricTopLevelToolApprover {
+  approve(event: ToolCallEvent, context: ExtensionContext): Promise<void>;
 }
 
 const FABRIC_TOOL_NAME = "fabric_exec";
@@ -45,9 +50,13 @@ export class FabricToolLifecycle {
   constructor(
     readonly ownsFabricTool: () => boolean,
     readonly authorizer: () => FabricTopLevelToolAuthorizer | undefined,
+    readonly approver: () => FabricTopLevelToolApprover | undefined = () => undefined,
   ) {}
 
-  async toolCall(event: ToolCallEvent): Promise<ToolCallEventResult | undefined> {
+  async toolCall(
+    event: ToolCallEvent,
+    context?: ExtensionContext,
+  ): Promise<ToolCallEventResult | undefined> {
     if (event.toolCallId.startsWith(NESTED_TOOL_CALL_ID_PREFIX)) {
       if (this.#outerCalls.size > 0) return undefined;
       await this.#authorizeTopLevel(event);
@@ -58,6 +67,11 @@ export class FabricToolLifecycle {
       return undefined;
     }
     await this.#authorizeTopLevel(event);
+    const approver = this.approver();
+    if (approver) {
+      if (!context) throw new Error("Fabric direct tool approval needs an extension context");
+      await approver.approve(event, context);
+    }
     return undefined;
   }
 
