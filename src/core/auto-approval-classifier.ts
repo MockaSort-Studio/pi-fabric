@@ -87,6 +87,40 @@ const transcriptEvidence = (context: ExtensionContext): string => {
     : joined.slice(joined.length - MAX_TRANSCRIPT_CHARS);
 };
 
+type CompleteSimpleArgs = Parameters<typeof completeSimple>;
+
+interface NativeClassifierProvider {
+  streamSimple(
+    model: CompleteSimpleArgs[0],
+    context: CompleteSimpleArgs[1],
+    options: CompleteSimpleArgs[2],
+  ): { result(): ReturnType<typeof completeSimple> };
+}
+
+// Newer Pi runtimes expose their effective provider directly. Older supported
+// versions register custom stream implementations in pi-ai/compat instead.
+const nativeProvider = (
+  context: ExtensionContext,
+  providerId: string,
+): NativeClassifierProvider | undefined => {
+  const registry = context.modelRegistry as typeof context.modelRegistry & {
+    getProvider?(provider: string): NativeClassifierProvider | undefined;
+  };
+  return registry.getProvider?.(providerId);
+};
+
+const completeWithPiProvider = (
+  context: ExtensionContext,
+  model: CompleteSimpleArgs[0],
+  request: CompleteSimpleArgs[1],
+  options: CompleteSimpleArgs[2],
+) => {
+  const provider = nativeProvider(context, model.provider);
+  return provider
+    ? provider.streamSimple(model, request, options).result()
+    : completeSimple(model, request, options);
+};
+
 const configuredModel = (context: ExtensionContext, modelKey?: string) => {
   if (!modelKey) return context.model;
   const separator = modelKey.indexOf("/");
@@ -114,7 +148,8 @@ export class FabricAutoApprovalClassifier {
     }
     const auth = await context.modelRegistry.getApiKeyAndHeaders(model);
     if (!auth.ok) throw new Error(auth.error);
-    const response = await completeSimple(
+    const response = await completeWithPiProvider(
+      context,
       model,
       {
         systemPrompt: CLASSIFIER_SYSTEM_PROMPT,

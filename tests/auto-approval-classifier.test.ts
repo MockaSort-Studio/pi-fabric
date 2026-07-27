@@ -116,6 +116,47 @@ describe("FabricAutoApprovalClassifier", () => {
     });
   });
 
+  it("dispatches custom APIs through Pi's native provider runtime", async () => {
+    const customModel = {
+      ...model,
+      provider: "custom-provider",
+      id: "custom-classifier",
+      api: "neuralwatt",
+      reasoning: false,
+    };
+    const providerResult = vi.fn(async () => ({
+      stopReason: "toolUse",
+      content: [{
+        type: "toolCall",
+        id: "decision",
+        name: "classify_result",
+        arguments: { decision: "allow", reason: "Provider-native verdict" },
+      }],
+      usage,
+    }));
+    const streamSimple = vi.fn(() => ({ result: providerResult }));
+    const getProvider = vi.fn(() => ({ streamSimple }));
+    const ctx = context();
+    Object.assign(ctx, { model: customModel });
+    Object.assign(ctx.modelRegistry, { getProvider });
+
+    const result = await new FabricAutoApprovalClassifier().classify(
+      action,
+      { command: "pnpm test" },
+      ctx,
+    );
+
+    expect(result.model).toBe("custom-provider/custom-classifier");
+    expect(getProvider).toHaveBeenCalledWith("custom-provider");
+    expect(streamSimple).toHaveBeenCalledWith(
+      customModel,
+      expect.objectContaining({ tools: [expect.objectContaining({ name: "classify_result" })] }),
+      expect.objectContaining({ apiKey: "secret", maxTokens: 512 }),
+    );
+    expect(providerResult).toHaveBeenCalledOnce();
+    expect(completeSimple).not.toHaveBeenCalled();
+  });
+
   it("fails closed when structured output is missing", async () => {
     completeSimple.mockResolvedValue({
       stopReason: "stop",
