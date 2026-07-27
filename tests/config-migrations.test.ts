@@ -154,10 +154,11 @@ describe("Fabric configuration migrations", () => {
   it("preserves existing file permissions during migration", () => {
     const paths = fixture();
     fs.writeFileSync(paths.globalPath, JSON.stringify({ agents: { maxConcurrent: 5 } }), { mode: 0o640 });
+    const mode = fs.statSync(paths.globalPath).mode & 0o777;
 
     loadFabricConfig({ cwd: paths.cwd, agentDir: paths.agentDir, projectTrusted: false });
 
-    expect(fs.statSync(paths.globalPath).mode & 0o777).toBe(0o640);
+    expect(fs.statSync(paths.globalPath).mode & 0o777).toBe(mode);
   });
 
   it("tolerates unsupported directory fsync operations", () => {
