@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CURRENT_FABRIC_CONFIG_VERSION,
   migrateFabricConfigDocument,
@@ -26,6 +26,7 @@ const fixture = () => {
 };
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -157,6 +158,26 @@ describe("Fabric configuration migrations", () => {
     loadFabricConfig({ cwd: paths.cwd, agentDir: paths.agentDir, projectTrusted: false });
 
     expect(fs.statSync(paths.globalPath).mode & 0o777).toBe(0o640);
+  });
+
+  it("tolerates unsupported directory fsync operations", () => {
+    const paths = fixture();
+    const fsyncSync = fs.fsyncSync.bind(fs);
+    vi.spyOn(fs, "fsyncSync").mockImplementation((descriptor) => {
+      if (fs.fstatSync(descriptor).isDirectory()) {
+        throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+      }
+      fsyncSync(descriptor);
+    });
+
+    saveFabricConfig(
+      { cwd: paths.cwd, agentDir: paths.agentDir, projectTrusted: true },
+      { agents: { maxConcurrent: 7 } },
+    );
+
+    expect(JSON.parse(fs.readFileSync(paths.projectPath, "utf8"))).toMatchObject({
+      agents: { maxConcurrent: 7 },
+    });
   });
 
   it("rejects obsolete or caller-controlled migration metadata on save", () => {

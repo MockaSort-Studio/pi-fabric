@@ -918,7 +918,7 @@ const writeJsonAtomic = (
       }
     } catch (error) {
       const code = error instanceof Error && "code" in error ? error.code : undefined;
-      if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EISDIR") throw error;
+      if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EISDIR" && code !== "EPERM") throw error;
     }
   } catch (error) {
     if (descriptor !== undefined) fs.closeSync(descriptor);
