@@ -1,3 +1,4 @@
+import type { FabricPrewalkMode } from "../config.js";
 import type { FabricCallAudit } from "../core/action-registry.js";
 
 const PREWALK_TRIGGER_REFS = new Set([
@@ -7,6 +8,7 @@ const PREWALK_TRIGGER_REFS = new Set([
 ]);
 
 interface FabricPrewalkArm {
+  mode: FabricPrewalkMode;
   model: string;
   sessionId: string;
   armedAt: number;
@@ -37,6 +39,7 @@ export class PrewalkController {
 
   arm(input: {
     model: string;
+    mode?: FabricPrewalkMode;
     sessionId: string;
     task?: string;
     alwaysRearm?: boolean;
@@ -46,6 +49,7 @@ export class PrewalkController {
     const task = normalizedTask(input.task);
     this.#status = {
       state: "armed",
+      mode: input.mode ?? "in-place",
       model,
       sessionId: input.sessionId,
       armedAt: Date.now(),
@@ -95,6 +99,7 @@ export class PrewalkController {
     }
     this.#status = {
       state: "armed",
+      mode: this.#status.mode,
       model: this.#status.model,
       sessionId: this.#status.sessionId,
       armedAt: Date.now(),
@@ -114,6 +119,7 @@ export class PrewalkController {
     );
     if (!mutation) return undefined;
     const arm: FabricPrewalkArm = {
+      mode: this.#status.mode,
       model: this.#status.model,
       sessionId: this.#status.sessionId,
       armedAt: this.#status.armedAt,

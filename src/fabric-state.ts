@@ -569,8 +569,18 @@ export class FabricState {
     execution: FabricExecutionResult,
     sessionId: string,
     resultFormat: FabricResultFormat,
+    outerToolCallId: string,
   ): PendingFabricHandoff | undefined {
-    return claimFabricHandoff(this.prewalk, execution, sessionId, resultFormat);
+    const pending = claimFabricHandoff(this.prewalk, execution, sessionId, resultFormat);
+    if (pending) {
+      this.activity.resume(outerToolCallId);
+      this.activity.beginCall(outerToolCallId, {
+        callId: pending.audit.nestedToolCallId,
+        ref: pending.audit.ref,
+        args: pending.args,
+      });
+    }
+    return pending;
   }
 
   async runHandoffAtBoundary(
@@ -579,13 +589,27 @@ export class FabricState {
     context: ExtensionContext,
   ): Promise<Record<string, unknown>> {
     if (!this.#agentsProvider) throw new Error("Pi Fabric has not initialized");
-    return runFabricHandoffAtBoundary(
+    const runId = outerToolResult.toolCallId;
+    const callId = pending.audit.nestedToolCallId;
+    const result = await runFabricHandoffAtBoundary(
       this.prewalk,
       this.#agentsProvider,
+      this.pi,
       pending,
       outerToolResult,
       context,
+      (update) => this.activity.updateCall(runId, callId, update),
     );
+    const succeeded = result.completed === true || result.continued === true;
+    const error = typeof result.error === "string" ? result.error : undefined;
+    this.activity.finishCall(runId, callId, {
+      success: succeeded,
+      result,
+      ...(pending.audit.preview !== undefined ? { preview: pending.audit.preview } : {}),
+      ...(error ? { error } : {}),
+    });
+    this.activity.finish(runId, succeeded, error);
+    return result;
   }
 
   noteMainActivity(context: ExtensionContext): void {

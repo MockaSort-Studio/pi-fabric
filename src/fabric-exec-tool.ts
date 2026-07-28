@@ -676,6 +676,7 @@ export const createFabricExecTool = (
         result,
         context.sessionManager.getSessionId(),
         selectedResultFormat,
+        toolCallId,
       );
       if (pendingHandoff) {
         pendingHandoffs.set(toolCallId, pendingHandoff);

@@ -70,7 +70,7 @@ Inside the guest, `agents.handoff()` resolves to `{ scheduled: true, status: "de
 
 ### Automatic Fabric-boundary prewalk
 
-`/fabric prewalk` is Fabric's automatic, prompt-free adaptation of Can Bölük's [Prewalk research](https://stencil.so/blog/prewalk), whose public in-place implementation ships in [oh-my-pi's `AgentSession`](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/src/session/agent-session.ts). Stencil and OMP use a todo-gated first edit/write as the exact model-switch boundary. Fabric intentionally uses a coarser atomic unit: the first successful monitored mutation marks the current outer `fabric_exec` for handoff, but every remaining call in that Fabric program still runs before the executor starts. This preserves Fabric's programmable multi-call transaction at the cost of literal one-edit equivalence. The published Prewalk benchmark results therefore describe the original mechanism, not this adaptation.
+`/fabric prewalk` is Fabric's automatic adaptation of Can Bölük's [Prewalk research](https://stencil.so/blog/prewalk). OMP switches models inside one live agent loop at the first todo-gated edit/write. Fabric keeps its coarser atomic boundary: the first successful monitored mutation marks the current outer `fabric_exec`, but every remaining nested call still settles before prewalk continues. This preserves programmable sequential and parallel Fabric semantics.
 
 ```text
 /fabric prewalk
@@ -79,21 +79,20 @@ Inside the guest, `agents.handoff()` resolves to `{ scheduled: true, status: "de
 /fabric prewalk --off
 ```
 
-With a task, Fabric arms prewalk and submits that task to Main immediately. Without one, it captures the next user input as the task. The dedicated `prewalk.model` setting is the executor; set it under `/fabric settings` → **Prewalk**. Enable **Always re-arm** there to keep prewalk armed for successive tasks until `/fabric prewalk --off` is used. When unset in an interactive session, Fabric asks the user to choose a Pi model while arming. Non-interactive sessions must configure `prewalk.model` first.
+With a task, Fabric arms prewalk and submits it to Main immediately. Without one, it captures the next user input. Configure the executor under `/fabric settings` → **Prewalk**. **Always re-arm** captures successive tasks until `/fabric prewalk --off`.
 
-Prewalk adds no system-prompt instructions. The host watches resolved Fabric actions for at least one successful `pi.edit`, `pi.write`, or `schema.commit`. A match makes that outer invocation eligible, but it does not abort, serialize, or suppress any later nested call. The complete sequential or parallel program runs with ordinary Fabric semantics, and the handoff is claimed only after execution settles.
+The default `prewalk.mode` is `"in-place"`:
 
-The host then issues a static handoff call without asking Main to invoke it:
+1. Fabric observes a successful `pi.edit`, `pi.write`, or `schema.commit` and lets the complete outer program settle.
+2. At the finalized outer result boundary, it selects `prewalk.model` on Main.
+3. It queues a hidden follow-up telling Main to continue the existing task, finish remaining implementation, check matching call sites, and run verification.
+4. The terminating outer tool suppresses an automatic turn on the old model; Pi drains the queued follow-up and continues the same Main session on the executor model.
 
-1. Claims the prewalk after the Fabric program settles, disarming it unless **Always re-arm** is enabled.
-2. Lets Pi finalize all outer `tool_result` middleware.
-3. Forks the native assistant `fabric_exec` call plus its exact native result.
-4. Spawns the selected executor in the shared workspace and waits.
-5. Replaces Main's visible tool result with the executor completion.
+In-place mode does not spawn a child, does not fork the transcript, and does not require `agents.enabled`. Pi's public extension model switch currently records the model in the session and updates Pi's default model setting; the executor therefore remains selected after prewalk. Switching can fail before continuation if the model is unavailable or unauthenticated, in which case the outer result clearly reports the failure and Main remains idle.
 
-The outer tool is already marked `terminate: true` when the request is staged, so Main performs no automatic post-tool inference. A handoff failure is likewise terminal for that outer invocation and is returned as its failed result. If the captured task settles without a monitored trigger, prewalk disarms instead of leaking into the next task; with **Always re-arm**, it instead clears the completed task and captures the next input; an arm with no captured task keeps waiting for the next user input. An explicit successful `agents.handoff()` suppresses the automatic duplicate. Prewalk currently requires enabled agents and full code mode, and is unavailable in Schema enforce mode.
+Set `prewalk.mode` to `"trajectory"` to opt into the former child-based behavior. Fabric forks the exact finalized outer call/result into a Pi child, starts the selected executor in the shared workspace, and waits. Main intentionally remains idle after that child finishes. The parent Fabric card and activity UI show the synthetic `agents.handoff` call, child identity, live status/current tool, nested preview, metrics, and terminal result, so the wait is not silent. Trajectory mode requires enabled agents and remains the behavior of explicit `agents.handoff()`.
 
-`runner` is `"pi"` or `"claude"` and defaults to `agents.runner` (`"pi"`). Pi children use `agents.model` or inherit the parent model unless `model` is specified. Claude children use `agents.claude.model` or Claude Code's own runtime default. Their tool allowlist defaults to `agents.defaultTools`. Reasoning effort defaults to `agents.thinking` (`medium`); Pi clamps it to model support, while Claude forwards it through `--effort` (`off`/`minimal` map to `low`).
+Prewalk adds no system-prompt instructions. Its hidden continuation is queued only after a matching mutation boundary; it is not an open-ended per-turn nudge. If a captured task settles without a monitored trigger, prewalk disarms instead of leaking into the next task. An explicit successful `agents.handoff()` takes precedence over automatic prewalk. Both modes require full code mode and are unavailable in Schema enforce mode.
 
 ### Claude Code runner
 

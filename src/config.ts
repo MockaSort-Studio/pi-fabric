@@ -20,6 +20,7 @@ export type FabricAgentTransport =
 export type FabricAgentRunner = "pi" | "claude";
 export type FabricUiWidgetMode = "auto" | "always" | "hidden";
 export type FabricResultFormat = "auto" | "yaml" | "json" | "text";
+export type FabricPrewalkMode = "in-place" | "trajectory";
 export type FabricExecutorRuntime = "quickjs" | "node-process";
 type FabricCompactionEngine = "pi" | "fabric";
 type FabricActorScope = "project" | "session";
@@ -56,6 +57,7 @@ interface FabricClaudeRunnerConfig {
 }
 
 interface FabricPrewalkConfig {
+  mode: FabricPrewalkMode;
   model?: string;
   alwaysRearm: boolean;
 }
@@ -212,6 +214,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     callTimeoutMs: 120_000,
   },
   prewalk: {
+    mode: "in-place",
     alwaysRearm: false,
   },
   agents: {
@@ -374,6 +377,12 @@ const stringValue = (value: unknown): string | undefined =>
 
 const runnerValue = (value: unknown, fallback: FabricAgentRunner): FabricAgentRunner =>
   value === "pi" || value === "claude" ? value : fallback;
+
+const prewalkModeValue = (
+  value: unknown,
+  fallback: FabricPrewalkMode,
+): FabricPrewalkMode =>
+  value === "in-place" || value === "trajectory" ? value : fallback;
 
 const transportValue = (
   value: unknown,
@@ -558,6 +567,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       ),
     },
     prewalk: {
+      mode: prewalkModeValue(prewalk.mode, DEFAULT_FABRIC_CONFIG.prewalk.mode),
       ...(prewalkModel ? { model: prewalkModel } : {}),
       alwaysRearm: booleanValue(
         prewalk.alwaysRearm,

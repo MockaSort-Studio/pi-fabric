@@ -65,6 +65,7 @@ const CORE_DEFAULT_TOOL_CANDIDATES = ["read", "bash", "edit", "write", "grep", "
 const BUDGET_VALUES = [0, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10];
 const TOKEN_VALUES = [0, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_000_000];
 const PREWALK_MODEL_UNSET_LABEL = "Ask each time";
+const PREWALK_MODES = ["in-place", "trajectory"] as const;
 const ROOT_ITEM_IDS = [
   "fullCodeMode",
   "executor",
@@ -252,7 +253,7 @@ const summaryFor = (id: string, config: FabricConfig): string => {
     case "mcp":
       return config.mcp.enabled ? "enabled" : "disabled";
     case "prewalk":
-      return `${config.prewalk.model || PREWALK_MODEL_UNSET_LABEL}${config.prewalk.alwaysRearm ? " · repeat" : ""}`;
+      return `${config.prewalk.mode} · ${config.prewalk.model || PREWALK_MODEL_UNSET_LABEL}${config.prewalk.alwaysRearm ? " · repeat" : ""}`;
     case "agents":
       return `${config.agents.runner}/${config.agents.transport}`;
     case "capture":
@@ -728,19 +729,24 @@ export const buildFabricSettingsItems = (
       ),
     }),
     setting("prewalk", "Prewalk", summaryFor("prewalk", config), {
-      description: "Trajectory handoff at the completed outer fabric_exec boundary.",
+      description: "Continue Main in place or opt into a child trajectory handoff at the completed fabric_exec boundary.",
       submenu: sectionSubmenu(
         theme,
         "Prewalk",
-        "Automatic handoff at the completed outer fabric_exec boundary.",
+        "Automatic continuation at the completed outer fabric_exec boundary.",
         [
+          setting("prewalk.mode", "Mode", config.prewalk.mode, {
+            description:
+              "In-place switches Main, retains that model, and queues a hidden continuation. Trajectory moves the session snapshot to a visible child executor and leaves Main idle when it finishes.",
+            values: PREWALK_MODES,
+          }),
           setting(
             "prewalk.alwaysRearm",
             "Always re-arm",
             config.prewalk.alwaysRearm ? "true" : "false",
             {
               description:
-                "After a task settles or hands off, arm prewalk again for the next user task until explicitly cancelled.",
+                "After a task settles or continues, arm prewalk again for the next user task until explicitly cancelled.",
               values: BOOLEANS,
             },
           ),
@@ -750,13 +756,13 @@ export const buildFabricSettingsItems = (
             config.prewalk.model || PREWALK_MODEL_UNSET_LABEL,
             {
               description:
-                "Pi provider/model used by /fabric prewalk. Ask each time opens the model picker when arming and is unavailable in non-interactive mode.",
+                "Pi provider/model used by /fabric prewalk. In-place selects it for Main; trajectory uses it for the child executor. Ask each time is interactive only.",
               submenu: modelPickerSubmenu(
                 theme,
                 options.modelSource,
                 {
                   headerText:
-                    "Executor model for automatic /fabric prewalk handoffs. Pick Ask each time to open the model picker for every prewalk.",
+                    "Executor model for automatic /fabric prewalk continuation. Pick Ask each time to open the model picker for every prewalk.",
                   inheritLabel: PREWALK_MODEL_UNSET_LABEL,
                   inheritName: "Open the model picker whenever prewalk is armed",
                 },

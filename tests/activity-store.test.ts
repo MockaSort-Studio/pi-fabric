@@ -168,6 +168,41 @@ describe("FabricActivityStore", () => {
     expect(store.get("bounded")).toBeUndefined();
   });
 
+  it("reopens a completed run for boundary continuation activity", () => {
+    const store = new FabricActivityStore();
+    store.start("run-boundary");
+    store.beginCall("run-boundary", {
+      callId: "prewalk",
+      ref: "agents.handoff",
+      args: { name: "Deferred handoff" },
+    });
+    store.finishCall("run-boundary", "prewalk", {
+      success: true,
+      result: { status: "deferred" },
+    });
+    store.finish("run-boundary", true);
+
+    store.resume("run-boundary");
+    store.beginCall("run-boundary", {
+      callId: "prewalk",
+      ref: "agents.handoff",
+      args: { name: "Prewalk trajectory executor" },
+    });
+    store.updateCall("run-boundary", "prewalk", {
+      type: "entity",
+      id: "child-1",
+      kind: "agent",
+      name: "Prewalk trajectory executor",
+    });
+
+    const resumed = store.get("run-boundary");
+    expect(resumed).toMatchObject({
+      status: "running",
+      calls: [{ status: "running", entityId: "child-1", entityKind: "agent" }],
+    });
+    expect(resumed).not.toHaveProperty("finishedAt");
+  });
+
   it("marks failed calls and cancelled executions", () => {
     const store = new FabricActivityStore();
     store.start("run-2");

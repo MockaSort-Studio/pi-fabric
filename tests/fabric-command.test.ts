@@ -58,7 +58,7 @@ describe("/fabric command", () => {
       config: {
         fullCodeMode: true,
         schema: { mode: "off" },
-        prewalk: { model: "anthropic/executor" },
+        prewalk: { mode: "in-place", model: "anthropic/executor" },
         agents: { enabled: true },
       },
       prewalk: { arm, status: vi.fn(), cancel: vi.fn() },
@@ -79,6 +79,7 @@ describe("/fabric command", () => {
 
     expect(arm).toHaveBeenCalledWith({
       model: "anthropic/executor",
+      mode: "in-place",
       sessionId: "session-1",
       task: "Implement the token guard",
     });
@@ -100,7 +101,7 @@ describe("/fabric command", () => {
       config: {
         fullCodeMode: true,
         schema: { mode: "off" },
-        prewalk: {},
+        prewalk: { mode: "in-place" },
         agents: { enabled: true },
       },
       prewalk: { arm, status: vi.fn(), cancel: vi.fn() },
@@ -132,6 +133,7 @@ describe("/fabric command", () => {
     ]);
     expect(arm).toHaveBeenCalledWith({
       model: "openai/executor",
+      mode: "in-place",
       sessionId: "session-1",
     });
   });

@@ -238,18 +238,21 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           context.ui.notify(
             status.state === "idle"
               ? "Fabric prewalk is idle"
-              : `Fabric prewalk ${status.state} → ${status.model}${status.task ? `\nTask: ${status.task}` : ""}`,
+              : `Fabric prewalk ${status.state} (${status.mode}) → ${status.model}${status.task ? `\nTask: ${status.task}` : ""}`,
             "info",
           );
           return;
         }
-        if (
-          !state.config.fullCodeMode ||
-          state.config.schema.mode === "enforce" ||
-          !state.config.agents.enabled
-        ) {
+        if (!state.config.fullCodeMode || state.config.schema.mode === "enforce") {
           context.ui.notify(
-            "Fabric prewalk requires enabled agents, full code mode, and Schema enforce mode disabled.",
+            "Fabric prewalk requires full code mode and Schema enforce mode disabled.",
+            "error",
+          );
+          return;
+        }
+        if (state.config.prewalk.mode === "trajectory" && !state.config.agents.enabled) {
+          context.ui.notify(
+            "Trajectory prewalk requires enabled agents. Choose in-place mode or enable agents.",
             "error",
           );
           return;
@@ -259,15 +262,23 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         const task = argumentsText.trim().slice(command.length).trim();
         state.prewalk.arm({
           model,
+          mode: state.config.prewalk.mode,
           sessionId: context.sessionManager.getSessionId(),
           ...(task ? { task } : {}),
           alwaysRearm: state.config.prewalk.alwaysRearm,
         });
-        context.ui.setStatus("fabric-prewalk", `armed → ${model}`);
+        context.ui.setStatus(
+          "fabric-prewalk",
+          `armed (${state.config.prewalk.mode}) → ${model}`,
+        );
+        const modeLabel =
+          state.config.prewalk.mode === "in-place"
+            ? "Main will continue in place"
+            : "the trajectory will move to a visible child executor";
         context.ui.notify(
           task
-            ? `Fabric prewalk armed for the next matching Fabric boundary; starting task with executor ${model}${state.config.prewalk.alwaysRearm ? "; always re-arm enabled" : ""}`
-            : `Fabric prewalk armed for the next task; executor ${model}${state.config.prewalk.alwaysRearm ? "; always re-arm enabled" : ""}`,
+            ? `Fabric prewalk armed for the next matching Fabric boundary; ${modeLabel} with ${model}${state.config.prewalk.alwaysRearm ? "; always re-arm enabled" : ""}`
+            : `Fabric prewalk armed for the next task; ${modeLabel} with ${model}${state.config.prewalk.alwaysRearm ? "; always re-arm enabled" : ""}`,
           "info",
         );
         if (task) pi.sendUserMessage(task);
@@ -645,8 +656,8 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           (() => {
             const prewalk = state.prewalk.status();
             return prewalk.state === "idle"
-              ? `prewalk: idle · model ${config.prewalk.model || "Ask each time"} · always re-arm ${config.prewalk.alwaysRearm ? "on" : "off"}`
-              : `prewalk: ${prewalk.state} → ${prewalk.model}${prewalk.alwaysRearm ? " · always re-arm" : ""}`;
+              ? `prewalk: idle · ${config.prewalk.mode} · model ${config.prewalk.model || "Ask each time"} · always re-arm ${config.prewalk.alwaysRearm ? "on" : "off"}`
+              : `prewalk: ${prewalk.state} · ${prewalk.mode} → ${prewalk.model}${prewalk.alwaysRearm ? " · always re-arm" : ""}`;
           })(),
           config.fullCodeMode && config.capture.enabled
             ? `captured tools: ${capturedTools.size} · model visibility: ${config.capture.hideFromModel ? "hidden" : "visible"}`

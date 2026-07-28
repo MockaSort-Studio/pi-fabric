@@ -355,19 +355,20 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       formatted.text || "(no output)",
       state.config.executor.maxOutputChars,
     );
+    const boundarySucceeded = handoff.completed === true || handoff.continued === true;
     const details =
       typeof event.message.details === "object" &&
       event.message.details !== null &&
       !Array.isArray(event.message.details) &&
       "success" in event.message.details
-        ? { ...event.message.details, success: handoff.completed === true }
+        ? { ...event.message.details, success: boundarySucceeded }
         : event.message.details;
     return {
       message: {
         ...event.message,
         content: [{ type: "text", text: output }],
         details,
-        isError: handoff.completed !== true,
+        isError: !boundarySucceeded,
       },
     };
   });

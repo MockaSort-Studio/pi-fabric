@@ -1,12 +1,16 @@
-import { SessionManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  SessionManager,
+  type ExtensionAPI,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
+import type { AgentToolResultMessage } from "../src/agents/types.js";
 import type { FabricExecutionResult } from "../src/execution-service.js";
 import { PrewalkController } from "../src/prewalk/controller.js";
 import {
   claimFabricHandoff,
   runFabricHandoffAtBoundary,
 } from "../src/prewalk/handoff.js";
-import type { AgentToolResultMessage } from "../src/agents/types.js";
 
 const execution = (): FabricExecutionResult => ({
   success: true,
@@ -77,9 +81,7 @@ const context = () => {
       type: "toolCall",
       id: "outer",
       name: "fabric_exec",
-      arguments: {
-        code: "await pi.edit(...); await pi.write(...); return 'complete outer result';",
-      },
+      arguments: { code: "await pi.edit(...); return 'complete outer result';" },
     }],
     api: "anthropic",
     provider: "anthropic",
@@ -95,21 +97,39 @@ const context = () => {
     stopReason: "toolUse",
     timestamp: 2,
   });
+  const target = { provider: "anthropic", id: "executor" };
   const setStatus = vi.fn();
   return {
     value: {
       cwd: process.cwd(),
       signal: undefined,
       model: { provider: "anthropic", id: "frontier" },
+      modelRegistry: {
+        find: (provider: string, id: string) =>
+          provider === target.provider && id === target.id ? target : undefined,
+      },
       sessionManager: source,
-      ui: { setStatus },
+      ui: { setStatus, notify: vi.fn() },
     } as unknown as ExtensionContext,
     setStatus,
+    target,
   };
 };
 
-describe("outer-boundary Prewalk handoff", () => {
-  it("claims after the complete execution and forks the native outer result", async () => {
+const extension = () => {
+  const setModel = vi.fn().mockResolvedValue(true);
+  const sendMessage = vi.fn();
+  return {
+    value: { setModel, sendMessage } as unknown as ExtensionAPI,
+    setModel,
+    sendMessage,
+  };
+};
+
+const unusedRunner = () => ({ executeHandoff: vi.fn() });
+
+describe("outer-boundary Prewalk", () => {
+  it("switches Main in place and queues a hidden follow-up by default", async () => {
     const controller = new PrewalkController();
     controller.arm({
       model: "anthropic/executor",
@@ -123,22 +143,85 @@ describe("outer-boundary Prewalk handoff", () => {
       "pi.read",
       "pi.edit",
       "pi.write",
-      "agents.handoff",
+      "fabric.prewalk",
     ]);
     expect(pending).toMatchObject({
-      kind: "prewalk",
+      kind: "prewalk-in-place",
       args: { model: "anthropic/executor", task: "Implement the guard" },
       triggerRef: "pi.edit",
-      resultFormat: "json",
     });
-    expect(controller.status()).toMatchObject({ state: "handing_off" });
 
     const ctx = context();
+    const ext = extension();
+    const runner = unusedRunner();
+    const activity = vi.fn();
+    const result = await runFabricHandoffAtBoundary(
+      controller,
+      runner,
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+      activity,
+    );
+
+    expect(runner.executeHandoff).not.toHaveBeenCalled();
+    expect(ext.setModel).toHaveBeenCalledWith(ctx.target);
+    expect(ctx.value.ui.notify).toHaveBeenCalledWith(
+      "Prewalk continuing Main in place with anthropic/executor. Pi will retain this model after the task.",
+      "info",
+    );
+    expect(ext.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customType: "pi-fabric-prewalk-continue",
+        display: false,
+        content: expect.stringContaining("Continue the existing task"),
+      }),
+      { deliverAs: "followUp", triggerTurn: true },
+    );
+    expect(result).toMatchObject({
+      prewalk: true,
+      mode: "in-place",
+      continued: true,
+      status: "continued",
+      trigger: { ref: "pi.edit" },
+    });
+    expect(activity).toHaveBeenCalledWith(expect.objectContaining({ type: "progress" }));
+    expect(controller.status()).toEqual({ state: "idle" });
+    expect(ctx.setStatus).toHaveBeenLastCalledWith(
+      "fabric-prewalk",
+      "continuing Main → anthropic/executor",
+    );
+  });
+
+  it("keeps trajectory handoff opt-in and exposes child activity", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      mode: "trajectory",
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "auto");
+    expect(pending).toMatchObject({
+      kind: "prewalk-trajectory",
+      audit: { ref: "agents.handoff" },
+    });
+
+    const ctx = context();
+    const ext = extension();
     let transferredSeed: unknown;
     const runner = {
       executeHandoff: vi.fn(async (_args, invocation, seed) => {
         transferredSeed = seed;
-        invocation.attachPreview?.({ kind: "fabric-agent-tools", name: "Prewalk executor" });
+        invocation.activity?.({
+          type: "entity",
+          id: "child-1",
+          kind: "agent",
+          name: "Prewalk trajectory executor",
+        });
+        invocation.update("Agent Prewalk trajectory executor: running · edit");
+        invocation.attachPreview?.({ kind: "fabric-agent-tools" });
         return {
           handedOff: true,
           completed: true,
@@ -148,54 +231,50 @@ describe("outer-boundary Prewalk handoff", () => {
         };
       }),
     };
+    const activity = vi.fn();
     const result = await runFabricHandoffAtBoundary(
       controller,
       runner,
+      ext.value,
       pending!,
       outerResult(),
       ctx.value,
+      activity,
     );
 
+    expect(ext.setModel).not.toHaveBeenCalled();
     expect(runner.executeHandoff).toHaveBeenCalledWith(
       {
         model: "anthropic/executor",
-        name: "Prewalk executor",
+        name: "Prewalk trajectory executor",
         task: "Implement the guard",
       },
-      expect.objectContaining({ parentToolCallId: "outer" }),
+      expect.objectContaining({ parentToolCallId: "outer", activity: expect.any(Function) }),
       expect.any(Object),
     );
     expect(transferredSeed).toMatchObject({
-      sourceBranchLeafId: expect.any(String),
       sourceBranch: [
         { type: "message", message: { role: "user" } },
-        {
-          type: "message",
-          message: {
-            role: "assistant",
-            content: [{ type: "toolCall", id: "outer", name: "fabric_exec" }],
-          },
-        },
+        { type: "message", message: { role: "assistant" } },
       ],
-      outerToolResult: {
-        role: "toolResult",
-        toolCallId: "outer",
-        toolName: "fabric_exec",
-        content: [{ type: "text", text: "complete outer result" }],
-      },
+      outerToolResult: { toolCallId: "outer", toolName: "fabric_exec" },
     });
+    expect(activity).toHaveBeenCalledWith(expect.objectContaining({ type: "entity", id: "child-1" }));
+    expect(activity).toHaveBeenCalledWith(expect.objectContaining({ type: "progress" }));
     expect(result).toMatchObject({
       prewalk: true,
+      mode: "trajectory",
       handedOff: true,
       completed: true,
-      trigger: { ref: "pi.edit" },
       implementation: "implemented",
     });
-    expect(controller.status()).toEqual({ state: "idle" });
-    expect(ctx.setStatus).toHaveBeenLastCalledWith("fabric-prewalk", "handoff implemented");
+    expect(ctx.setStatus).toHaveBeenLastCalledWith(
+      "fabric-prewalk",
+      "trajectory executor implemented",
+    );
   });
 
-  it("re-arms after a handoff when always re-arm is enabled", async () => {
+  it("re-arms after an in-place continuation when configured", async () => {
     const controller = new PrewalkController();
     controller.arm({
       model: "anthropic/executor",
@@ -205,16 +284,10 @@ describe("outer-boundary Prewalk handoff", () => {
     });
     const pending = claimFabricHandoff(controller, execution(), "session-1", "auto");
     const ctx = context();
-
     await runFabricHandoffAtBoundary(
       controller,
-      {
-        executeHandoff: vi.fn(async () => ({
-          handedOff: true,
-          completed: true,
-          status: "completed",
-        })),
-      },
+      unusedRunner(),
+      extension().value,
       pending!,
       outerResult(),
       ctx.value,
@@ -222,6 +295,7 @@ describe("outer-boundary Prewalk handoff", () => {
 
     expect(controller.status()).toMatchObject({
       state: "armed",
+      mode: "in-place",
       model: "anthropic/executor",
       alwaysRearm: true,
     });
@@ -232,7 +306,7 @@ describe("outer-boundary Prewalk handoff", () => {
     );
   });
 
-  it("gives an explicit deferred request precedence over automatic Prewalk", () => {
+  it("gives an explicit deferred trajectory request precedence", () => {
     const controller = new PrewalkController();
     controller.arm({ model: "anthropic/automatic", sessionId: "session-1" });
     const run = execution();
@@ -245,20 +319,16 @@ describe("outer-boundary Prewalk handoff", () => {
       args: { model: "anthropic/explicit" },
       result: { status: "deferred" },
     });
-    run.handoffRequest = {
-      model: "anthropic/explicit",
-      task: "Use explicit executor",
-    };
+    run.handoffRequest = { model: "anthropic/explicit", task: "Use explicit executor" };
 
     expect(claimFabricHandoff(controller, run, "session-1", "auto")).toMatchObject({
       kind: "explicit",
       args: { model: "anthropic/explicit", task: "Use explicit executor" },
-      audit: { nestedToolCallId: "explicit" },
     });
     expect(controller.status()).toEqual({ state: "idle" });
   });
 
-  it("does not claim an automatic handoff when the complete execution had no mutation", () => {
+  it("does not claim when the complete execution had no mutation", () => {
     const controller = new PrewalkController();
     controller.arm({ model: "anthropic/executor", sessionId: "session-1" });
     const run = execution();

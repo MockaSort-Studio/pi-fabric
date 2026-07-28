@@ -56,6 +56,7 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
     "callTimeoutMs": 120000
   },
   "prewalk": {
+    "mode": "in-place",
     "alwaysRearm": false
   },
   "agents": {
@@ -109,20 +110,24 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
 
 ## Prewalk executor
 
-`prewalk.model` is the optional Pi `provider/model` used by `/fabric prewalk`. Set it under `/fabric settings` → **Prewalk** or in JSON:
+`prewalk.model` is the optional Pi `provider/model` selected by `/fabric prewalk`. `prewalk.mode` chooses how execution continues:
+
+- `"in-place"` (default) switches Main to the executor model and queues a hidden follow-up in the same session.
+- `"trajectory"` forks the finalized outer Fabric call/result to a visible Pi child and waits; Main is idle when the child finishes.
 
 ```json
 {
   "prewalk": {
+    "mode": "in-place",
     "model": "anthropic/claude-haiku-4-5",
     "alwaysRearm": true
   }
 }
 ```
 
-`prewalk.alwaysRearm` defaults to `false`. When enabled, an armed prewalk returns to an armed, taskless state after each handoff or settled task, capturing the next user input until `/fabric prewalk --off` is used.
+`prewalk.alwaysRearm` defaults to `false`. When enabled, prewalk returns to an armed, taskless state after each continuation or settled task. The settings UI labels an unset model **Ask each time**; non-interactive sessions must configure a model. In-place mode does not require child agents. Trajectory mode requires `agents.enabled` and exposes child spawn, progress, nested tools, metrics, and completion in Main's Fabric activity UI.
 
-The settings UI labels the unset model state **Ask each time**. In that state, interactive sessions choose a model while arming prewalk; non-interactive sessions reject the command. This setting is independent of `agents.model` so ordinary children and the automatic handoff executor can use different models.
+Pi's public `setModel` extension API persists the in-place executor as the active session model and updates Pi's default model setting. Fabric does not silently restore the planner model after the task.
 
 ## Result formatting
 

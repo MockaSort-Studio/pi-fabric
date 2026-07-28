@@ -346,7 +346,7 @@ describe("FabricSettingsComponent", () => {
       { keepVisibleCandidates: ["fabric_exec"], modelSource: fakeModelSource },
     );
     const prewalk = items.find((item) => item.id === "prewalk")!;
-    expect(prewalk.currentValue).toBe("Ask each time");
+    expect(prewalk.currentValue).toBe("in-place · Ask each time");
     const section = prewalk.submenu!("", () => {}) as any;
     const list = section.settingsList as any;
     list.selectedIndex = list.items.findIndex(
@@ -398,7 +398,7 @@ describe("FabricSettingsComponent", () => {
   it("exposes a dedicated prewalk executor model picker", () => {
     const config = {
       ...DEFAULT_FABRIC_CONFIG,
-      prewalk: { model: "anthropic/claude-sonnet-4-5", alwaysRearm: false },
+      prewalk: { mode: "in-place" as const, model: "anthropic/claude-sonnet-4-5", alwaysRearm: false },
     };
     const items = buildFabricSettingsItems(theme, config, () => {}, {
       keepVisibleCandidates: ["fabric_exec"],
@@ -407,6 +407,8 @@ describe("FabricSettingsComponent", () => {
     const prewalk = items.find((item) => item.id === "prewalk")!;
     const lines = prewalk.submenu!("", () => {}).render(100).join("\n");
 
+    expect(lines).toContain("Mode");
+    expect(lines).toContain("in-place");
     expect(lines).toContain("Always re-arm");
     expect(lines).toContain("Executor model ›");
     expect(lines).toContain("anthropic/claude-sonnet-4-5");
@@ -512,8 +514,9 @@ describe("FabricSettingsComponent", () => {
         reloadConfig: vi.fn(() => {
           const saved = JSON.parse(
             fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8"),
-          ) as { prewalk?: { model?: string; alwaysRearm?: boolean } };
+          ) as { prewalk?: { mode?: "in-place" | "trajectory"; model?: string; alwaysRearm?: boolean } };
           config.prewalk = {
+            mode: saved.prewalk?.mode ?? "in-place",
             ...(saved.prewalk?.model ? { model: saved.prewalk.model } : {}),
             alwaysRearm: saved.prewalk?.alwaysRearm === true,
           };
@@ -562,7 +565,7 @@ describe("FabricSettingsComponent", () => {
       expect(config.prewalk.model).toBe("anthropic/claude-sonnet-4-5");
       expect(
         rootList.items.find((item: { id: string }) => item.id === "prewalk").currentValue,
-      ).toBe("anthropic/claude-sonnet-4-5");
+      ).toBe("in-place · anthropic/claude-sonnet-4-5");
       expect(nestedList.items[nestedList.selectedIndex].currentValue).toBe(
         "anthropic/claude-sonnet-4-5",
       );

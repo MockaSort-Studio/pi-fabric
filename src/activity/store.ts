@@ -172,6 +172,15 @@ export class FabricActivityStore {
     return structuredClone(run);
   }
 
+  resume(runId: string): void {
+    const run = this.#require(runId);
+    run.status = "running";
+    run.updatedAt = Date.now();
+    delete run.finishedAt;
+    delete run.error;
+    this.#emit();
+  }
+
   configure(runId: string, display: FabricRunDisplay): FabricActivityRun {
     const run = this.#require(runId);
     const name = cleanText(display.name, MAX_NAME_CHARS);
@@ -327,6 +336,26 @@ export class FabricActivityStore {
     const now = Date.now();
     const index = this.#callIndex.get(runId) ?? new Map<string, FabricActivityCall>();
     this.#callIndex.set(runId, index);
+    const existing = index.get(input.callId);
+    if (existing) {
+      existing.ref = input.ref;
+      existing.label = labelForCall(input.ref, input.args);
+      existing.kind = kindForRef(input.ref);
+      existing.status = "running";
+      existing.args = boundedData(
+        input.args,
+        MAX_CALL_PAYLOAD_CHARS,
+      ) as Record<string, unknown>;
+      existing.updatedAt = now;
+      delete existing.finishedAt;
+      delete existing.result;
+      delete existing.error;
+      delete existing.detail;
+      delete existing.progress;
+      run.updatedAt = now;
+      this.#emit();
+      return;
+    }
     if (run.calls.length >= MAX_CALLS) {
       const removed = run.calls.splice(0, run.calls.length - MAX_CALLS + 1);
       for (const call of removed) index.delete(call.id);
