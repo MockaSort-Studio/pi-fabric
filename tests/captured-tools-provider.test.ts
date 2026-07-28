@@ -56,6 +56,7 @@ describe("CapturedToolsProvider", () => {
     const lifecycleEvents: string[] = [];
     const runner = {
       createContext: () => ({ cwd: "/captured-context" }),
+      getActiveTools: () => [],
       emit: vi.fn(async (event: { type: string }) => {
         lifecycleEvents.push(event.type);
       }),
@@ -127,6 +128,7 @@ describe("CapturedToolsProvider", () => {
     });
     const runner = {
       createContext: () => ({ cwd: process.cwd() }),
+      getActiveTools: () => [],
       emit: vi.fn(async () => {}),
       emitToolCall: vi.fn(async () => undefined),
       emitToolResult: vi.fn(async () => undefined),
@@ -175,6 +177,7 @@ describe("CapturedToolsProvider", () => {
     });
     const runner = {
       createContext: () => ({ cwd: process.cwd() }),
+      getActiveTools: () => [],
       emit: vi.fn(async () => {}),
       emitToolCall: vi.fn(async () => undefined),
       emitToolResult: vi.fn(async () => undefined),
@@ -250,6 +253,7 @@ describe("CapturedToolsProvider", () => {
     ];
     const runner = {
       createContext: () => ({ cwd: process.cwd() }),
+      getActiveTools: () => [],
       emit: vi.fn(async () => {}),
       emitToolCall: vi.fn(async () => undefined),
       emitToolResult: vi.fn(async () => undefined),

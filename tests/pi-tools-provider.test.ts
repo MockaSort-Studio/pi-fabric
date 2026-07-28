@@ -18,7 +18,13 @@ const baseContext = {
   signal: new AbortController().signal,
   parentToolCallId: "parent",
   nestedToolCallId: "fabric_test-nested",
-  extensionContext: { cwd: process.cwd() } as ExtensionContext,
+  extensionContext: {
+    cwd: process.cwd(),
+    sessionManager: {
+      getSessionId: () => "test-session",
+      getSessionFile: () => undefined,
+    },
+  } as unknown as ExtensionContext,
   update: vi.fn(),
   approve: vi.fn(async () => {}),
   audits: [],
@@ -28,6 +34,7 @@ const baseContext = {
 const makeRunner = (overrides: Record<string, unknown> = {}): ExtensionRunner =>
   ({
     createContext: () => ({ cwd: process.cwd() }),
+    getActiveTools: () => [],
     emit: vi.fn(async () => {}),
     emitToolCall: vi.fn(async () => undefined),
     emitToolResult: vi.fn(async () => undefined),
