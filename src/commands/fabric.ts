@@ -3,6 +3,11 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import type { CapturedToolCatalog } from "../capture/catalog.js";
 import type { FabricActorHostEvent } from "../actors/types.js";
 import type { FabricState } from "../fabric-state.js";
+import {
+  PREWALK_ARMED_MESSAGE_TYPE,
+  hasPrewalkArmedPrompt,
+  prewalkArmedPrompt,
+} from "../prewalk/handoff.js";
 import { truncateMiddle } from "../util.js";
 import type { FabricUiController } from "../ui/controller.js";
 import { openFabricSettings } from "../ui/settings.js";
@@ -267,6 +272,21 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           ...(task ? { task } : {}),
           alwaysRearm: state.config.prewalk.alwaysRearm,
         });
+        // Hidden advisory framing, queued for the next prompt (rules before
+        // the task when one is submitted below). nextTurn never triggers a
+        // turn; custom messages never fire `input`, so observeTask ignores it.
+        const armedPrompt = prewalkArmedPrompt(state.config.prewalk.mode, model);
+        if (!hasPrewalkArmedPrompt(context.sessionManager.getBranch(), armedPrompt)) {
+          pi.sendMessage(
+            {
+              customType: PREWALK_ARMED_MESSAGE_TYPE,
+              content: armedPrompt,
+              display: false,
+              details: { mode: state.config.prewalk.mode, model },
+            },
+            { deliverAs: "nextTurn" },
+          );
+        }
         context.ui.setStatus(
           "fabric-prewalk",
           `armed (${state.config.prewalk.mode}) → ${model}`,

@@ -2,6 +2,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { describe, expect, it, vi } from "vitest";
 import type { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { registerFabricCommand } from "../src/commands/fabric.js";
+import {
+  PREWALK_ARMED_MESSAGE_TYPE,
+  prewalkArmedPrompt,
+} from "../src/prewalk/handoff.js";
 import type { FabricState } from "../src/fabric-state.js";
 import type { FabricUiController } from "../src/ui/controller.js";
 
@@ -46,8 +50,10 @@ describe("/fabric command", () => {
   it("arms prewalk with the configured executor and submits an inline task", async () => {
     let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
     const sendUserMessage = vi.fn();
+    const sendMessage = vi.fn();
     const pi = {
       sendUserMessage,
+      sendMessage,
       registerCommand: vi.fn((_name: string, definition: { handler: typeof handler }) => {
         handler = definition.handler;
       }),
@@ -64,7 +70,7 @@ describe("/fabric command", () => {
       prewalk: { arm, status: vi.fn(), cancel: vi.fn() },
     } as unknown as FabricState;
     const context = {
-      sessionManager: { getSessionId: () => "session-1" },
+      sessionManager: { getSessionId: () => "session-1", getBranch: () => [] },
       ui: { setStatus: vi.fn(), notify: vi.fn() },
     } as unknown as ExtensionContext;
 
@@ -84,12 +90,27 @@ describe("/fabric command", () => {
       task: "Implement the token guard",
     });
     expect(sendUserMessage).toHaveBeenCalledWith("Implement the token guard");
+    expect(sendMessage).toHaveBeenCalledWith(
+      {
+        customType: PREWALK_ARMED_MESSAGE_TYPE,
+        content: prewalkArmedPrompt("in-place", "anthropic/executor"),
+        display: false,
+        details: { mode: "in-place", model: "anthropic/executor" },
+      },
+      { deliverAs: "nextTurn" },
+    );
+    // Advisory framing lands in the queue before the task submission.
+    expect(sendMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      sendUserMessage.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("uses the model picker when prewalk has no configured executor", async () => {
     let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
+    const sendMessage = vi.fn();
     const pi = {
       sendUserMessage: vi.fn(),
+      sendMessage,
       registerCommand: vi.fn((_name: string, definition: { handler: typeof handler }) => {
         handler = definition.handler;
       }),
@@ -114,7 +135,7 @@ describe("/fabric command", () => {
           { provider: "anthropic", id: "other" },
         ],
       },
-      sessionManager: { getSessionId: () => "session-1" },
+      sessionManager: { getSessionId: () => "session-1", getBranch: () => [] },
       ui: { select, setStatus: vi.fn(), notify: vi.fn() },
     } as unknown as ExtensionContext;
 
@@ -136,6 +157,62 @@ describe("/fabric command", () => {
       mode: "in-place",
       sessionId: "session-1",
     });
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customType: PREWALK_ARMED_MESSAGE_TYPE,
+        content: prewalkArmedPrompt("in-place", "openai/executor"),
+        display: false,
+      }),
+      { deliverAs: "nextTurn" },
+    );
+  });
+
+  it("skips the armed prompt when the identical one already persists", async () => {
+    let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
+    const sendMessage = vi.fn();
+    const pi = {
+      sendUserMessage: vi.fn(),
+      sendMessage,
+      registerCommand: vi.fn((_name: string, definition: { handler: typeof handler }) => {
+        handler = definition.handler;
+      }),
+    } as unknown as ExtensionAPI;
+    const arm = vi.fn();
+    const state = {
+      ensure: vi.fn().mockResolvedValue(undefined),
+      config: {
+        fullCodeMode: true,
+        schema: { mode: "off" },
+        prewalk: { mode: "trajectory", model: "anthropic/executor" },
+        agents: { enabled: true },
+      },
+      prewalk: { arm, status: vi.fn(), cancel: vi.fn() },
+    } as unknown as FabricState;
+    const context = {
+      sessionManager: {
+        getSessionId: () => "session-1",
+        getBranch: () => [
+          {
+            type: "custom_message",
+            customType: PREWALK_ARMED_MESSAGE_TYPE,
+            content: prewalkArmedPrompt("trajectory", "anthropic/executor"),
+          },
+        ],
+      },
+      ui: { setStatus: vi.fn(), notify: vi.fn() },
+    } as unknown as ExtensionContext;
+
+    registerFabricCommand(pi, {
+      state,
+      fabricUi: {} as FabricUiController,
+      capturedTools: {} as CapturedToolCatalog,
+      applyFabricMode: vi.fn(),
+      suspendToolCapture: vi.fn(),
+    });
+    await handler!("prewalk", context);
+
+    expect(arm).toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 
 });

@@ -12,6 +12,7 @@ import { registerFabricActorHostEventObservers } from "./actors/host-event-obser
 import { CapturedToolCatalog } from "./capture/catalog.js";
 import { installRegisteredToolCapture } from "./capture/interceptor.js";
 import { registerFabricCommand } from "./commands/fabric.js";
+import { withTrajectoryRearmDirective } from "./prewalk/handoff.js";
 import type { PendingFabricHandoff } from "./prewalk/handoff.js";
 import {
   DEFAULT_FABRIC_CONFIG,
@@ -355,6 +356,15 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       formatted.text || "(no output)",
       state.config.executor.maxOutputChars,
     );
+    // Directive lands after truncation so it survives maxOutputChars, and
+    // gates on "still armed" so one-shot trajectory handoffs stay silent.
+    const text = withTrajectoryRearmDirective(
+      output,
+      pending,
+      handoff,
+      state.prewalk,
+      context.sessionManager.getSessionId(),
+    );
     const boundarySucceeded = handoff.completed === true || handoff.continued === true;
     const details =
       typeof event.message.details === "object" &&
@@ -366,7 +376,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     return {
       message: {
         ...event.message,
-        content: [{ type: "text", text: output }],
+        content: [{ type: "text", text }],
         details,
         isError: !boundarySucceeded,
       },

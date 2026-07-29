@@ -8,8 +8,12 @@ import type { AgentToolResultMessage } from "../src/agents/types.js";
 import type { FabricExecutionResult } from "../src/execution-service.js";
 import { PrewalkController } from "../src/prewalk/controller.js";
 import {
+  PREWALK_ARMED_MESSAGE_TYPE,
   claimFabricHandoff,
+  hasPrewalkArmedPrompt,
+  prewalkArmedPrompt,
   runFabricHandoffAtBoundary,
+  withTrajectoryRearmDirective,
 } from "../src/prewalk/handoff.js";
 
 const execution = (): FabricExecutionResult => ({
@@ -336,5 +340,154 @@ describe("outer-boundary Prewalk", () => {
 
     expect(claimFabricHandoff(controller, run, "session-1", "auto")).toBeUndefined();
     expect(controller.isArmed("session-1")).toBe(true);
+  });
+
+  it("re-arms after a trajectory handoff when configured", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      mode: "trajectory",
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+      alwaysRearm: true,
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "auto");
+    expect(pending).toMatchObject({ kind: "prewalk-trajectory" });
+
+    const ctx = context();
+    const runner = {
+      executeHandoff: vi.fn(async () => ({
+        handedOff: true,
+        completed: true,
+        status: "completed",
+        implementation: "implemented",
+      })),
+    };
+    const result = await runFabricHandoffAtBoundary(
+      controller,
+      runner,
+      extension().value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+
+    expect(result).toMatchObject({
+      prewalk: true,
+      mode: "trajectory",
+      completed: true,
+      implementation: "implemented",
+    });
+    expect(controller.status()).toMatchObject({
+      state: "armed",
+      mode: "trajectory",
+      model: "anthropic/executor",
+      alwaysRearm: true,
+    });
+    expect(controller.status()).not.toHaveProperty("task");
+    expect(ctx.setStatus).toHaveBeenLastCalledWith(
+      "fabric-prewalk",
+      "armed → anthropic/executor",
+    );
+    expect(
+      withTrajectoryRearmDirective("outer output", pending!, result, controller, "session-1"),
+    ).toContain("Prewalk re-armed");
+  });
+});
+
+describe("prewalkArmedPrompt", () => {
+  it("describes the trajectory boundary for Main", () => {
+    const text = prewalkArmedPrompt("trajectory", "anthropic/executor");
+    expect(text).toContain("anthropic/executor (trajectory)");
+    expect(text).toContain("pi.edit / pi.write / schema.commit");
+    expect(text).toContain("your turn ends there and the executor continues the work.");
+    expect(text).toContain("restate the remaining steps before your first edit");
+  });
+
+  it("describes in-place continuation for Main", () => {
+    const text = prewalkArmedPrompt("in-place", "anthropic/executor");
+    expect(text).toContain("this session switches to anthropic/executor and keeps working.");
+    expect(text).not.toContain("your turn ends there");
+  });
+});
+
+describe("hasPrewalkArmedPrompt", () => {
+  it("matches persisted armed prompts by content only", () => {
+    const armed = prewalkArmedPrompt("trajectory", "anthropic/executor");
+    const entries = [
+      { type: "message", message: { role: "user" } },
+      {
+        type: "custom_message",
+        customType: PREWALK_ARMED_MESSAGE_TYPE,
+        content: [{ type: "text", text: armed }],
+      },
+      { type: "custom_message", customType: "other-extension", content: armed },
+    ];
+    expect(hasPrewalkArmedPrompt(entries, armed)).toBe(true);
+    expect(hasPrewalkArmedPrompt(entries, prewalkArmedPrompt("in-place", "other/model"))).toBe(false);
+    expect(hasPrewalkArmedPrompt([], armed)).toBe(false);
+  });
+
+  it("accepts string content and ignores malformed entries", () => {
+    const entries = [
+      { type: "custom_message", customType: PREWALK_ARMED_MESSAGE_TYPE, content: "plain" },
+      null,
+      42,
+    ];
+    expect(hasPrewalkArmedPrompt(entries, "plain")).toBe(true);
+    expect(hasPrewalkArmedPrompt(entries, "other")).toBe(false);
+  });
+});
+
+describe("withTrajectoryRearmDirective", () => {
+  const trajectoryPending = (alwaysRearm: boolean) => {
+    const controller = new PrewalkController();
+    controller.arm({
+      mode: "trajectory",
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement",
+      alwaysRearm,
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "auto")!;
+    return { controller, pending };
+  };
+
+  it("appends the directive after a completed trajectory handoff when re-armed", () => {
+    const { controller, pending } = trajectoryPending(true);
+    controller.completeTask(); // boundary finally re-arms
+    const text = withTrajectoryRearmDirective("OUTPUT", pending, { completed: true }, controller, "session-1");
+    expect(text.startsWith("OUTPUT\n\n")).toBe(true);
+    expect(text).toContain("result above is final");
+    expect(text).toContain("pi.edit / pi.write in fabric_exec to hand off again");
+    expect(text).toContain("Re-check only what the executor left incomplete.");
+  });
+
+  it("omits the directive for in-place pendings", () => {
+    const controller = new PrewalkController();
+    controller.arm({ model: "anthropic/executor", sessionId: "session-1" });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "auto")!;
+    expect(pending.kind).toBe("prewalk-in-place");
+    controller.completeTask();
+    expect(withTrajectoryRearmDirective("OUTPUT", pending, { completed: true }, controller, "session-1")).toBe("OUTPUT");
+  });
+
+  it("omits the directive when the handoff failed", () => {
+    const { controller, pending } = trajectoryPending(true);
+    controller.completeTask();
+    expect(withTrajectoryRearmDirective("OUTPUT", pending, { completed: false }, controller, "session-1")).toBe("OUTPUT");
+  });
+
+  it("omits the directive when the arm was one-shot", () => {
+    const { controller, pending } = trajectoryPending(false);
+    controller.completeTask(); // no alwaysRearm -> idle
+    expect(controller.status()).toEqual({ state: "idle" });
+    expect(withTrajectoryRearmDirective("OUTPUT", pending, { completed: true }, controller, "session-1")).toBe("OUTPUT");
+  });
+
+  it("omits the directive when the arm belongs to another session", () => {
+    const { controller, pending } = trajectoryPending(true);
+    controller.completeTask();
+    expect(withTrajectoryRearmDirective("OUTPUT", pending, { completed: true }, controller, "session-2")).toBe("OUTPUT");
   });
 });

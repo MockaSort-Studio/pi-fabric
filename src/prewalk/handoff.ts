@@ -3,7 +3,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import type { FabricResultFormat } from "../config.js";
+import type { FabricPrewalkMode, FabricResultFormat } from "../config.js";
 import {
   NESTED_TOOL_CALL_ID_PREFIX,
   type FabricCallAudit,
@@ -26,6 +26,54 @@ const PREWALK_CONTINUE_PROMPT = [
   "Finish the remaining implementation, check matching call sites for consistency, and run the relevant verification before reporting completion.",
 ].join(" ");
 
+export const PREWALK_ARMED_MESSAGE_TYPE = "pi-fabric-prewalk-armed";
+
+// Advisory arm-time framing, delivered as a hidden nextTurn custom message:
+// LLM-visible, TUI-hidden, and never fired as an `input` event, so it cannot
+// be captured as the next prewalk task and never triggers a turn by itself.
+export const prewalkArmedPrompt = (mode: FabricPrewalkMode, model: string): string =>
+  [
+    `Prewalk armed → ${model} (${mode}): the first successful pi.edit / pi.write / schema.commit inside fabric_exec hands off to the executor automatically; ${
+      mode === "trajectory"
+        ? "your turn ends there and the executor continues the work."
+        : `this session switches to ${model} and keeps working.`
+    }`,
+    "Reads never fire it; for multi-step work, restate the remaining steps before your first edit.",
+  ].join("\n");
+
+const customMessageText = (content: unknown): string | undefined => {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const parts = content
+      .filter(
+        (block): block is { type: "text"; text: string } =>
+          typeof block === "object" &&
+          block !== null &&
+          (block as { type?: unknown }).type === "text" &&
+          typeof (block as { text?: unknown }).text === "string",
+      )
+      .map((block) => block.text);
+    return parts.length > 0 ? parts.join("\n") : undefined;
+  }
+  return undefined;
+};
+
+// Pileup guard: only skip when an identical armed prompt already persists in
+// the branch, so re-arming with a different mode/model still announces itself.
+export const hasPrewalkArmedPrompt = (
+  entries: ReadonlyArray<unknown>,
+  content: string,
+): boolean =>
+  entries.some((entry) => {
+    if (typeof entry !== "object" || entry === null) return false;
+    const candidate = entry as { type?: unknown; customType?: unknown; content?: unknown };
+    return (
+      candidate.type === "custom_message" &&
+      candidate.customType === PREWALK_ARMED_MESSAGE_TYPE &&
+      customMessageText(candidate.content) === content
+    );
+  });
+
 export interface BoundaryHandoffRunner {
   executeHandoff(
     args: Record<string, unknown>,
@@ -41,6 +89,28 @@ export interface PendingFabricHandoff {
   resultFormat: FabricResultFormat;
   triggerRef?: string;
 }
+
+// Appended to the replaced boundary tool result so the framing persists with
+// what Main keeps seeing, anchoring every later turn. Advisory only: prewalk
+// cannot gate the next claim on a plan, and bash edits stay invisible to it.
+const TRAJECTORY_REARM_DIRECTIVE = [
+  "Prewalk handoff completed — the executor's result above is final; don't redo it.",
+  "Prewalk re-armed: on the next request, restate remaining steps (skip if trivial), then make changes via pi.edit / pi.write in fabric_exec to hand off again.",
+  "Re-check only what the executor left incomplete.",
+].join("\n");
+
+export const withTrajectoryRearmDirective = (
+  text: string,
+  pending: PendingFabricHandoff,
+  handoff: Record<string, unknown>,
+  controller: PrewalkController,
+  sessionId: string,
+): string =>
+  pending.kind === "prewalk-trajectory" &&
+  handoff.completed === true &&
+  controller.isArmed(sessionId)
+    ? `${text}\n\n${TRAJECTORY_REARM_DIRECTIVE}`
+    : text;
 
 export const claimFabricHandoff = (
   controller: PrewalkController,
