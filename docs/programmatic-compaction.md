@@ -73,7 +73,7 @@ await compact.request({
 // Read the pending intent and the last committed/failed compaction info.
 const status = await compact.status();
 // { pending?: { reason?, instructions?, preserve?, requestedBy, requestedAt },
-//   last?:   { at, requestedBy, status: "committed"|"failed",
+//   last?:   { at, requestedBy, status: "committed"|"cancelled"|"failed",
 //             summary?, tokensBefore?, estimatedTokensAfter?, error? } }
 
 // Clear a pending intent before the host commits it.
@@ -126,7 +126,9 @@ text rather than typed protocol input.
 - On pi's `onComplete`: the intent is cleared and `last` records
   `status: "committed"` with the summary and token counts.
 - On pi's `onError` with `"Compaction cancelled"` or `"Already compacted"`:
-  the intent is cleared **quietly** — nothing to compact, no failure recorded.
+  the intent is cleared and `last` records `status: "cancelled"` with the raw
+  pi message in `error` — nothing compacted, but the outcome stays observable
+  instead of being silently dropped.
 - On any other error: the intent is cleared and `last` records
   `status: "failed"` with the message. If `compact()` itself throws
   synchronously, the same failure path applies.
@@ -175,9 +177,9 @@ return await agents.wait({ id: handle.id });
 - **Mesh**: when the mesh is enabled, the host controller publishes best-effort
   events to the durable `fabric.compact` topic on each transition:
   `kind: "requested"` when an intent is recorded, and
-  `kind: "committed" | "failed"` when the host commits. Pi's benign
-  `"Compaction cancelled"` / `"Already compacted"` outcomes clear quietly and
-  do not publish a commit event. Other
+  `kind: "committed" | "cancelled" | "failed"` when the host settles it. Pi's
+  benign `"Compaction cancelled"` / `"Already compacted"` outcomes publish
+  with `kind: "cancelled"`. Other
   Fabric participants (persistent actors, peer sessions) can subscribe to
   observe compaction transitions. Activity-only sessions (mesh disabled)
   silently skip this.

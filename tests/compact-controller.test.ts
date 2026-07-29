@@ -164,7 +164,7 @@ describe("CompactController", () => {
     capture.current!.onError(new Error("Already compacted"));
   });
 
-  it("clears quietly on 'Compaction cancelled' without recording a failure", () => {
+  it("records 'Compaction cancelled' as cancelled, not failed", () => {
     const capture: CompactCapture = { current: undefined };
     const controller = new CompactController();
     controller.request({ reason: "x" });
@@ -172,10 +172,13 @@ describe("CompactController", () => {
     capture.current!.onError(new Error("Compaction cancelled"));
     const status = controller.status();
     expect(status.pending).toBeUndefined();
-    expect(status.last).toBeUndefined();
+    expect(status.last).toMatchObject({
+      status: "cancelled",
+      error: "Compaction cancelled",
+    });
   });
 
-  it("clears quietly on 'Already compacted' without recording a failure", () => {
+  it("records 'Already compacted' as cancelled, not failed", () => {
     const capture: CompactCapture = { current: undefined };
     const controller = new CompactController();
     controller.request({ reason: "x" });
@@ -183,7 +186,10 @@ describe("CompactController", () => {
     capture.current!.onError(new Error("Already compacted"));
     const status = controller.status();
     expect(status.pending).toBeUndefined();
-    expect(status.last).toBeUndefined();
+    expect(status.last).toMatchObject({
+      status: "cancelled",
+      error: "Already compacted",
+    });
   });
 
   it("records a failure and clears intent on other errors", () => {
@@ -256,14 +262,15 @@ describe("CompactController", () => {
     expect(commits[1]?.error ?? "").toBe("rate limited");
   });
 
-  it("does not fire onCommit for cancelled/already-compacted (cleared quietly)", () => {
+  it("fires onCommit with cancelled info for cancelled/already-compacted", () => {
     const commits: CompactLastCommit[] = [];
     const controller = new CompactController({ onCommit: (info) => commits.push(info) });
     const capture: CompactCapture = { current: undefined };
     controller.request({ reason: "x" });
     controller.maybeCommit(fakeContext(capture));
     capture.current!.onError(new Error("Compaction cancelled"));
-    expect(commits).toHaveLength(0);
+    expect(commits.map((info) => info.status)).toEqual(["cancelled"]);
+    expect(commits[0]?.error).toBe("Compaction cancelled");
   });
 
   it("resets in-flight after a failed commit so a new intent can be committed", async () => {

@@ -90,7 +90,7 @@ const descriptors: FabricActionDescriptor[] = [
   {
     name: "status",
     description:
-      "Read the pending compaction intent and the last committed/failed compaction info",
+      "Read the pending compaction intent and the last compaction outcome",
     inputSchema: emptySchema,
     risk: "read",
   },

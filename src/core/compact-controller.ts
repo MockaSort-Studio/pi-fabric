@@ -32,7 +32,7 @@ export interface CompactPendingIntent {
   requestedAt: number;
 }
 
-type CompactCommitStatus = "committed" | "failed";
+type CompactCommitStatus = "committed" | "cancelled" | "failed";
 
 
 export interface CompactLastCommit {
@@ -53,9 +53,10 @@ export interface CompactStatus {
 export interface CompactControllerHooks {
   // Fired when a new intent is recorded (request replaces any pending one).
   onRequest?: (intent: CompactPendingIntent) => void;
-  // Fired when the host commits (or fails to commit) a recorded intent.
-  // "cancelled" is reported when pi reports "Compaction cancelled" /
-  // "Already compacted"; the intent is still cleared quietly.
+  // Fired when the host settles a recorded intent: "committed" when pi
+  // applied the compaction, "cancelled" when pi reports "Compaction
+  // cancelled" / "Already compacted" (the intent is still cleared; the raw pi
+  // message is kept in `error`), and "failed" for any other error.
   onCommit?: (info: CompactLastCommit) => void;
 }
 
@@ -186,11 +187,12 @@ export class CompactController {
           onError: (error) => finish(() => {
             const message = error?.message ?? "Compaction error";
             clearCommittedIntent();
-            if (message === "Compaction cancelled" || message === "Already compacted") return;
+            const cancelled =
+              message === "Compaction cancelled" || message === "Already compacted";
             this.#last = {
               at: Date.now(),
               requestedBy,
-              status: "failed",
+              status: cancelled ? "cancelled" : "failed",
               error: message,
             };
             this.#hooks.onCommit?.(this.#last);

@@ -825,7 +825,7 @@ interface FabricCompactPendingIntent {
 interface FabricCompactLastCommit {
   at: number;
   requestedBy: string;
-  status: "committed" | "failed";
+  status: "committed" | "cancelled" | "failed";
   summary?: string;
   tokensBefore?: number;
   estimatedTokensAfter?: number;
