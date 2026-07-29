@@ -307,6 +307,53 @@ return "complete outer result";
     expect(immediatePartials.length).toBeGreaterThan(1);
   });
 
+  it("ignores late nested updates after activity resets during execution", async () => {
+    const registry = new ActionRegistry();
+    const descriptor = {
+      name: "stream",
+      description: "emit progress on demand",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      risk: "read" as const,
+    };
+    let emitUpdate!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    registry.register({
+      name: "demo",
+      description: "stream fixture",
+      async list() { return [descriptor]; },
+      async describe(name) { return name === "stream" ? descriptor : undefined; },
+      async invoke(_name, _args, invocation) {
+        emitUpdate = () => invocation.update("late output");
+        markStarted();
+        await released;
+        return true;
+      },
+    });
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.fullCodeMode = false;
+    config.approvals.read = "allow";
+    const activity = new FabricActivityStore();
+    const execution = new FabricExecutionService(registry, config, activity).execute({
+      code: 'return tools.call({ ref: "demo.stream" });',
+      signal: undefined,
+      parentToolCallId: "reset-during-stream",
+      context: { cwd: process.cwd(), hasUI: false } as ExtensionContext,
+      onPartial() {},
+    });
+
+    await started;
+    expect(activity.get("reset-during-stream")?.status).toBe("running");
+    activity.reset();
+    expect(() => emitUpdate()).not.toThrow();
+    release();
+
+    await expect(execution).resolves.toMatchObject({ success: true, value: true });
+    expect(activity.get("reset-during-stream")).toBeUndefined();
+  });
+
   it("throttles continuous nested progress without starving intermediate snapshots", async () => {
     const registry = new ActionRegistry();
     const descriptor = {

@@ -328,11 +328,14 @@ export class FabricActivityStore {
     this.#emit();
   }
 
+  // Streaming providers may report lifecycle events after session teardown resets
+  // the store. Call tracking is best-effort, so stale events must be ignored.
   beginCall(
     runId: string,
     input: { callId: string; ref: string; args: Record<string, unknown> },
   ): void {
-    const run = this.#require(runId);
+    const run = this.#runs.get(runId);
+    if (!run) return;
     const now = Date.now();
     const index = this.#callIndex.get(runId) ?? new Map<string, FabricActivityCall>();
     this.#callIndex.set(runId, index);
@@ -378,7 +381,8 @@ export class FabricActivityStore {
   }
 
   updateCallArgs(runId: string, callId: string, args: Record<string, unknown>): void {
-    const run = this.#require(runId);
+    const run = this.#runs.get(runId);
+    if (!run) return;
     const call = this.#callIndex.get(runId)?.get(callId);
     if (!call) return;
     call.args = boundedData(args, MAX_CALL_PAYLOAD_CHARS) as Record<string, unknown>;
@@ -389,7 +393,8 @@ export class FabricActivityStore {
   }
 
   updateCall(runId: string, callId: string, update: FabricInvocationActivityUpdate): void {
-    const run = this.#require(runId);
+    const run = this.#runs.get(runId);
+    if (!run) return;
     const call = this.#callIndex.get(runId)?.get(callId);
     if (!call) return;
     const now = Date.now();
@@ -421,7 +426,8 @@ export class FabricActivityStore {
     callId: string,
     input: { success: boolean; result?: unknown; preview?: unknown; error?: string },
   ): void {
-    const run = this.#require(runId);
+    const run = this.#runs.get(runId);
+    if (!run) return;
     const call = this.#callIndex.get(runId)?.get(callId);
     if (!call) return;
     const now = Date.now();
