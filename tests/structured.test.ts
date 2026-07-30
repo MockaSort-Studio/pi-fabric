@@ -55,6 +55,23 @@ describe("multi-line string fidelity", () => {
     expect(formatted.text).toContain("a\nb");
   });
 
+  it("shares an output budget across every multiline section", () => {
+    const section = (name: string) => `${name}-start\n${name.repeat(4_000)}\n${name}-end`;
+    const formatted = formatFabricValue(
+      { first: section("a"), middle: section("b"), last: section("c") },
+      "auto",
+      4_000,
+    );
+
+    expect(formatted.text.length).toBeLessThanOrEqual(4_000);
+    for (const [path, name] of [["first", "a"], ["middle", "b"], ["last", "c"]]) {
+      expect(formatted.text).toContain(`--- ${path}`);
+      expect(formatted.text).toContain(`${name}-start`);
+      expect(formatted.text).toContain(`${name}-end`);
+    }
+    expect(formatted.text.match(/chars omitted/g)).toHaveLength(3);
+  });
+
   it("keeps single-line strings inline in the YAML skeleton", () => {
     const formatted = formatFabricValue({ a: "x", b: 1 }, "auto");
     expect(formatted).toEqual({ text: "a: x\nb: 1", language: "yaml" });
