@@ -39,7 +39,7 @@ describe("Fabric context projection", () => {
     ];
     const original = structuredClone(messages);
 
-    const projected = projectCompletedFabricCallArguments(messages);
+    const projected = projectCompletedFabricCallArguments(messages, 2);
 
     expect(projected).toBeDefined();
     const firstArgs = (projected![0]!.content[0] as { arguments: Record<string, unknown> }).arguments;
@@ -52,7 +52,22 @@ describe("Fabric context projection", () => {
     expect(messages).toEqual(original);
   });
 
-  it("leaves incomplete, recent, and already-compact calls unchanged", () => {
+  it("projects successful calls immediately without projecting repairable failures", () => {
+    const successful = [
+      assistant("success", "return await pi.read('src/large.ts');".repeat(40)),
+      result("success", "pi.read", { path: "src/large.ts" }),
+    ];
+    expect(projectCompletedFabricCallArguments(successful)).toBeDefined();
+
+    const failedResult = { ...result("failure", "pi.read", { path: "src/large.ts" }), isError: true };
+    const failed = [
+      assistant("failure", "return await pi.read('src/large.ts');".repeat(40)),
+      failedResult,
+    ];
+    expect(projectCompletedFabricCallArguments(failed)).toBeUndefined();
+  });
+
+  it("leaves incomplete and already-compact calls unchanged", () => {
     const incomplete = [assistant("pending", "return await pi.read('x');")];
     expect(projectCompletedFabricCallArguments(incomplete)).toBeUndefined();
 
