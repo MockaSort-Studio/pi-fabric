@@ -34,7 +34,6 @@ import {
   mergeFabricApprovalUsage,
 } from "./core/direct-tool-approval.js";
 import { buildSkillReferenceGuidance } from "./core/skill-references.js";
-import { projectCompletedFabricCallArguments } from "./context-projection.js";
 import { createFabricExecTool } from "./fabric-exec-tool.js";
 import { FabricState } from "./fabric-state.js";
 import { piHostCompatibilityWarning } from "./host-compatibility.js";
@@ -417,9 +416,8 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   });
 
   pi.on("context", (event) => {
-    const projected = projectCompletedFabricCallArguments(event.messages);
-    let changed = projected !== undefined;
-    const messages = (projected ?? event.messages).map((message) => {
+    let changed = false;
+    const messages = event.messages.map((message) => {
       if (message.role !== "user") return message;
       if (typeof message.content === "string") {
         const content = expandSkillDirMarkersInSkillBlock(message.content);
