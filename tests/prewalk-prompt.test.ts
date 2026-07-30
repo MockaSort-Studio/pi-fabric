@@ -45,6 +45,7 @@ describe("prewalk prompt isolation", () => {
     expect(guidelines).toContain("A build alone is not completion");
     expect(guidelines).toContain("one `pi.edit({path, edits:[...]})`");
     expect(guidelines).toContain("`literal:true` for exact punctuated text");
+    expect(guidelines).toContain("fan-out search limits small");
     expect(guidelines).toContain("`settle:true` for tests or probes");
     expect(guidelines).toContain("`timeout` in seconds once");
     expect(guidelines).toContain("batch only independent, bounded work");
