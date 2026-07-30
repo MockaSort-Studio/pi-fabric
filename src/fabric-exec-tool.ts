@@ -15,6 +15,7 @@ import {
 } from "./audit/index.js";
 import { DEFAULT_FABRIC_CONFIG } from "./config.js";
 import type { FabricState } from "./fabric-state.js";
+import { formatFailureProgress } from "./failure-progress.js";
 import type { PendingFabricHandoff } from "./prewalk/handoff.js";
 import type { FabricMediaBlock } from "./protocol.js";
 import {
@@ -95,10 +96,10 @@ export const createFabricExecTool = (
     promptSnippet:
       "Pi core tools, MCP, Fabric providers, discovery, and extensions",
     promptGuidelines: [
-      "Batch independent operations in one `fabric_exec` program (`Promise.all` for parallel, sequential `await` for ordered), not one call per tool; keep dependent/conditional steps sequential. Return only the compact final value; intermediate results stay in the sandbox.",
+      "Batch independent operations in one `fabric_exec` program (`Promise.all` for parallel, sequential `await` for ordered), not one call per tool; keep dependent/conditional steps sequential. Coalesce non-dependent replacements from one file snapshot into one `pi.edit({path, edits:[...]})`. Return only the compact final value; intermediate results stay in the sandbox.",
       "Search before reading: use `pi.grep`/`pi.find` to locate relevant lines, then `pi.read({path, offset, limit})` that range. An unbounded `pi.read` returns at most 2000 lines or 50KB and, when truncated, ends with a `Use offset=…` continuation notice; reserve whole-file reads for small files you will use in full.",
       "For coding tasks, keep an acceptance ledger: turn the request into concrete checks, trace the relevant execution path before editing, implement end to end, then run targeted tests and direct behavioral probes for every check. Inspect failures and iterate; a build or existing test pass alone is not completion.",
-      "Amortize round trips without inflating context: batch only independent, bounded work. Keep search→read and edit→verify sequential when an output determines the next action. Filter or summarize noisy command output inside the program and return decisions, failures, and evidence—not raw logs or unused intermediate results.",
+      "Amortize round trips without inflating context: batch only independent, bounded work. Keep search→read and edit→verify sequential when an output determines the next action. Use `settle:true` for tests or probes whose nonzero result is evidence rather than an exceptional stop. Filter or summarize noisy command output inside the program and return decisions, failures, and evidence—not raw logs or unused intermediate results.",
       "For multiline edits or writes, pass payloads through top-level `strings` and use `π.key`; prefer `pi.edit`/`pi.write` over shell patching or heredocs.",
     ],
     // The model-facing schema is intentionally flat: one large `code` string
@@ -691,9 +692,11 @@ export const createFabricExecTool = (
         );
       }
       const fullFormattedValue = formatFabricValue(result.value, selectedResultFormat);
+      const failureProgress = formatFailureProgress(result.trace);
       const fullSections = [...result.logs];
       if (fullFormattedValue.text) fullSections.push(fullFormattedValue.text);
       if (result.error) fullSections.push(`Runtime error: ${result.error}`);
+      if (failureProgress) fullSections.push(failureProgress);
       const fullRawOutput = fullSections.join("\n\n");
       const outputWillTruncate =
         fullRawOutput.length > state.config.executor.maxOutputChars;
@@ -708,6 +711,7 @@ export const createFabricExecTool = (
       const logPrefix = result.logs.join("\n\n");
       if (formattedValue.text) sections.push(formattedValue.text);
       if (result.error) sections.push(`Runtime error: ${result.error}`);
+      if (failureProgress) sections.push(failureProgress);
       const rawOutput = sections.join("\n\n");
       const outputFormat =
         formattedValue.language &&
