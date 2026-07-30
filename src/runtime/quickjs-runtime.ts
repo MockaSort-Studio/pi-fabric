@@ -173,6 +173,26 @@ const __normalizePiArgs = (name, args) => {
       }
     }
   }
+  if (name === "edit" && Array.isArray(out.edits)) {
+    let changed = false;
+    const edits = out.edits.map((entry) => {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
+      let edit = entry;
+      for (const alias of ["old", "new", "replacement"]) {
+        if (!(alias in edit)) continue;
+        if (edit === entry) edit = Object.assign({}, entry);
+        const canonical = alias === "old" ? "oldText" : "newText";
+        if (!(canonical in edit)) edit[canonical] = edit[alias];
+        delete edit[alias];
+        changed = true;
+      }
+      return edit;
+    });
+    if (changed) {
+      if (out === args) out = Object.assign({}, args);
+      out.edits = edits;
+    }
+  }
   if (name === "edit" && !Array.isArray(out.edits) && ("oldText" in out || "newText" in out)) {
     if (out === args) out = Object.assign({}, args);
     const edit = {};

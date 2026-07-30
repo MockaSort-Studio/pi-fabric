@@ -324,10 +324,11 @@ type FabricExtensionsApi = Record<string, FabricCapturedTool>;
 // flat edit shape ({ path, oldText, newText }) are also accepted; the runtime
 // proxy normalizes them to the canonical form before the host validates args.
 // Bash timeout is measured in seconds; timeoutMs is converted from milliseconds.
+type PiEditOperation = { oldText: string; newText: string } | { old: string; new: string } | { old: string; replacement: string };
 interface PiToolsApi {
   read(args: string | { path: string; offset?: number; limit?: number; start?: number; max?: number } | { file: string; offset?: number; limit?: number; start?: number; max?: number }): Promise<string>;
   bash(args: string | { command: string; timeout?: number; timeoutMs?: number; settle?: boolean } | { cmd: string; timeout?: number; timeoutMs?: number; settle?: boolean } | { shell: string; timeout?: number; timeoutMs?: number; settle?: boolean }): Promise<{ ok: true; output: string; details: unknown } | { ok: false; output: string; details: null; exitCode: number; error: string }>;
-  edit(args: { path: string; edits: Array<{ oldText: string; newText: string }>; all?: boolean } | { file: string; edits: Array<{ oldText: string; newText: string }>; all?: boolean } | { path: string; oldText: string; newText: string; all?: boolean } | { file: string; oldText: string; newText: string; all?: boolean } | { path: string; old: string; new: string; all?: boolean } | { path: string; old: string; replacement: string; all?: boolean }): Promise<{ ok: true; output: string; details: unknown }>;
+  edit(args: { path: string; edits: PiEditOperation[]; all?: boolean } | { file: string; edits: PiEditOperation[]; all?: boolean } | { path: string; oldText: string; newText: string; all?: boolean } | { file: string; oldText: string; newText: string; all?: boolean } | { path: string; old: string; new: string; all?: boolean } | { path: string; old: string; replacement: string; all?: boolean }): Promise<{ ok: true; output: string; details: unknown }>;
   edit(path: string, oldText: string, newText: string): Promise<{ ok: true; output: string; details: unknown }>;
   write(args: { path: string; content: string } | { file: string; content: string } | { path: string; contents: string } | { path: string; body: string } | { path: string; text: string }): Promise<{ ok: true; output: string; details: unknown }>;
   write(path: string, content: string): Promise<{ ok: true; output: string; details: unknown }>;
