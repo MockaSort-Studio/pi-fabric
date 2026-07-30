@@ -427,13 +427,19 @@ await Promise.all([
   });
 
   it("exposes named strings via π and throws a clear error for unprovided keys", async () => {
+    const content = [
+      "multiline",
+      "` ${value} { braces }",
+      "quotes: \" '",
+      "nul:" + String.fromCharCode(0) + " end",
+    ].join("\n");
     const provided = await new QuickJsRuntime().execute(
       `return { value: π.content, keys: Object.keys(π).join(",") };`,
       async () => undefined,
-      { ...options, strings: { content: "hello" } },
+      { ...options, strings: { content } },
     );
     expect(provided.error).toBeUndefined();
-    expect(provided.value).toEqual({ value: "hello", keys: "content" });
+    expect(provided.value).toEqual({ value: content, keys: "content" });
 
     const failed = await new QuickJsRuntime().execute(
       `return π.previewFile;`,

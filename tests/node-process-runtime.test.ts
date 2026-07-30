@@ -27,6 +27,23 @@ return { models, process: typeof process, require: typeof require };
     });
   });
 
+  it("preserves named string payloads", async () => {
+    const content = [
+      "multiline",
+      "` ${value} { braces }",
+      "quotes: \" '",
+      "nul:" + String.fromCharCode(0) + " end",
+    ].join("\n");
+    const result = await new NodeProcessRuntime().execute(
+      "return π.content;",
+      async () => undefined,
+      { ...options, strings: { content } },
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.value).toBe(content);
+  });
+
   it("accepts a heap limit above the QuickJS WASM32 ceiling", async () => {
     const result = await new NodeProcessRuntime().execute(
       "return 1;",
