@@ -59,7 +59,7 @@ An external lever outside fabric's control is enabling Anthropic strict tool use
 
 Fabric keeps the complete authored TypeScript, named strings, result, and audit trace in the session. The provider-facing `context` projection is smaller: after two newer `fabric_exec` calls complete, Fabric replaces an older call's arguments with a bounded summary of its audited operations. Tool-call IDs, outcomes, paths, command previews, model-visible result evidence, and the two most recent calls remain available. This projection is deterministic and non-destructive; resuming, branching, auditing, and the TUI continue to use the original session entries.
 
-Final `fabric_exec` output is capped at 50,000 characters by default, matching Pi's built-in 50KB tool ceiling. The cap keeps the beginning and end with an explicit omission marker. Models should still filter noisy commands and return only useful evidence because source-side projection preserves more relevant information than post-format truncation.
+Final `fabric_exec` output is capped at 50,000 characters by default, matching Pi's built-in 50KB tool ceiling. Oversized structured returns share that budget across every multiline section and preserve both ends with explicit omission markers; unstructured output keeps its global beginning and end. Models should still filter noisy commands and return only useful evidence because source-side projection preserves more relevant information than post-format truncation.
 
 ## Federated participant topology
 

@@ -75,9 +75,59 @@ const hoistMultilineStrings = (
   return value;
 };
 
+const boundedSection = (value: string, maxChars: number): string => {
+  if (value.length <= maxChars) return value;
+  if (maxChars <= 0) return "";
+  let omitted = value.length - maxChars;
+  let marker = `…[${omitted} chars omitted]…`;
+  for (let pass = 0; pass < 2; pass++) {
+    omitted = value.length - Math.max(0, maxChars - marker.length);
+    marker = `…[${omitted} chars omitted]…`;
+  }
+  if (marker.length >= maxChars) return marker.slice(0, maxChars);
+  const available = maxChars - marker.length;
+  const head = Math.ceil(available / 2);
+  const tail = Math.floor(available / 2);
+  return `${value.slice(0, head)}${marker}${value.slice(value.length - tail)}`;
+};
+
+const fairSectionBudgets = (lengths: number[], budget: number): number[] => {
+  const budgets = Array.from({ length: lengths.length }, () => 0);
+  const pending = lengths.map((length, index) => ({ length, index }))
+    .sort((left, right) => left.length - right.length);
+  let remaining = Math.max(0, budget);
+  for (let position = 0; position < pending.length; position++) {
+    const item = pending[position]!;
+    const share = Math.floor(remaining / (pending.length - position));
+    const allocated = Math.min(item.length, share);
+    budgets[item.index] = allocated;
+    remaining -= allocated;
+  }
+  return budgets;
+};
+
+const renderHoistedSections = (
+  yaml: string,
+  sections: HoistedSection[],
+  maxChars?: number,
+): string => {
+  const headers = sections.map((section) => `--- ${section.path} (${section.text.length} chars) ---\n`);
+  const separators = sections.length * 2;
+  const fixedChars = yaml.length + separators + headers.reduce((sum, header) => sum + header.length, 0);
+  const fullChars = fixedChars + sections.reduce((sum, section) => sum + section.text.length, 0);
+  const budgets = maxChars !== undefined && fullChars > maxChars
+    ? fairSectionBudgets(sections.map((section) => section.text.length), maxChars - fixedChars)
+    : sections.map((section) => section.text.length);
+  const raw = sections
+    .map((section, index) => `${headers[index]}${boundedSection(section.text, budgets[index]!)}`)
+    .join("\n\n");
+  return `${yaml}\n\n${raw}`;
+};
+
 export const formatFabricValue = (
   value: unknown,
   format: FabricResultFormat,
+  maxChars?: number,
 ): FormattedFabricValue => {
   if (value === undefined) return { text: "" };
   if (format === "text" && typeof value === "object" && value !== null && "text" in value) {
@@ -91,16 +141,11 @@ export const formatFabricValue = (
     const yaml = formatJsonAsYaml(skeleton);
     if (yaml !== undefined) {
       if (sections.length === 0) return { text: yaml, language: "yaml" };
-      const raw = sections
-        .map(
-          (section) =>
-            `--- ${section.path} (${section.text.length} chars) ---\n${section.text}`,
-        )
-        .join("\n\n");
-      // Highlight only the YAML skeleton. Raw sections preserve exact bytes and
-      // must remain plain text; the renderer bounds highlighting to visible rows.
+      // Highlight only the YAML skeleton. Raw sections preserve exact bytes when
+      // they fit; oversized batches share the model-visible budget across every
+      // section instead of allowing middle sections to disappear globally.
       return {
-        text: `${yaml}\n\n${raw}`,
+        text: renderHoistedSections(yaml, sections, maxChars),
         language: "yaml",
         highlightedLineCount: countNewlines(yaml) + 1,
       };

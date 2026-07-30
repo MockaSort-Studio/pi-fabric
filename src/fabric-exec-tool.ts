@@ -689,7 +689,11 @@ export const createFabricExecTool = (
           `waiting for fabric_exec boundary → ${String(pendingHandoff.args.model ?? "executor")}`,
         );
       }
-      const formattedValue = formatFabricValue(result.value, selectedResultFormat);
+      const formattedValue = formatFabricValue(
+      result.value,
+      selectedResultFormat,
+      state.config.executor.maxOutputChars,
+    );
       const sections = [...result.logs];
       const logPrefix = result.logs.join("\n\n");
       if (formattedValue.text) sections.push(formattedValue.text);

@@ -352,7 +352,11 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       outerToolResult,
       context,
     );
-    const formatted = formatFabricValue(handoff, pending.resultFormat);
+    const formatted = formatFabricValue(
+      handoff,
+      pending.resultFormat,
+      state.config.executor.maxOutputChars,
+    );
     const output = truncateMiddle(
       formatted.text || "(no output)",
       state.config.executor.maxOutputChars,
