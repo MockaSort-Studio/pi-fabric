@@ -60,8 +60,9 @@ import {
   type ResultRowBalance,
 } from "./ui/row-balance.js";
 import { type SpinnerTimerState, updateSpinner } from "./ui/spinner.js";
+import { boundModelOutput } from "./output-budget.js";
 import { formatFabricValue } from "./ui/structured.js";
-import { countNewlines, truncateMiddle } from "./util.js";
+import { countNewlines } from "./util.js";
 
 const RESULT_FORMATS = ["auto", "yaml", "json", "text"] as const;
 const MAX_FABRIC_CODE_TRANSFER_LINES = 12;
@@ -689,17 +690,25 @@ export const createFabricExecTool = (
           `waiting for fabric_exec boundary → ${String(pendingHandoff.args.model ?? "executor")}`,
         );
       }
-      const formattedValue = formatFabricValue(
-      result.value,
-      selectedResultFormat,
-      state.config.executor.maxOutputChars,
-    );
+      const fullFormattedValue = formatFabricValue(result.value, selectedResultFormat);
+      const fullSections = [...result.logs];
+      if (fullFormattedValue.text) fullSections.push(fullFormattedValue.text);
+      if (result.error) fullSections.push(`Runtime error: ${result.error}`);
+      const fullRawOutput = fullSections.join("\n\n");
+      const outputWillTruncate =
+        fullRawOutput.length > state.config.executor.maxOutputChars;
+      const formattedValue = outputWillTruncate
+        ? formatFabricValue(
+            result.value,
+            selectedResultFormat,
+            state.config.executor.maxOutputChars,
+          )
+        : fullFormattedValue;
       const sections = [...result.logs];
       const logPrefix = result.logs.join("\n\n");
       if (formattedValue.text) sections.push(formattedValue.text);
       if (result.error) sections.push(`Runtime error: ${result.error}`);
       const rawOutput = sections.join("\n\n");
-      const outputWillTruncate = rawOutput.length > state.config.executor.maxOutputChars;
       const outputFormat =
         formattedValue.language &&
         formattedValue.text &&
@@ -729,17 +738,22 @@ export const createFabricExecTool = (
               : error.message,
           )
           .join("\n");
+        const bounded = await boundModelOutput(
+          `Type errors; code was not executed:\n${text}`,
+          state.config.executor.maxOutputChars,
+        );
         return {
-          content: [{ type: "text", text: `Type errors; code was not executed:\n${text}` }],
+          content: [{ type: "text", text: bounded.text }],
           details: persistedDetails,
           isError: true,
         };
       }
 
-      const output = truncateMiddle(
+      const output = (await boundModelOutput(
         rawOutput || "(no output)",
         state.config.executor.maxOutputChars,
-      );
+        fullRawOutput || "(no output)",
+      )).text;
       const terminate =
         pendingHandoff !== undefined ||
         (result.success &&
