@@ -45,6 +45,15 @@ describe("fabric-exec skill provider contracts", () => {
     expect(extension).not.toContain("FABRIC_TEMPLATE_LITERAL_CAVEAT");
   });
 
+  it("keeps the full execution reference progressive rather than mandatory", () => {
+    const skill = fs.readFileSync("skills/fabric-exec/SKILL.md", "utf8");
+    const frontmatter = skill.slice(0, skill.indexOf("---", 4));
+
+    expect(frontmatter).toContain("Routine `pi.*`");
+    expect(frontmatter).toContain("only after");
+    expect(frontmatter).not.toContain("before the first Fabric call");
+  });
+
   it("centralizes ambient actor setup outside the profile skills", () => {
     const setup = fs.readFileSync(
       "skills/fabric-ambient/references/setup.md",

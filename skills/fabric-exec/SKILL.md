@@ -1,10 +1,10 @@
 ---
 name: fabric-exec
 description: >-
-  Reference for `fabric_exec` TypeScript programs: Pi core tool signatures,
-  discovery, provider and MCP proxies, named strings, return shapes, and
-  schema-driven error recovery. Load before the first Fabric call or after an
-  argument-shape error.
+  Troubleshooting and advanced API reference for `fabric_exec` TypeScript
+  programs, dynamic providers, agents, and schema recovery. Routine `pi.*`
+  coding calls are documented by ambient guidance; load this skill only after
+  an argument-shape error or when an advanced surface needs exact contracts.
 ---
 
 # fabric_exec — core reference
