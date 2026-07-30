@@ -16,6 +16,7 @@ import {
 import { DEFAULT_FABRIC_CONFIG } from "./config.js";
 import type { FabricState } from "./fabric-state.js";
 import { formatFailureProgress } from "./failure-progress.js";
+import { typeErrorRecoveryHint } from "./type-error-guidance.js";
 import type { PendingFabricHandoff } from "./prewalk/handoff.js";
 import type { FabricMediaBlock } from "./protocol.js";
 import {
@@ -742,8 +743,11 @@ export const createFabricExecTool = (
               : error.message,
           )
           .join("\n");
+        const recoveryHint = typeErrorRecoveryHint(code, result.typeErrors);
         const bounded = await boundModelOutput(
-          `Type errors; code was not executed:\n${text}`,
+          `Type errors; code was not executed:\n${text}${
+            recoveryHint ? `\n\n${recoveryHint}` : ""
+          }`,
           state.config.executor.maxOutputChars,
         );
         return {
