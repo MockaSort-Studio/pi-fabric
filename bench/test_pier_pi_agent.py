@@ -40,6 +40,7 @@ class PiSessionMetricsTest(unittest.TestCase):
                         "content": [{"type": "text", "text": "x" * 50_001}],
                         "details": {
                             "trace": {
+                                "outcome": "failed",
                                 "operations": [
                                     {
                                         "ref": "pi.read",
@@ -48,6 +49,10 @@ class PiSessionMetricsTest(unittest.TestCase):
                                             "offset": 10,
                                             "limit": 20,
                                         },
+                                    },
+                                    {
+                                        "ref": "pi.edit",
+                                        "args": {"path": "src/a.ts"},
                                     },
                                     {
                                         "ref": "pi.edit",
@@ -65,16 +70,22 @@ class PiSessionMetricsTest(unittest.TestCase):
             metrics = collect_pi_session_metrics(Path(directory))
 
         self.assertEqual(metrics["input_tokens"], 305)
+        self.assertEqual(metrics["fresh_input_tokens"], 105)
         self.assertEqual(metrics["cache_tokens"], 200)
         self.assertEqual(metrics["output_tokens"], 20)
         self.assertEqual(metrics["combined_total_tokens"], 325)
         self.assertEqual(metrics["peak_context_tokens"], 305)
         self.assertEqual(metrics["outer_tool_calls"], 1)
-        self.assertEqual(metrics["nested_tool_calls"], 2)
+        self.assertEqual(metrics["outer_calls_by_name"], {"read": 1})
+        self.assertEqual(metrics["nested_tool_calls"], 3)
         self.assertEqual(metrics["nested_calls_by_ref"], {
-            "pi.edit": 1,
+            "pi.edit": 2,
             "pi.read": 1,
         })
+        self.assertEqual(metrics["fabric_failures"], 1)
+        self.assertEqual(metrics["same_file_extra_edits"], 1)
+        self.assertEqual(metrics["model_visible_result_chars"], 50_001)
+        self.assertEqual(metrics["max_result_chars"], 50_001)
         self.assertEqual(metrics["whole_file_reads"], 1)
         self.assertEqual(metrics["bounded_reads"], 1)
         self.assertEqual(metrics["results_over_50kb"], 1)

@@ -177,9 +177,15 @@ class PiCodingAgent(BaseInstalledAgent):
         context.n_agent_steps = metrics["assistant_turns"]
         context.metadata = {
             "combined_total_tokens": metrics["combined_total_tokens"],
+            "fresh_input_tokens": metrics["fresh_input_tokens"],
             "outer_tool_calls": metrics["outer_tool_calls"],
+            "outer_calls_by_name": metrics["outer_calls_by_name"],
             "nested_tool_calls": metrics["nested_tool_calls"],
             "nested_calls_by_ref": metrics["nested_calls_by_ref"],
+            "fabric_failures": metrics["fabric_failures"],
+            "same_file_extra_edits": metrics["same_file_extra_edits"],
+            "model_visible_result_chars": metrics["model_visible_result_chars"],
+            "max_result_chars": metrics["max_result_chars"],
             "whole_file_reads": metrics["whole_file_reads"],
             "bounded_reads": metrics["bounded_reads"],
             "results_over_50kb": metrics["results_over_50kb"],
@@ -189,6 +195,7 @@ class PiCodingAgent(BaseInstalledAgent):
 
 def collect_pi_session_metrics(session_dir: Path) -> dict[str, Any]:
     input_tokens = 0
+    fresh_input_tokens = 0
     cache_tokens = 0
     output_tokens = 0
     combined_total_tokens = 0
@@ -196,7 +203,12 @@ def collect_pi_session_metrics(session_dir: Path) -> dict[str, Any]:
     peak_context_tokens = 0
     assistant_turns = 0
     outer_tool_calls = 0
+    outer_calls_by_name: dict[str, int] = {}
     nested_tool_calls = 0
+    fabric_failures = 0
+    same_file_extra_edits = 0
+    model_visible_result_chars = 0
+    max_result_chars = 0
     summarization_count = 0
     whole_file_reads = 0
     bounded_reads = 0
@@ -224,6 +236,7 @@ def collect_pi_session_metrics(session_dir: Path) -> dict[str, Any]:
                 cached = int(usage.get("cacheRead") or 0)
                 output = int(usage.get("output") or 0)
                 input_tokens += fresh + cached
+                fresh_input_tokens += fresh
                 cache_tokens += cached
                 output_tokens += output
                 combined_total_tokens += int(usage.get("totalTokens") or 0)
@@ -235,7 +248,9 @@ def collect_pi_session_metrics(session_dir: Path) -> dict[str, Any]:
                     if not isinstance(item, dict) or item.get("type") != "toolCall":
                         continue
                     outer_tool_calls += 1
-                    if item.get("name") == "read":
+                    name = str(item.get("name") or "unknown")
+                    outer_calls_by_name[name] = outer_calls_by_name.get(name, 0) + 1
+                    if name == "read":
                         args = item.get("arguments") or {}
                         if "offset" in args or "limit" in args:
                             bounded_reads += 1
@@ -247,25 +262,41 @@ def collect_pi_session_metrics(session_dir: Path) -> dict[str, Any]:
                     for item in message.get("content") or []
                     if isinstance(item, dict)
                 )
-                if len(text) > 50_000:
+                text_chars = len(text)
+                model_visible_result_chars += text_chars
+                max_result_chars = max(max_result_chars, text_chars)
+                if text_chars > 50_000:
                     results_over_50kb += 1
                 details = message.get("details") or {}
                 trace = details.get("trace") or {}
+                if message.get("toolName") == "fabric_exec" and (
+                    message.get("isError") is True
+                    or trace.get("outcome") not in (None, "succeeded")
+                ):
+                    fabric_failures += 1
+                edit_paths: dict[str, int] = {}
                 for operation in trace.get("operations") or []:
                     if not isinstance(operation, dict):
                         continue
                     nested_tool_calls += 1
                     ref = str(operation.get("ref") or "unknown")
                     nested_calls_by_ref[ref] = nested_calls_by_ref.get(ref, 0) + 1
+                    args = operation.get("args") or {}
+                    if ref == "pi.edit" and isinstance(args.get("path"), str):
+                        path = args["path"]
+                        edit_paths[path] = edit_paths.get(path, 0) + 1
                     if ref == "pi.read":
-                        args = operation.get("args") or {}
                         if "offset" in args or "limit" in args:
                             bounded_reads += 1
                         else:
                             whole_file_reads += 1
+                same_file_extra_edits += sum(
+                    max(0, count - 1) for count in edit_paths.values()
+                )
 
     return {
         "input_tokens": input_tokens,
+        "fresh_input_tokens": fresh_input_tokens,
         "cache_tokens": cache_tokens,
         "output_tokens": output_tokens,
         "combined_total_tokens": combined_total_tokens,
@@ -273,8 +304,13 @@ def collect_pi_session_metrics(session_dir: Path) -> dict[str, Any]:
         "peak_context_tokens": peak_context_tokens,
         "assistant_turns": assistant_turns,
         "outer_tool_calls": outer_tool_calls,
+        "outer_calls_by_name": dict(sorted(outer_calls_by_name.items())),
         "nested_tool_calls": nested_tool_calls,
         "nested_calls_by_ref": dict(sorted(nested_calls_by_ref.items())),
+        "fabric_failures": fabric_failures,
+        "same_file_extra_edits": same_file_extra_edits,
+        "model_visible_result_chars": model_visible_result_chars,
+        "max_result_chars": max_result_chars,
         "summarization_count": summarization_count,
         "whole_file_reads": whole_file_reads,
         "bounded_reads": bounded_reads,
