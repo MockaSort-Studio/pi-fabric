@@ -55,13 +55,24 @@ Harbor task images and separate verifier environment. Keep sibling checkouts of
     PIER_ENVIRONMENT=modal ./run-deepswe-pier.sh bandit-interprocedural-taint-checks baseline
     PIER_ENVIRONMENT=modal ./run-deepswe-pier.sh bandit-interprocedural-taint-checks fabric-local
 
+The matrix runner pins either the original reporter subset or a smaller adversarial cross-language canary, expands independent attempts through Pier, and gives both configurations deterministic resumable job names. Previewing is free; matrices over 24 paid cells require an explicit confirmation.
+
+    PIER_DRY_RUN=1 ./run-deepswe-matrix.sh subsets/deepswe-canary-8.txt both
+    PIER_ENVIRONMENT=modal PIER_CONFIRM_FULL_MATRIX=1 ./run-deepswe-matrix.sh subsets/deepswe-canary-8.txt both
+    PIER_ENVIRONMENT=modal PIER_CONFIRM_FULL_MATRIX=1 ./run-deepswe-matrix.sh subsets/deepswe-36-v2.txt both
+
+The defaults are three attempts and one concurrent trial. Override them with `PIER_N_ATTEMPTS`, `PIER_N_CONCURRENT`, and a stable `PIER_MATRIX_ID`; rerunning the same ID resumes Pier jobs with matching configs. The canary is 48 cells and the full reporter matrix is 216 cells, so use the canary before commissioning the full rerun.
+
+Compare completed matched jobs and write replayable cell-level JSON with:
+
+    python3 analyze_pier.py results/pier/<baseline-job> results/pier/<fabric-job> --output results/pier/<matrix-id>-comparison.json
+
 The adapter installs Pi inside the task container, uploads only the isolated
 OAuth/settings directory, and packs the current Fabric checkout for local runs.
 Pier results land under `results/pier/`. In addition to verifier reward, the
 trial metadata records fresh/cached/combined and peak context tokens, outer and nested
 call mix, failures, same-file edit fragmentation, compactions, bounded versus
-whole-file reads, model-visible result volume, and results over 50 KB. Pass additional `pier run` flags after the config, for example
-`--n-attempts 3` or dataset sampling flags. Modal is recommended on ARM hosts because the official images are amd64. Set `PI_FABRIC_PACKAGE` to reuse one already-certified tarball across tasks. Run OAuth-backed cells serially.
+whole-file reads, model-visible result volume, and results over 50 KB. Pass additional `pier run` flags after the config, such as timeout multipliers or dataset sampling flags. For the launcher's standard repetition and concurrency controls, use `PIER_N_ATTEMPTS` and `PIER_N_CONCURRENT`. Modal is recommended on ARM hosts because the official images are amd64. Set `PI_FABRIC_PACKAGE` to reuse one already-certified tarball across tasks. Run OAuth-backed cells serially.
 
 Notes:
 
