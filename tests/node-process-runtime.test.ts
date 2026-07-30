@@ -27,6 +27,26 @@ return { models, process: typeof process, require: typeof require };
     });
   });
 
+  it("extends the active deadline for a long host call", async () => {
+    const result = await new NodeProcessRuntime().execute(
+      'await tools.call({ ref: "pi.bash", args: { timeout: 1 } }); return "ok";',
+      async () => {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return { output: "ok" };
+      },
+      {
+        ...options,
+        timeoutMs: 50,
+        minimumTimeoutMsForHostCall(ref) {
+          return ref === "fabric.$call" ? 1_000 : undefined;
+        },
+      },
+    );
+
+    expect(result.terminationReason).toBe("completed");
+    expect(result.value).toBe("ok");
+  });
+
   it("preserves named string payloads", async () => {
     const content = [
       "multiline",
