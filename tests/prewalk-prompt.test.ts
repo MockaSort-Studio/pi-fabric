@@ -40,6 +40,7 @@ describe("prewalk prompt isolation", () => {
 
     expect(guidelines).toContain("acceptance ledger");
     expect(guidelines).toContain("direct behavioral probes");
+    expect(guidelines).toContain("requested public symbols, registrations, and configuration entries");
     expect(guidelines).toContain("smallest checks that cover the ledger");
     expect(guidelines).toContain("instead of rerunning unchanged passing checks");
     expect(guidelines).toContain("A build alone is not completion");
