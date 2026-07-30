@@ -40,11 +40,13 @@ describe("boundModelOutput", () => {
     expect(writer).toHaveBeenCalledWith(full);
   });
 
-  it("persists retrievable artifacts with private permissions", async () => {
+  it("persists retrievable artifacts with private POSIX permissions", async () => {
     const result = await boundModelOutput("x".repeat(4_000), 1_000);
     expect(result.artifactPath).toBeDefined();
     const info = await stat(result.artifactPath!);
-    expect(info.mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      expect(info.mode & 0o777).toBe(0o600);
+    }
     await rm(path.dirname(result.artifactPath!), { recursive: true, force: true });
   });
 
