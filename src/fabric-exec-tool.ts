@@ -62,7 +62,7 @@ import {
   type ResultRowBalance,
 } from "./ui/row-balance.js";
 import { type SpinnerTimerState, updateSpinner } from "./ui/spinner.js";
-import { boundModelOutput } from "./output-budget.js";
+import { boundModelOutput, modelOutputBudget } from "./output-budget.js";
 import { formatFabricValue } from "./ui/structured.js";
 import { countNewlines } from "./util.js";
 
@@ -699,13 +699,16 @@ export const createFabricExecTool = (
       if (result.error) fullSections.push(`Runtime error: ${result.error}`);
       if (failureProgress) fullSections.push(failureProgress);
       const fullRawOutput = fullSections.join("\n\n");
-      const outputWillTruncate =
-        fullRawOutput.length > state.config.executor.maxOutputChars;
+      const outputBudget = modelOutputBudget(
+        state.config.executor.maxOutputChars,
+        result.success,
+      );
+      const outputWillTruncate = fullRawOutput.length > outputBudget;
       const formattedValue = outputWillTruncate
         ? formatFabricValue(
             result.value,
             selectedResultFormat,
-            state.config.executor.maxOutputChars,
+            outputBudget,
           )
         : fullFormattedValue;
       const sections = [...result.logs];
@@ -748,7 +751,7 @@ export const createFabricExecTool = (
           `Type errors; code was not executed:\n${text}${
             recoveryHint ? `\n\n${recoveryHint}` : ""
           }`,
-          state.config.executor.maxOutputChars,
+          outputBudget,
         );
         return {
           content: [{ type: "text", text: bounded.text }],
@@ -759,7 +762,7 @@ export const createFabricExecTool = (
 
       const output = (await boundModelOutput(
         rawOutput || "(no output)",
-        state.config.executor.maxOutputChars,
+        outputBudget,
         fullRawOutput || "(no output)",
       )).text;
       const terminate =

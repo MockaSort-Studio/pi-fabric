@@ -3,6 +3,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { truncateMiddle } from "./util.js";
 
+export const MAX_FAILURE_MODEL_OUTPUT_CHARS = 20_000;
+
+export const modelOutputBudget = (
+  configuredMaxChars: number,
+  success: boolean,
+): number => success
+  ? configuredMaxChars
+  : Math.min(configuredMaxChars, MAX_FAILURE_MODEL_OUTPUT_CHARS);
+
 export interface BoundedModelOutput {
   text: string;
   artifactPath?: string;
