@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { AgentRunResult } from "../src/agents/types.js";
 import { AgentManager } from "../src/agents/manager.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
+import { initBudgetLedger, readBudgetLedgerDetailed } from "../src/agents/budget-ledger.js";
 
 // End-to-end coverage for the REAL worker (dist/worker.js) driven through
 // AgentManager + #monitor, with a stub `pi` binary (tests/fixtures/fake-pi.mjs)
@@ -208,5 +209,47 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     } finally {
       delete process.env.PI_FABRIC_INJECT_CRASH;
     }
+  });
+
+  it("emits attributed tokens.usage events live and lands them in the budget ledger", async () => {
+    process.env.FAKE_PI_BEHAVIOR = "usage-flow";
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
+    roots.push(root);
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 5_000, maxConcurrent: 1 };
+    const ledger = initBudgetLedger(1);
+    roots.push(path.dirname(ledger.file));
+    const lifecycleEvents: Array<{ event: string; data?: unknown }> = [];
+    const manager = new AgentManager(process.cwd(), config, {
+      workerPath,
+      piBinary,
+      runRoot: root,
+      onLifecycle: (event) => {
+        lifecycleEvents.push({ event: event.event, data: event.data });
+      },
+    });
+    managers.push(manager);
+    const result = await manager.run({ task: "emit usage", transport: "process" });
+    expect(result.status).toBe("completed");
+
+    const usageEvents = lifecycleEvents.filter((entry) => entry.event === "tokens.usage");
+    expect(usageEvents.length).toBeGreaterThanOrEqual(2);
+
+    const first = usageEvents[0]!.data as {
+      cumulativeTokens: number; runner: string; depth: number; input: number; output: number;
+    };
+    expect(first.cumulativeTokens).toBe(165);
+    expect(first.runner).toBe("pi");
+    expect(first.depth).toBe(1);
+    expect(first.input).toBe(100);
+    expect(first.output).toBe(50);
+
+    const second = usageEvents[1]!.data as { cumulativeTokens: number; input: number };
+    expect(second.cumulativeTokens).toBe(495);
+    expect(second.input).toBe(200);
+
+    const detail = readBudgetLedgerDetailed(ledger.file);
+    expect(detail.byRunner.pi).toEqual({ cost: expect.closeTo(0.03), tokens: 495 });
+    expect(detail.entries.length).toBeGreaterThanOrEqual(2);
+    expect(detail.entries.reduce((sum, entry) => sum + entry.tokens, 0)).toBe(495);
   });
 });

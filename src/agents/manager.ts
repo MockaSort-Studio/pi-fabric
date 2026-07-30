@@ -18,6 +18,8 @@ import {
   normalizeClaudeModel,
   type ClaudeModelInfo,
 } from "./claude-cli.js";
+import { tokenUsagePayloadFromValue } from "../lifecycle/types.js";
+import type { FabricTokenUsagePayload } from "../lifecycle/types.js";
 import { Semaphore } from "./semaphore.js";
 import { removeTree } from "./rm.js";
 import { HerdrTransport } from "./transports/herdr-transport.js";
@@ -47,7 +49,9 @@ import {
   clearOwnedBudgetEnv,
   initBudgetLedger,
   readBudgetLedger,
+  readBudgetLedgerDetailed,
 } from "./budget-ledger.js";
+import type { BudgetLedgerDetail } from "./budget-ledger.js";
 import type { BudgetLedgerState } from "./budget-ledger.js";
 import { readJsonlPage } from "../log-tail.js";
 import {
@@ -130,6 +134,10 @@ interface ManagedAgent {
   settled: boolean;
   background: boolean;
   lastLivenessCheckAt: number;
+  /** Sum of tokens.usage deltas drained from the worker so far. Settle closes
+   *  the gap against the status file's cumulative snapshot so the ledger total
+   *  is identical whether the stream arrived live or only at settle. */
+  usageEmitted: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
 }
 
 const terminalStatuses = new Set(["completed", "failed", "stopped", "timed_out"]);
@@ -641,6 +649,7 @@ export class AgentManager {
         settled: false,
         background: false,
         lastLivenessCheckAt: 0,
+        usageEmitted: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
       };
       if (signal) {
         managed.abortHandler = () => void this.stop(id);
@@ -1068,18 +1077,7 @@ export class AgentManager {
     managed.release();
     managed.release = () => {};
     if (this.#budget) {
-      appendBudgetLedger(this.#budget.file, {
-        id: result.id,
-        depth: this.#currentDepth + 1,
-        cost: result.usage.cost,
-        tokens:
-          result.usage.input +
-          result.usage.output +
-          result.usage.cacheRead +
-          result.usage.cacheWrite,
-        ts: Date.now(),
-      });
-      this.#budgetSummaryCache = undefined;
+      this.#settleBudgetGap(managed, result);
       const summary = this.#budgetSummary();
       if (summary) result.budget = summary;
     }
@@ -1135,11 +1133,16 @@ export class AgentManager {
       if (!line.trim()) continue;
       try {
         const parsed = JSON.parse(line) as Record<string, unknown>;
+        if (parsed.version !== 1 || typeof parsed.occurredAt !== "number") continue;
+        if (parsed.event === "tokens.usage") {
+          if (!Object.prototype.hasOwnProperty.call(parsed, "data")) continue;
+          const usage = tokenUsagePayloadFromValue(parsed.data);
+          if (usage) this.#onTokenUsage(managed, usage, parsed.occurredAt);
+          continue;
+        }
         if (
-          parsed.version !== 1 ||
           !isFabricLifecycleEventType(parsed.event) ||
-          !parsed.event.startsWith("pi.") ||
-          typeof parsed.occurredAt !== "number"
+          !parsed.event.startsWith("pi.")
         ) continue;
         this.#emitLifecycle(
           managed,
@@ -1151,6 +1154,53 @@ export class AgentManager {
         // Ignore malformed worker lifecycle records; status monitoring remains authoritative.
       }
     }
+  }
+
+  #appendAttributedBudgetLedger(
+    managed: ManagedAgent,
+    tokens: number,
+    cost: number,
+  ): void {
+    if (!this.#budget || (tokens <= 0 && cost <= 0)) return;
+    appendBudgetLedger(this.#budget.file, {
+      id: managed.id,
+      depth: this.#currentDepth + 1,
+      runner: managed.runner,
+      ...(managed.actorId ? { actorId: managed.actorId } : {}),
+      ...(managed.actorName ? { actorName: managed.actorName } : {}),
+      cost,
+      tokens,
+      ts: Date.now(),
+    });
+    this.#budgetSummaryCache = undefined;
+  }
+
+  #onTokenUsage(
+    managed: ManagedAgent,
+    usage: FabricTokenUsagePayload,
+    occurredAt: number,
+  ): void {
+    managed.usageEmitted.input += usage.input;
+    managed.usageEmitted.output += usage.output;
+    managed.usageEmitted.cacheRead += usage.cacheRead;
+    managed.usageEmitted.cacheWrite += usage.cacheWrite;
+    managed.usageEmitted.cost += usage.cost;
+    this.#appendAttributedBudgetLedger(managed, usage.input + usage.output + usage.cacheRead + usage.cacheWrite, usage.cost);
+    this.#emitLifecycle(managed, "tokens.usage", occurredAt, { data: usage });
+  }
+
+  #settleBudgetGap(managed: ManagedAgent, result: AgentRunResult): void {
+    const total = result.usage;
+    const residual = {
+      input: Math.max(0, total.input - managed.usageEmitted.input),
+      output: Math.max(0, total.output - managed.usageEmitted.output),
+      cacheRead: Math.max(0, total.cacheRead - managed.usageEmitted.cacheRead),
+      cacheWrite: Math.max(0, total.cacheWrite - managed.usageEmitted.cacheWrite),
+      cost: Math.max(0, total.cost - managed.usageEmitted.cost),
+    };
+    const residualTokens =
+      residual.input + residual.output + residual.cacheRead + residual.cacheWrite;
+    this.#appendAttributedBudgetLedger(managed, residualTokens, residual.cost);
   }
 
   #emitLifecycle(

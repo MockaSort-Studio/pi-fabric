@@ -17,6 +17,7 @@ export const FABRIC_LIFECYCLE_EVENTS = [
   "run.failed",
   "run.stopped",
   "run.timed_out",
+  "tokens.usage",
 ] as const;
 
 export type FabricLifecycleEventType = (typeof FABRIC_LIFECYCLE_EVENTS)[number];
@@ -53,6 +54,51 @@ export interface FabricLifecycleEvent {
   status?: string;
   data?: unknown;
 }
+
+/**
+ * Attributed token usage for one token-bearing child event.
+ *
+ * The worker emits one of these per assistant message (Pi) or per usage-bearing
+ * assistant/result frame (Claude), tagged with the run/runner/depth identity the
+ * manager passes in. Cumulative tokens mirror in + cacheRead + cacheWrite at
+ * the moment the event fired; cost is micro-USD from the runner's own report.
+ */
+export interface FabricTokenUsagePayload {
+  runId: string;
+  name: string;
+  runner: FabricAgentRunner;
+  depth: number;
+  actorId?: string;
+  actorName?: string;
+  cumulativeTokens: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+}
+
+export const tokenUsagePayloadFromValue = (
+  value: unknown,
+): FabricTokenUsagePayload | undefined => {
+  if (!isObject(value)) return undefined;
+  const runner = value.runner === "pi" || value.runner === "claude" ? value.runner : undefined;
+  if (
+    typeof value.runId !== "string" ||
+    typeof value.name !== "string" ||
+    runner === undefined ||
+    typeof value.depth !== "number" ||
+    typeof value.cumulativeTokens !== "number" ||
+    typeof value.input !== "number" ||
+    typeof value.output !== "number" ||
+    typeof value.cacheRead !== "number" ||
+    typeof value.cacheWrite !== "number" ||
+    typeof value.cost !== "number"
+  ) {
+    return undefined;
+  }
+  return value as unknown as FabricTokenUsagePayload;
+};
 
 export interface FabricLifecycleSubscriptionRequest {
   from: string;

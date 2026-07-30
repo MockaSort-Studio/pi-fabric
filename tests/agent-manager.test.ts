@@ -10,6 +10,10 @@ import {
   effectiveAgentTimeoutMs,
   AgentManager,
 } from "../src/agents/manager.js";
+import {
+  clearOwnedBudgetEnv,
+  readBudgetLedgerDetailed,
+} from "../src/agents/budget-ledger.js";
 import type { AgentRunRecord, AgentRunResult } from "../src/agents/types.js";
 
 const managers: AgentManager[] = [];
@@ -790,6 +794,58 @@ describe("AgentManager", () => {
       delete process.env.PI_FABRIC_BUDGET;
       delete process.env.PI_FABRIC_BUDGET_FILE;
       delete process.env.PI_FABRIC_BUDGET_ID;
+    }
+  });
+
+  it("attributes token usage per tokens.usage events and closes the settle gap", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-budget-"));
+    roots.push(root);
+    process.env.PI_FABRIC_BUDGET = "0.05";
+    process.env.PI_FABRIC_BUDGET_FILE = path.join(root, "tree-cost.jsonl");
+    process.env.PI_FABRIC_BUDGET_ID = "attributed-tree";
+    fs.writeFileSync(process.env.PI_FABRIC_BUDGET_FILE, "", { mode: 0o600 });
+    try {
+      const life: Array<{ event: string; data?: unknown }> = [];
+      const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+        workerPath: path.resolve("tests/fixtures/fake-worker-usage.mjs"),
+        runRoot: root,
+        onLifecycle: (event) => life.push({ event: event.event, data: event.data }),
+      });
+      managers.push(manager);
+
+      const result = await manager.run({
+        task: "anything",
+        transport: "process",
+        actorId: "actor-test",
+        actorName: "attr-test",
+      });
+      expect(result.status).toBe("completed");
+
+      const usageEvents = life.filter((entry) => entry.event === "tokens.usage");
+      expect(usageEvents).toHaveLength(1);
+      const payload = usageEvents[0]!.data as {
+        runId: string; runner: string; depth: number; actorId?: string; cumulativeTokens: number;
+        input: number; output: number; cost: number;
+      };
+      expect(payload.runner).toBe("pi");
+      expect(payload.depth).toBe(1);
+      expect(payload.actorId).toBe("actor-test");
+      expect(payload.cumulativeTokens).toBe(13);
+      expect(payload.input).toBe(4);
+      expect(payload.output).toBe(6);
+
+      // Live-delta path recorded 13 tokens; settle closes the remaining 10
+      // from the status file (input 8 + output 10 + cacheRead 3 + cacheWrite 2).
+      const detail = readBudgetLedgerDetailed(process.env.PI_FABRIC_BUDGET_FILE);
+      const totalCost = detail.entries.reduce((sum, entry) => sum + entry.cost, 0);
+      const totalTokens = detail.entries.reduce((sum, entry) => sum + entry.tokens, 0);
+      expect(totalTokens).toBe(23);
+      expect(totalCost).toBeCloseTo(0.0015);
+      expect(detail.byRunner.pi?.tokens).toBe(23);
+      expect(detail.byRunner.pi?.cost).toBeCloseTo(0.0015);
+      expect(detail.byActor["actor-test"]?.tokens).toBe(23);
+    } finally {
+      clearOwnedBudgetEnv();
     }
   });
 

@@ -97,5 +97,32 @@ export const applyUsage = (
   }
 };
 
+/**
+ * Extract the per-message token delta a Pi assistant `message_end` contributed.
+ * Unlike `applyUsage`, which mutates the run record, this returns the delta so
+ * the worker can attribute a single event without re-deriving it from a
+ * post-hoc cumulative diff. Cost is reported in the runner's own total units.
+ */
+export const extractUsageDelta = (
+  message: Record<string, unknown>,
+): { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } | undefined => {
+  const usage = message.usage;
+  if (typeof usage !== "object" || usage === null || Array.isArray(usage)) return undefined;
+  const values = usage as Record<string, unknown>;
+  const cost = values.cost;
+  return {
+    input: numberField(values.input),
+    output: numberField(values.output),
+    cacheRead: numberField(values.cacheRead),
+    cacheWrite: numberField(values.cacheWrite),
+    cost:
+      typeof cost === "number"
+        ? cost
+        : typeof cost === "object" && cost !== null
+          ? numberField((cost as Record<string, unknown>).total)
+          : 0,
+  };
+};
+
 export const latestRunText = (text: string): string =>
   Array.from(text).slice(-MAX_RUN_TEXT_CHARS).join("");
