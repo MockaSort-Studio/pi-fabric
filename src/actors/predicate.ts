@@ -1,4 +1,4 @@
-import { QuickJsRuntime } from "../runtime/quickjs-runtime.js";
+import type { QuickJsRuntime } from "../runtime/quickjs-runtime.js";
 import type {
   FabricActorValidityDecision,
   FabricActorValidityFacts,
@@ -10,7 +10,12 @@ const MAX_PREDICATE_SOURCE_CHARS = 16_000;
 const PREDICATE_TIMEOUT_MS = 100;
 const PREDICATE_MEMORY_BYTES = 16 * 1024 * 1024;
 
-const runtime = new QuickJsRuntime();
+// Lazy: importing the QuickJS runtime eagerly would pull the WASM singlefile and
+// the TypeScript chain into the extension module graph, regressing the deferred
+// initialization work in execution-service.
+let runtimeInstance: QuickJsRuntime | undefined;
+const runtime = async (): Promise<QuickJsRuntime> =>
+  runtimeInstance ??= new (await import("../runtime/quickjs-runtime.js")).QuickJsRuntime();
 
 const predicateProgram = (source: string, invoke: boolean): string => [
   `const predicate = (${source});`,
@@ -32,7 +37,7 @@ const predicateProgram = (source: string, invoke: boolean): string => [
 ].join("\n");
 
 const execute = async (source: FabricActorValidWhileSource, facts?: FabricActorValidityFacts) => {
-  const result = await runtime.execute(
+  const result = await (await runtime()).execute(
     predicateProgram(source.source, facts !== undefined),
     async () => {
       throw new Error("validWhile cannot call host tools");
