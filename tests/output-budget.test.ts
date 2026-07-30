@@ -1,3 +1,5 @@
+import { rm, stat } from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { boundModelOutput } from "../src/output-budget.js";
 
@@ -24,6 +26,14 @@ describe("boundModelOutput", () => {
     expect(result.artifactPath).toBe("/tmp/pi-fabric-output/output.txt");
     expect(result.omittedChars).toBeGreaterThan(0);
     expect(writer).toHaveBeenCalledWith(full);
+  });
+
+  it("persists retrievable artifacts with private permissions", async () => {
+    const result = await boundModelOutput("x".repeat(4_000), 1_000);
+    expect(result.artifactPath).toBeDefined();
+    const info = await stat(result.artifactPath!);
+    expect(info.mode & 0o777).toBe(0o600);
+    await rm(path.dirname(result.artifactPath!), { recursive: true, force: true });
   });
 
   it("stays bounded if artifact persistence fails", async () => {
