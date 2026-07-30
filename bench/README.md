@@ -45,6 +45,24 @@ Configs:
 Results land in `results/<run-id>/<config>/<task>/rep<N>/` in the same layout
 as the trajectories repo; `analysis-summary.json` is written next to them.
 
+## Official DeepSWE tasks through Pier
+
+`run-deepswe-pier.sh` runs the same paired Pi configurations in the official
+Harbor task images and separate verifier environment. Keep sibling checkouts of
+`datacurve-ai/deep-swe` and `datacurve-ai/pier`, Docker running, and the
+`openai-codex` OAuth entry available in `~/.pi/agent/auth.json`.
+
+    PIER_ENVIRONMENT=modal ./run-deepswe-pier.sh bandit-interprocedural-taint-checks baseline
+    PIER_ENVIRONMENT=modal ./run-deepswe-pier.sh bandit-interprocedural-taint-checks fabric-local
+
+The adapter installs Pi inside the task container, uploads only the isolated
+OAuth/settings directory, and packs the current Fabric checkout for local runs.
+Pier results land under `results/pier/`. In addition to verifier reward, the
+trial metadata records combined and peak context tokens, outer and nested tool
+calls, nested refs, compactions, bounded versus whole-file reads, and results
+over 50 KB. Pass additional `pier run` flags after the config, for example
+`--n-attempts 3` or dataset sampling flags. Modal is recommended on ARM hosts because the official images are amd64. Set `PI_FABRIC_PACKAGE` to reuse one already-certified tarball across tasks. Run OAuth-backed cells serially.
+
 Notes:
 
 - Model is pinned to `openai-codex/gpt-5.6-sol` at thinking `low`, matching
