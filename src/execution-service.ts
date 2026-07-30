@@ -310,7 +310,6 @@ export class FabricExecutionService {
     ): number | undefined => {
       const targetRef =
         ref === "fabric.$call" && typeof args.ref === "string" ? args.ref : ref;
-      if (!isBlockingOrchestrationRef(targetRef)) return undefined;
       const targetArgs =
         ref === "fabric.$call" &&
         typeof args.args === "object" &&
@@ -318,6 +317,23 @@ export class FabricExecutionService {
         !Array.isArray(args.args)
           ? (args.args as Record<string, unknown>)
           : args;
+      if (targetRef === "pi.bash") {
+        const seconds = targetArgs.timeout;
+        const milliseconds = targetArgs.timeoutMs;
+        const requested =
+          typeof seconds === "number" && Number.isFinite(seconds)
+            ? seconds * 1_000
+            : typeof milliseconds === "number" && Number.isFinite(milliseconds)
+              ? milliseconds
+              : 0;
+        if (requested > 0) {
+          return Math.max(
+            this.config.executor.timeoutMs,
+            Math.min(Math.floor(requested) + 5_000, MAX_AGENT_TIMEOUT_MS),
+          );
+        }
+      }
+      if (!isBlockingOrchestrationRef(targetRef)) return undefined;
       const requestedTimeoutMs =
         targetRef === "agents.run" &&
         typeof targetArgs.timeoutMs === "number" &&
