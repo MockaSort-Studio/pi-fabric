@@ -106,6 +106,22 @@ describe("pi argument alias flattening", () => {
     expect(result.errors).toEqual([]);
   });
 
+  it("normalizes aliases inside batched edits", async () => {
+    const hostCall = vi.fn(async () => ({ ok: true, output: "edited", details: null }));
+    const result = await new QuickJsRuntime().execute(
+      'return pi.edit({ path: "/x", edits: [{ old: "a", replacement: "b" }], all: true });',
+      hostCall,
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(hostCall).toHaveBeenCalledWith("pi.edit", {
+      path: "/x",
+      edits: [{ oldText: "a", newText: "b" }],
+      all: true,
+    }, expect.any(AbortSignal));
+  });
+
   it("normalizes alias keys and the flat edit shape at runtime", async () => {
     const hostCall = vi.fn(async (ref: string, args: Record<string, unknown>) => {
       if (ref === "pi.bash") return { ok: true, output: String(args.command), details: null };
