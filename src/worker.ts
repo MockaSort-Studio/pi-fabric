@@ -218,6 +218,7 @@ const main = async (): Promise<void> => {
     applyUsage,
     createRunningRecord,
     emptyUsage,
+    extractUsageDelta,
     latestRunText,
     updateRunRecord,
     writeRunRecord,
@@ -332,6 +333,50 @@ const main = async (): Promise<void> => {
   let retryPending = false;
 
   const update = (): void => updateRunRecord(options.statusFile, record);
+
+  // Attributed token telemetry. Every usage-bearing child event emits one
+  // tokens.usage lifecycle entry identified by this run/actor/runner/depth.
+  // The manager drains these alongside the pi.* lifecycle stream and appends
+  // them to the budget ledger, replacing the old per-settle flat attribution.
+  const lastEmittedUsage = emptyUsage();
+  const emitTokenUsage = (delta?: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: number;
+  }): void => {
+    const snapshot = record.usage;
+    if (
+      snapshot.input === lastEmittedUsage.input &&
+      snapshot.output === lastEmittedUsage.output &&
+      snapshot.cacheRead === lastEmittedUsage.cacheRead &&
+      snapshot.cacheWrite === lastEmittedUsage.cacheWrite &&
+      snapshot.cost === lastEmittedUsage.cost
+    ) {
+      return;
+    }
+    emitLifecycle("tokens.usage", {
+      runId: options.id,
+      name: options.name,
+      runner: options.runner,
+      depth: options.depth,
+      ...(options.actorId ? { actorId: options.actorId } : {}),
+      ...(options.actorName ? { actorName: options.actorName } : {}),
+      cumulativeTokens:
+        snapshot.input + snapshot.output + snapshot.cacheRead + snapshot.cacheWrite,
+      input: delta?.input ?? 0,
+      output: delta?.output ?? 0,
+      cacheRead: delta?.cacheRead ?? 0,
+      cacheWrite: delta?.cacheWrite ?? 0,
+      cost: delta?.cost ?? snapshot.cost,
+    });
+    lastEmittedUsage.input = snapshot.input;
+    lastEmittedUsage.output = snapshot.output;
+    lastEmittedUsage.cacheRead = snapshot.cacheRead;
+    lastEmittedUsage.cacheWrite = snapshot.cacheWrite;
+    lastEmittedUsage.cost = snapshot.cost;
+  };
 
   const { ChildCompactControl } = await loadCompactControl();
   const compactControl = new ChildCompactControl(options.id, {
@@ -505,11 +550,19 @@ const main = async (): Promise<void> => {
       const usage = assistant.usage;
       if (typeof usage === "object" && usage !== null && !Array.isArray(usage)) {
         const values = usage as Record<string, unknown>;
-        claudeCurrentUsage.input += numberField(values.input_tokens);
-        claudeCurrentUsage.output += numberField(values.output_tokens);
-        claudeCurrentUsage.cacheRead += numberField(values.cache_read_input_tokens);
-        claudeCurrentUsage.cacheWrite += numberField(values.cache_creation_input_tokens);
+        const delta = {
+          input: numberField(values.input_tokens),
+          output: numberField(values.output_tokens),
+          cacheRead: numberField(values.cache_read_input_tokens),
+          cacheWrite: numberField(values.cache_creation_input_tokens),
+          cost: 0,
+        };
+        claudeCurrentUsage.input += delta.input;
+        claudeCurrentUsage.output += delta.output;
+        claudeCurrentUsage.cacheRead += delta.cacheRead;
+        claudeCurrentUsage.cacheWrite += delta.cacheWrite;
         syncClaudeUsage();
+        emitTokenUsage(delta);
       }
       if (typeof event.error === "string") {
         sawAgentError = true;
@@ -564,6 +617,20 @@ const main = async (): Promise<void> => {
       typeof event.usage === "object" && event.usage !== null && !Array.isArray(event.usage)
         ? (event.usage as Record<string, unknown>)
         : undefined;
+    // The result frame supersedes the assistant-frame stream for this turn:
+    // fold any unreported assistant tokens into the result delta so cumulative
+    // attribution stays exact without double-counting assistant emissions.
+    const resultDelta = resultUsage
+      ? {
+          input: numberField(resultUsage.input_tokens) - claudeCurrentUsage.input,
+          output: numberField(resultUsage.output_tokens) - claudeCurrentUsage.output,
+          cacheRead:
+            numberField(resultUsage.cache_read_input_tokens) - claudeCurrentUsage.cacheRead,
+          cacheWrite:
+            numberField(resultUsage.cache_creation_input_tokens) - claudeCurrentUsage.cacheWrite,
+          cost: Math.max(0, numberField(event.total_cost_usd)),
+        }
+      : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: Math.max(0, numberField(event.total_cost_usd)) };
     claudeCompletedUsage.input += resultUsage
       ? numberField(resultUsage.input_tokens)
       : claudeCurrentUsage.input;
@@ -582,6 +649,7 @@ const main = async (): Promise<void> => {
     claudeCurrentUsage.cacheRead = 0;
     claudeCurrentUsage.cacheWrite = 0;
     syncClaudeUsage();
+    emitTokenUsage(resultDelta);
     enforceTokenLimit();
     const failed = event.is_error === true || event.subtype !== "success";
     if (failed) {
@@ -710,7 +778,9 @@ const main = async (): Promise<void> => {
         record.text = latestRunText(text);
         process.stdout.write(`\n${text}\n`);
       }
+      const usageDelta = extractUsageDelta(messageRecord);
       applyUsage(record, messageRecord);
+      emitTokenUsage(usageDelta);
       enforceTokenLimit();
       if (messageRecord.stopReason === "error") {
         sawAgentError = true;

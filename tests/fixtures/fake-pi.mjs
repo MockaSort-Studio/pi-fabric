@@ -122,6 +122,15 @@ switch (behavior) {
     emit({ type: "agent_settled" });
     process.exit(0);
     break;
+  case "usage-flow":
+    emit({ type: "agent_start" });
+    emit({ type: "message_end", message: { role: "assistant", content: "first", usage: { input: 100, output: 50, cacheRead: 10, cacheWrite: 5, cost: 0.01 } } });
+    setTimeout(() => {
+      emit({ type: "message_end", message: { role: "assistant", content: "second", usage: { input: 200, output: 100, cacheRead: 20, cacheWrite: 10, cost: 0.02 } } });
+      emit({ type: "agent_settled" });
+      process.exit(0);
+    }, 50);
+    break;
   case "success":
   default:
     emit({ type: "message_end", message: { role: "assistant", content: "hi" } });
