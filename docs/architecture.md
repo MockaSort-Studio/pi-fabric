@@ -57,7 +57,7 @@ An external lever outside fabric's control is enabling Anthropic strict tool use
 
 ## Model-context economy
 
-Final `fabric_exec` output is capped at 50,000 characters by default, matching Pi's built-in 50KB tool ceiling. Oversized structured returns share that budget across every multiline section and preserve both ends with explicit omission markers; unstructured output keeps its global beginning and end. Models should still filter noisy commands and return only useful evidence because source-side projection preserves more relevant information than post-format truncation.
+Final `fabric_exec` output is capped at 50,000 characters by default, matching Pi's built-in 50KB tool ceiling. Oversized structured returns share that budget across every multiline section and preserve both ends with explicit omission markers; unstructured output keeps its global beginning and end. Fabric writes the complete output to a mode-`0600` temporary artifact and includes its path inside the visible ceiling, so the model can retrieve a targeted range without carrying the entire result. Type-check diagnostics use the same ceiling. Models should still filter noisy commands and return only useful evidence because source-side projection preserves more relevant information than post-format truncation.
 
 ## Federated participant topology
 
