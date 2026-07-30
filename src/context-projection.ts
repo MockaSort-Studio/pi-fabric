@@ -6,6 +6,7 @@ interface ContextMessageLike {
   toolCallId?: string;
   toolName?: string;
   details?: unknown;
+  isError?: boolean;
 }
 
 interface ToolCallLike extends UnknownRecord {
@@ -98,14 +99,15 @@ const toolCallId = (part: ToolCallLike): string | undefined =>
 
 export const projectCompletedFabricCallArguments = <T extends ContextMessageLike>(
   messages: readonly T[],
-  retainRecent = 2,
+  retainRecent = 0,
 ): T[] | undefined => {
   const completed: Array<{ id: string; details: unknown }> = [];
   for (const message of messages) {
     if (
       message.role === "toolResult" &&
       message.toolName === "fabric_exec" &&
-      typeof message.toolCallId === "string"
+      typeof message.toolCallId === "string" &&
+      message.isError !== true
     ) {
       completed.push({ id: message.toolCallId, details: message.details });
     }
