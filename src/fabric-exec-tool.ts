@@ -95,6 +95,7 @@ export const createFabricExecTool = (
       "Pi core tools, MCP, Fabric providers, discovery, and extensions",
     promptGuidelines: [
       "Batch independent operations in one `fabric_exec` program (`Promise.all` for parallel, sequential `await` for ordered), not one call per tool; keep dependent/conditional steps sequential. Return only the compact final value; intermediate results stay in the sandbox.",
+      "Search before reading: use `pi.grep`/`pi.find` to locate relevant lines, then `pi.read({path, offset, limit})` that range. An unbounded `pi.read` returns at most 2000 lines or 50KB and, when truncated, ends with a `Use offset=…` continuation notice; reserve whole-file reads for small files you will use in full.",
     ],
     // The model-facing schema is intentionally flat: one large `code` string
     // plus scalar/optional params. Do not add nested arrays-of-objects with

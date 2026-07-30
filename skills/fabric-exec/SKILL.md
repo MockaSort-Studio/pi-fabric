@@ -28,6 +28,18 @@ One type-checked TS program in a fresh executor (isolated QuickJS by default). O
 
 Aliases (normalized to canonical before the host validates args): `cmd`/`shell`/`cmdline`→`command`; Bash `timeout` is in seconds, while `timeoutMs` is converted from milliseconds to `timeout`; `query`/`regex`/`search`→`pattern`; `ic`/`caseInsensitive`→`ignoreCase`; `globPattern`→`glob`; `ctx`→`context`; `max`→`limit`; `file`/`dir`→`path`; `start`→`offset`; `old`→`oldText`; `new`/`replacement`→`newText`; `contents`/`body`/`text`→`content`. Misspelled keys still fail the excess-property type check.
 
+## Read economy
+
+Search before reading. Run `pi.grep`/`pi.find` first, then `pi.read({ path, offset, limit })` the matching range instead of unbounded whole-file reads:
+
+```ts
+// Locate the symbol, then read only the window around the hit.
+const hits = await pi.grep({ pattern: "targetSymbol", path: "src", context: 2 });
+const window = await pi.read({ path: "src/engine.ts", offset: 120, limit: 80 });
+```
+
+An unbounded `pi.read('/x')` returns at most 2000 lines or 50KB (whichever is hit first); truncated output ends with a `[Showing lines a-b of N. Use offset=n to continue.]` notice — continue with `offset` only when you truly need the full file. Reserve whole-file reads for small files you will use in full (configs, tests or files you are about to edit, sources under a few hundred lines). Batching several large whole-file reads into one program inflates the single tool result, and that enlarged result stays in every later turn's context.
+
 Keep multiline or syntax-heavy payloads out of `code`: pass them through `strings` and read `π.key` (for example, `await pi.write("path", π.content)`). TypeScript still parses template-literal contents, including shell heredocs.
 
 ## First-class provider calls
