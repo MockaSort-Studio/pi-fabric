@@ -55,6 +55,12 @@ For sessions that also call pi tools directly (`read`/`write`/`edit`/`grep`/`fin
 
 An external lever outside fabric's control is enabling Anthropic strict tool use at the provider, which prevents the server from sampling keys not in the schema. It is the strongest mitigation for schema drift but trades against Anthropic's complexity limits on strict tool definitions.
 
+## Model-context economy
+
+Fabric keeps the complete authored TypeScript, named strings, result, and audit trace in the session. The provider-facing `context` projection is smaller: after two newer `fabric_exec` calls complete, Fabric replaces an older call's arguments with a bounded summary of its audited operations. Tool-call IDs, outcomes, paths, command previews, model-visible result evidence, and the two most recent calls remain available. This projection is deterministic and non-destructive; resuming, branching, auditing, and the TUI continue to use the original session entries.
+
+Final `fabric_exec` output is capped at 50,000 characters by default, matching Pi's built-in 50KB tool ceiling. The cap keeps the beginning and end with an explicit omission marker. Models should still filter noisy commands and return only useful evidence because source-side projection preserves more relevant information than post-format truncation.
+
 ## Federated participant topology
 
 Fabric separates **identity** from **execution ownership**. Roots, one-shot/recursive agents, and actors have one intrinsic participant record with `rootId`, optional `parentId`, `ownerHostId`, and the owner's authenticated wire identity. Main and Peer are projections of root records. Each process publishes one leased host record and only directly managed participants; recursively discovered UI descendants are never re-advertised by an ancestor. Readers treat every record behind an expired host as stale, so crash cleanup is host-wide rather than entity-by-entity. Shared summaries contain operational metadata only—agent prompts, results, and errors stay local. Local run/actor managers overlay richer private detail only when the directory marks that participant local.
