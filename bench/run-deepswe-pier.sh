@@ -16,6 +16,17 @@ OPEN_SOURCE_ROOT=$(cd "$REPO_ROOT/.." && pwd)
 PIER_ROOT=${PIER_ROOT:-$OPEN_SOURCE_ROOT/pier}
 DEEPSWE_ROOT=${DEEPSWE_ROOT:-$OPEN_SOURCE_ROOT/deep-swe}
 PIER_ENVIRONMENT=${PIER_ENVIRONMENT:-docker}
+PIER_N_ATTEMPTS=${PIER_N_ATTEMPTS:-1}
+PIER_N_CONCURRENT=${PIER_N_CONCURRENT:-1}
+
+if ! [[ "$PIER_N_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "PIER_N_ATTEMPTS must be a positive integer" >&2
+  exit 2
+fi
+if ! [[ "$PIER_N_CONCURRENT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "PIER_N_CONCURRENT must be a positive integer" >&2
+  exit 2
+fi
 
 if [[ -d "$TARGET" ]]; then
   TASK_PATH=$(cd "$TARGET" && pwd)
@@ -126,7 +137,8 @@ PIER_ARGS=(
 PIER_ARGS+=("${FABRIC_ARGS[@]}")
 PIER_ARGS+=(
   --env "$PIER_ENVIRONMENT"
-  --n-concurrent 1
+  --n-attempts "$PIER_N_ATTEMPTS"
+  --n-concurrent "$PIER_N_CONCURRENT"
   --job-name "$JOB_NAME"
   --jobs-dir "$BENCH/results/pier"
   --yes
