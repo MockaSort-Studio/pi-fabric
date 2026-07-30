@@ -148,9 +148,18 @@ def main():
             "results_over_50kb": over50,
         })
     configs = sorted({r["config"] for r in rows})
-    summary = {"run_dir": run_dir, "per_config": {}}
+    summary = {"run_dir": run_dir, "per_config": {}, "per_task": {}}
     for cfg in configs:
         summary["per_config"][cfg] = summarize([r for r in rows if r["config"] == cfg])
+    for task in sorted({r["task"] for r in rows}):
+        summary["per_task"][task] = {
+            cfg: summarize([
+                r for r in rows
+                if r["task"] == task and r["config"] == cfg
+            ])
+            for cfg in configs
+            if any(r["task"] == task and r["config"] == cfg for r in rows)
+        }
     pairs = {}
     for r in rows:
         pairs.setdefault((r["task"], r["rep"]), {})[r["config"]] = r
