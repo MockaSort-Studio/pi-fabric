@@ -34,6 +34,10 @@ if [[ ! -d "$CACHE/.git" ]]; then
 fi
 git -C "$CACHE" fetch --quiet origin >/dev/null 2>&1 || true
 git clone --quiet "$CACHE" "$WORKDIR"
+# pin the task's base state: local main/master == base ref so agents that
+# "branch from main" (per DeepSWE prompts) start from the right tree
+git -C "$WORKDIR" branch -f master "$BASE_REF" 2>/dev/null || true
+git -C "$WORKDIR" branch -f main "$BASE_REF" 2>/dev/null || true
 git -C "$WORKDIR" checkout --quiet "$BASE_REF"
 
 # --- config flags ---
@@ -57,6 +61,7 @@ case "$CONFIG" in
 esac
 
 # --- agent run with watchdog timeout (macOS lacks GNU timeout) ---
+cd "$WORKDIR"
 START=$(python3 -c 'import time;print(time.time())')
 PROMPT="$(cat "$TASK_DIR/prompt.txt")"
 (
@@ -77,7 +82,8 @@ find "$CELL/session-store" -name '*.jsonl' -exec cp {} "$CELL/session/" \; 2>/de
 
 # --- patch artifact ---
 git -C "$WORKDIR" add -A >/dev/null 2>&1
-git -C "$WORKDIR" diff --cached "$BASE_REF" > "$CELL/artifacts/model.patch" 2>/dev/null
+git -C "$WORKDIR" diff --cached "$BASE_REF" -- . ':(exclude)vendor/**' ':(exclude)**/node_modules/**' ':(exclude).verify-bin/**' ':(exclude).verify-out/**' > "$CELL/artifacts/model.patch" 2>/dev/null
+(git -C "$WORKDIR" ls-files --cached -- 'vendor/*' '*/node_modules/*' | sed -e 's/.*/[vendored dependency paths omitted from patch]/' | head -1 >> "$CELL/artifacts/model.patch" 2>/dev/null) || true
 
 # --- metrics from session jsonl ---
 python3 - "$CELL" "$WALL" <<'PYEOF'

