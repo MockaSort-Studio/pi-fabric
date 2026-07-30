@@ -43,6 +43,8 @@ describe("prewalk prompt isolation", () => {
     expect(guidelines).toContain("build or existing test pass alone is not completion");
     expect(guidelines).toContain("batch only independent, bounded work");
     expect(guidelines).toContain("not raw logs or unused intermediate results");
+    expect(guidelines).toContain("pass payloads through top-level `strings`");
+    expect(guidelines).toContain("prefer `pi.edit`/`pi.write`");
   });
 
   it("runs handoff from finalized outer message_end without aborting nested calls", () => {
