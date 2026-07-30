@@ -674,6 +674,50 @@ return "unreachable";
     expect(result.value).toBe("ok");
   });
 
+  it("extends the outer deadline from an explicit pi.bash timeout", async () => {
+    const registry = new ActionRegistry();
+    const descriptor = {
+      name: "bash",
+      description: "fake slow bash",
+      inputSchema: {
+        type: "object",
+        properties: {
+          command: { type: "string" },
+          timeout: { type: "number" },
+        },
+        required: ["command"],
+        additionalProperties: true,
+      },
+      risk: "read" as const,
+    };
+    registry.register({
+      name: "pi",
+      description: "fake pi",
+      async list() { return [descriptor]; },
+      async describe(name) { return name === "bash" ? descriptor : undefined; },
+      async invoke(_name, _args, context) {
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => resolve({ ok: true, output: "ok", details: {} }), 250);
+          context.signal?.addEventListener("abort", () => clearTimeout(timer), { once: true });
+        });
+      },
+    });
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.fullCodeMode = true;
+    config.approvals.read = "allow";
+    config.executor.timeoutMs = 100;
+    const service = new FabricExecutionService(registry, config);
+    const result = await service.execute({
+      code: 'await pi.bash({ command: "slow", timeout: 1 }); return "ok";',
+      signal: undefined,
+      parentToolCallId: "bash-timeout-floor",
+      context: { cwd: process.cwd(), hasUI: false } as ExtensionContext,
+      onPartial() {},
+    });
+    expect(result.success).toBe(true);
+    expect(result.value).toBe("ok");
+  });
+
   it("raises the deadline for literal and computed generic agent refs", async () => {
     const registry = new ActionRegistry();
     const descriptor = {
