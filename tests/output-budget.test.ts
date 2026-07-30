@@ -1,7 +1,19 @@
 import { rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { boundModelOutput } from "../src/output-budget.js";
+import {
+  boundModelOutput,
+  MAX_FAILURE_MODEL_OUTPUT_CHARS,
+  modelOutputBudget,
+} from "../src/output-budget.js";
+
+describe("modelOutputBudget", () => {
+  it("caps failures without reducing successful or stricter configured budgets", () => {
+    expect(modelOutputBudget(50_000, true)).toBe(50_000);
+    expect(modelOutputBudget(50_000, false)).toBe(MAX_FAILURE_MODEL_OUTPUT_CHARS);
+    expect(modelOutputBudget(10_000, false)).toBe(10_000);
+  });
+});
 
 describe("boundModelOutput", () => {
   it("leaves output under budget untouched", async () => {
