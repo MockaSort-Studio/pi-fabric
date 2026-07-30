@@ -116,15 +116,20 @@ TASK_NAME=$(basename "$TASK_PATH")
 JOB_NAME=${PIER_JOB_NAME:-"pi-$CONFIG-$TASK_NAME-$(date +%Y%m%d-%H%M%S)"}
 export PYTHONPATH="$BENCH${PYTHONPATH:+:$PYTHONPATH}"
 
-uv run --directory "$PIER_ROOT" pier run \
-  --path "$TASK_PATH" \
-  --agent-import-path pier_pi_agent:PiCodingAgent \
-  --model openai-codex/gpt-5.6-sol \
-  --agent-kwarg "pi_agent_dir=$AGENT_DIR" \
-  "${FABRIC_ARGS[@]}" \
-  --env "$PIER_ENVIRONMENT" \
-  --n-concurrent 1 \
-  --job-name "$JOB_NAME" \
-  --jobs-dir "$BENCH/results/pier" \
-  --yes \
-  "$@"
+PIER_ARGS=(
+  uv run --directory "$PIER_ROOT" pier run
+  --path "$TASK_PATH"
+  --agent-import-path pier_pi_agent:PiCodingAgent
+  --model openai-codex/gpt-5.6-sol
+  --agent-kwarg "pi_agent_dir=$AGENT_DIR"
+)
+PIER_ARGS+=("${FABRIC_ARGS[@]}")
+PIER_ARGS+=(
+  --env "$PIER_ENVIRONMENT"
+  --n-concurrent 1
+  --job-name "$JOB_NAME"
+  --jobs-dir "$BENCH/results/pier"
+  --yes
+)
+PIER_ARGS+=("$@")
+"${PIER_ARGS[@]}"
