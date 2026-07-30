@@ -21,10 +21,10 @@ One type-checked TS program in a fresh executor (isolated QuickJS by default). O
 | `grep` | `pattern` \| `{pattern,path?,glob?,ignoreCase?,literal?,context?,limit?}` \| `(pattern, path?, limit?)` | `string` |
 | `find` | `pattern` \| `{pattern,path?,limit?}` \| `(pattern, path?, limit?)` | `string` |
 | `ls` | `path?` \| `{path?,limit?}` | `string` |
-| `edit` | `{path,edits:[{oldText,newText}],all?}` \| `{path,oldText,newText,all?}` \| `(path, oldText, newText)` | `{ok,output,details}` |
+| `edit` | `{path,edits:[{oldText,newText,all?}],all?}` \| `{path,oldText,newText,all?}` \| `(path, oldText, newText)` | `{ok,output,details}` |
 | `write` | `{path,content}` \| `(path, content)` | `{ok,output,details}` |
 
-For `pi.edit`, `all:true` applies each declared replacement to every non-overlapping occurrence in one file snapshot; omit it for unique anchors.
+For `pi.edit`, entry-level `all:true` applies that replacement to every non-overlapping occurrence; top-level `all:true` applies every entry that way. Omit it for unique anchors.
 
 `bash` rejects on an ordinary nonzero exit; pass `settle:true` to get `{ok:false,output,details:null,exitCode,error}` instead of a rejection. Timeout, cancellation, approval, security, and spawn failures still reject. Other Pi core tool errors reject normally.
 
