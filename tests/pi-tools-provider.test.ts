@@ -267,6 +267,66 @@ describe("PiToolsProvider lifecycle", () => {
     }
   });
 
+  it("applies all repeated edit anchors through one native mutation", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-edit-all-"));
+    const filePath = path.join(cwd, "example.txt");
+    try {
+      fs.writeFileSync(filePath, "needle one\nneedle two\n");
+      const registry = new ActionRegistry();
+      registry.register(new PiToolsProvider(cwd, undefined, undefined));
+      const result = await registry.invoke(
+        "pi.edit",
+        {
+          path: "example.txt",
+          edits: [{ oldText: "needle", newText: "updated" }],
+          all: true,
+        },
+        {
+          ...baseContext,
+          cwd,
+          extensionContext: { cwd } as ExtensionContext,
+          audits: [],
+        },
+      ) as { ok: boolean; output: string };
+
+      expect(result.ok).toBe(true);
+      expect(fs.readFileSync(filePath, "utf8")).toBe("updated one\nupdated two\n");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves the file unchanged when any replace-all anchor is missing", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-edit-all-atomic-"));
+    const filePath = path.join(cwd, "example.txt");
+    const before = "needle one\nneedle two\n";
+    try {
+      fs.writeFileSync(filePath, before);
+      const registry = new ActionRegistry();
+      registry.register(new PiToolsProvider(cwd, undefined, undefined));
+      await expect(registry.invoke(
+        "pi.edit",
+        {
+          path: "example.txt",
+          edits: [
+            { oldText: "needle", newText: "updated" },
+            { oldText: "missing", newText: "never" },
+          ],
+          all: true,
+        },
+        {
+          ...baseContext,
+          cwd,
+          extensionContext: { cwd } as ExtensionContext,
+          audits: [],
+        },
+      )).rejects.toThrow("edits[1] oldText was not found");
+      expect(fs.readFileSync(filePath, "utf8")).toBe(before);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("captures pre-write content out of band without changing the sandbox result", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-write-preview-"));
     const before = `const value = 1;

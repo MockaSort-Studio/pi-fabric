@@ -98,7 +98,7 @@ describe("pi argument alias flattening", () => {
         'const b = await pi.find({ query: "*.ts" });' +
         'const c = await pi.read({ file: "/x" });' +
         'const d = await pi.write({ file: "/y", content: "z" });' +
-        'const e = await pi.edit({ file: "/x", oldText: "a", newText: "b" });' +
+        'const e = await pi.edit({ file: "/x", oldText: "a", newText: "b", all: true });' +
         'const f = await pi.ls({ dir: "/s" });' +
         'return { a: a.output, b, c, d: d.output, e: e.output, f };',
       GUEST_TYPE_DECLARATIONS,

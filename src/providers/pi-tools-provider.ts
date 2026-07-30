@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import {
   createBashToolDefinition,
   createEditToolDefinition,
@@ -29,6 +31,49 @@ import {
 } from "./write-preview.js";
 
 const MAX_RENDERER_ARGUMENT_CHARS = 200_000;
+const MAX_REPLACE_ALL_FILE_CHARS = 2_000_000;
+
+const expandReplaceAllEdit = (
+  cwd: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> => {
+  const filePath = args.path;
+  if (typeof filePath !== "string") {
+    throw new Error("pi.edit all:true requires a path");
+  }
+  const edits = Array.isArray(args.edits)
+    ? args.edits
+    : [{ oldText: args.oldText, newText: args.newText }];
+  if (edits.length === 0) throw new Error("pi.edit all:true requires at least one edit");
+  const normalized = edits.map((edit, index) => {
+    if (typeof edit !== "object" || edit === null || Array.isArray(edit)) {
+      throw new Error(`pi.edit all:true edits[${index}] must be an object`);
+    }
+    const { oldText, newText } = edit as Record<string, unknown>;
+    if (typeof oldText !== "string" || typeof newText !== "string") {
+      throw new Error(`pi.edit all:true edits[${index}] requires oldText and newText strings`);
+    }
+    if (oldText.length === 0) {
+      throw new Error(`pi.edit all:true edits[${index}] oldText cannot be empty`);
+    }
+    return { oldText, newText };
+  });
+  const resolvedPath = path.resolve(cwd, filePath.startsWith("@") ? filePath.slice(1) : filePath);
+  const current = readFileSync(resolvedPath, "utf8");
+  if (current.length > MAX_REPLACE_ALL_FILE_CHARS) {
+    throw new Error(
+      `pi.edit all:true refuses files over ${MAX_REPLACE_ALL_FILE_CHARS} characters; use scoped unique edits`,
+    );
+  }
+  let next = current;
+  for (const [index, edit] of normalized.entries()) {
+    if (!next.includes(edit.oldText)) {
+      throw new Error(`pi.edit all:true edits[${index}] oldText was not found`);
+    }
+    next = next.replaceAll(edit.oldText, edit.newText);
+  }
+  return { path: filePath, edits: [{ oldText: current, newText: next }] };
+};
 
 const readTools = new Set<PiCoreToolName>(["read", "grep", "find", "ls"]);
 const writeTools = new Set<PiCoreToolName>(["edit", "write"]);
@@ -168,13 +213,18 @@ export class PiToolsProvider implements FabricProvider {
       return this.#capturedTools!.prepareArguments(actionName, args);
     }
     if (!(actionName in this.#tools)) return args;
+    const input = actionName === "edit" && Object.hasOwn(args, "all")
+      ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== "all"))
+      : args;
     const prepare = this.#tools[actionName as PiCoreToolName].prepareArguments;
-    if (!prepare) return args;
-    const prepared = prepare(args);
+    const prepared = prepare ? prepare(input) : input;
     if (typeof prepared !== "object" || prepared === null || Array.isArray(prepared)) {
       throw new Error(`Pi tool ${actionName} prepared non-object arguments`);
     }
-    return prepared as Record<string, unknown>;
+    const record = prepared as Record<string, unknown>;
+    return actionName === "edit" && args.all === true
+      ? expandReplaceAllEdit(this.#cwd, record)
+      : record;
   }
 
   async invoke(
