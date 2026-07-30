@@ -37,7 +37,17 @@ describe("prewalk prompt isolation", () => {
     const start = toolSource.indexOf("promptGuidelines: [");
     const end = toolSource.indexOf("parameters:", start);
     const guidelines = toolSource.slice(start, end);
+    const visibleGuidelines = guidelines
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('"') && line.endsWith('",'));
+    const visibleGuidelineChars = visibleGuidelines.reduce(
+      (total, line) => total + line.length - 3,
+      0,
+    );
 
+    expect(visibleGuidelines).toHaveLength(5);
+    expect(visibleGuidelineChars).toBeLessThanOrEqual(2_200);
     expect(guidelines).toContain("acceptance ledger");
     expect(guidelines).toContain("direct behavioral probes");
     expect(guidelines).toContain("requested public symbols, registrations, and configuration entries");
