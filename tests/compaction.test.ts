@@ -571,7 +571,7 @@ describe("compaction golden determinism", () => {
     expect(first.compaction.summary).toContain("Modified:");
     // No dynamic "now" timestamp: the footer marker is the last entry's timestamp.
     expect(first.compaction.summary).toContain("[compacted 2024-01-0");
-    expect(first.compaction.summary).toContain("memory.recall / vcc_recall-style");
+    expect(first.compaction.summary).toContain("memory.recall");
   });
 
   it("emits only non-empty sections in fixed order", () => {

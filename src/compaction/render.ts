@@ -25,7 +25,7 @@ export interface RenderOptions {
 }
 
 const POINTER_LINE =
-  "For full pre-summary history, search the session log across this entry range (memory.recall / vcc_recall-style).";
+  "For full pre-summary history, search the session log across this entry range (memory.recall).";
 
 const sampledLines = (lines: readonly string[], keep: number): string[] => {
   if (lines.length <= keep) return [...lines];

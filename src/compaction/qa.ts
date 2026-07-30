@@ -259,7 +259,7 @@ export const generateProbes = (events: CompactionEvent[], cutIndex: number): Pro
     id: "footer-recall",
     class: "address",
     question: "What footer pointer enables expansion from the append-only session log?",
-    answer: "memory.recall / vcc_recall-style",
+    answer: "memory.recall",
   });
 
   return probes;
