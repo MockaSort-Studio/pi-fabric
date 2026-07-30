@@ -40,7 +40,9 @@ describe("prewalk prompt isolation", () => {
 
     expect(guidelines).toContain("acceptance ledger");
     expect(guidelines).toContain("direct behavioral probes");
-    expect(guidelines).toContain("build or existing test pass alone is not completion");
+    expect(guidelines).toContain("smallest checks that cover the ledger");
+    expect(guidelines).toContain("instead of rerunning unchanged passing checks");
+    expect(guidelines).toContain("A build alone is not completion");
     expect(guidelines).toContain("one `pi.edit({path, edits:[...]})`");
     expect(guidelines).toContain("`settle:true` for tests or probes");
     expect(guidelines).toContain("`timeout` in seconds once");
