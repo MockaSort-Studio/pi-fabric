@@ -31,14 +31,14 @@ return { models, process: typeof process, require: typeof require };
     const result = await new NodeProcessRuntime().execute(
       'await tools.call({ ref: "pi.bash", args: { timeout: 1 } }); return "ok";',
       async () => {
-        await new Promise((resolve) => setTimeout(resolve, 150));
+        await new Promise((resolve) => setTimeout(resolve, 1_250));
         return { output: "ok" };
       },
       {
         ...options,
-        timeoutMs: 50,
+        timeoutMs: 1_000,
         minimumTimeoutMsForHostCall(ref) {
-          return ref === "fabric.$call" ? 1_000 : undefined;
+          return ref === "fabric.$call" ? 3_000 : undefined;
         },
       },
     );
