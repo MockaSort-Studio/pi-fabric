@@ -29,6 +29,22 @@ describe("prewalk prompt isolation", () => {
     expect(guidelines).not.toContain("handoff");
   });
 
+  it("keeps coding guidance outcome-oriented and context-bounded", () => {
+    const toolSource = fs.readFileSync(
+      path.join(process.cwd(), "src", "fabric-exec-tool.ts"),
+      "utf8",
+    );
+    const start = toolSource.indexOf("promptGuidelines: [");
+    const end = toolSource.indexOf("parameters:", start);
+    const guidelines = toolSource.slice(start, end);
+
+    expect(guidelines).toContain("acceptance ledger");
+    expect(guidelines).toContain("direct behavioral probes");
+    expect(guidelines).toContain("build or existing test pass alone is not completion");
+    expect(guidelines).toContain("batch only independent, bounded work");
+    expect(guidelines).toContain("not raw logs or unused intermediate results");
+  });
+
   it("runs handoff from finalized outer message_end without aborting nested calls", () => {
     const extensionSource = fs.readFileSync(
       path.join(process.cwd(), "src", "index.ts"),

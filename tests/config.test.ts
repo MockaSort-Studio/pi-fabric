@@ -33,6 +33,10 @@ afterEach(() => {
 });
 
 describe("Fabric configuration", () => {
+  it("keeps model-visible execution output at Pi read parity by default", () => {
+    expect(DEFAULT_FABRIC_CONFIG.executor.maxOutputChars).toBe(50_000);
+  });
+
   it("normalizes bounds and approval modes", () => {
     const config = normalizeFabricConfig({
       fullCodeMode: false,

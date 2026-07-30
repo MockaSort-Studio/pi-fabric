@@ -196,7 +196,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     runtime: "quickjs",
     timeoutMs: 120_000,
     memoryLimitBytes: 64 * 1024 * 1024,
-    maxOutputChars: 100_000,
+    maxOutputChars: 50_000,
     maxNestedResultChars: 2_000_000,
     resultFormat: "auto",
   },
