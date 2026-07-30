@@ -109,7 +109,7 @@ describe("pi argument alias flattening", () => {
   it("normalizes aliases inside batched edits", async () => {
     const hostCall = vi.fn(async () => ({ ok: true, output: "edited", details: null }));
     const result = await new QuickJsRuntime().execute(
-      'return pi.edit({ path: "/x", edits: [{ old: "a", replacement: "b" }], all: true });',
+      'return pi.edit({ path: "/x", edits: [{ old: "a", replacement: "b", all: true }] });',
       hostCall,
       options,
     );
@@ -117,8 +117,7 @@ describe("pi argument alias flattening", () => {
     expect(result.error).toBeUndefined();
     expect(hostCall).toHaveBeenCalledWith("pi.edit", {
       path: "/x",
-      edits: [{ oldText: "a", newText: "b" }],
-      all: true,
+      edits: [{ oldText: "a", newText: "b", all: true }],
     }, expect.any(AbortSignal));
   });
 

@@ -324,7 +324,7 @@ type FabricExtensionsApi = Record<string, FabricCapturedTool>;
 // flat edit shape ({ path, oldText, newText }) are also accepted; the runtime
 // proxy normalizes them to the canonical form before the host validates args.
 // Bash timeout is measured in seconds; timeoutMs is converted from milliseconds.
-type PiEditOperation = { oldText: string; newText: string } | { old: string; new: string } | { old: string; replacement: string };
+type PiEditOperation = { oldText: string; newText: string; all?: boolean } | { old: string; new: string; all?: boolean } | { old: string; replacement: string; all?: boolean };
 interface PiToolsApi {
   read(args: string | { path: string; offset?: number; limit?: number; start?: number; max?: number } | { file: string; offset?: number; limit?: number; start?: number; max?: number }): Promise<string>;
   bash(args: string | { command: string; timeout?: number; timeoutMs?: number; settle?: boolean } | { cmd: string; timeout?: number; timeoutMs?: number; settle?: boolean } | { shell: string; timeout?: number; timeoutMs?: number; settle?: boolean }): Promise<{ ok: true; output: string; details: unknown } | { ok: false; output: string; details: null; exitCode: number; error: string }>;

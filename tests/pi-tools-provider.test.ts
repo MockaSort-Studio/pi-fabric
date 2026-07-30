@@ -271,15 +271,17 @@ describe("PiToolsProvider lifecycle", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-edit-all-"));
     const filePath = path.join(cwd, "example.txt");
     try {
-      fs.writeFileSync(filePath, "needle one\nneedle two\n");
+      fs.writeFileSync(filePath, "header\nneedle one\nneedle two\n");
       const registry = new ActionRegistry();
       registry.register(new PiToolsProvider(cwd, undefined, undefined));
       const result = await registry.invoke(
         "pi.edit",
         {
           path: "example.txt",
-          edits: [{ oldText: "needle", newText: "updated" }],
-          all: true,
+          edits: [
+            { oldText: "header", newText: "title" },
+            { oldText: "needle", newText: "updated", all: true },
+          ],
         },
         {
           ...baseContext,
@@ -290,7 +292,7 @@ describe("PiToolsProvider lifecycle", () => {
       ) as { ok: boolean; output: string };
 
       expect(result.ok).toBe(true);
-      expect(fs.readFileSync(filePath, "utf8")).toBe("updated one\nupdated two\n");
+      expect(fs.readFileSync(filePath, "utf8")).toBe("title\nupdated one\nupdated two\n");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

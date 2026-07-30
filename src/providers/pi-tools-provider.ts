@@ -36,6 +36,7 @@ const MAX_REPLACE_ALL_FILE_CHARS = 2_000_000;
 const expandReplaceAllEdit = (
   cwd: string,
   args: Record<string, unknown>,
+  allForEveryEdit: boolean,
 ): Record<string, unknown> => {
   const filePath = args.path;
   if (typeof filePath !== "string") {
@@ -49,16 +50,20 @@ const expandReplaceAllEdit = (
     if (typeof edit !== "object" || edit === null || Array.isArray(edit)) {
       throw new Error(`pi.edit all:true edits[${index}] must be an object`);
     }
-    const { oldText, newText } = edit as Record<string, unknown>;
+    const record = edit as Record<string, unknown>;
+    const { oldText, newText } = record;
     if (typeof oldText !== "string" || typeof newText !== "string") {
       throw new Error(`pi.edit all:true edits[${index}] requires oldText and newText strings`);
     }
     if (oldText.length === 0) {
       throw new Error(`pi.edit all:true edits[${index}] oldText cannot be empty`);
     }
-    return { oldText, newText };
+    return { oldText, newText, all: allForEveryEdit || record.all === true };
   });
-  const resolvedPath = path.resolve(cwd, filePath.startsWith("@") ? filePath.slice(1) : filePath);
+  const resolvedPath = path.resolve(
+    cwd,
+    filePath.startsWith("@") ? filePath.slice(1) : filePath,
+  );
   const current = readFileSync(resolvedPath, "utf8");
   if (current.length > MAX_REPLACE_ALL_FILE_CHARS) {
     throw new Error(
@@ -67,10 +72,18 @@ const expandReplaceAllEdit = (
   }
   let next = current;
   for (const [index, edit] of normalized.entries()) {
-    if (!next.includes(edit.oldText)) {
+    const occurrences = next.split(edit.oldText).length - 1;
+    if (occurrences === 0) {
       throw new Error(`pi.edit all:true edits[${index}] oldText was not found`);
     }
-    next = next.replaceAll(edit.oldText, edit.newText);
+    if (!edit.all && occurrences !== 1) {
+      throw new Error(
+        `pi.edit edits[${index}] found ${occurrences} occurrences; add all:true or use a unique anchor`,
+      );
+    }
+    next = edit.all
+      ? next.replaceAll(edit.oldText, edit.newText)
+      : next.replace(edit.oldText, edit.newText);
   }
   return { path: filePath, edits: [{ oldText: current, newText: next }] };
 };
@@ -222,8 +235,14 @@ export class PiToolsProvider implements FabricProvider {
       throw new Error(`Pi tool ${actionName} prepared non-object arguments`);
     }
     const record = prepared as Record<string, unknown>;
-    return actionName === "edit" && args.all === true
-      ? expandReplaceAllEdit(this.#cwd, record)
+    const hasPerEditAll = actionName === "edit"
+      && Array.isArray(record.edits)
+      && record.edits.some(
+        (edit) => typeof edit === "object" && edit !== null
+          && !Array.isArray(edit) && (edit as Record<string, unknown>).all === true,
+      );
+    return actionName === "edit" && (args.all === true || hasPerEditAll)
+      ? expandReplaceAllEdit(this.#cwd, record, args.all === true)
       : record;
   }
 
