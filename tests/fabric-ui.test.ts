@@ -1,9 +1,18 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { CodePreviewSettings } from "../src/ui/code-preview.js";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { FabricDashboard } from "../src/ui/dashboard.js";
+import {
+  topologyParticipantGroup,
+  topologyStateGroupPath,
+  topologyTopicGroupPath,
+  topologyTreeRouteNodeIds,
+} from "../src/ui/dashboard-fabric-graph.js";
 import { configureHighlighting } from "../src/ui/highlight.js";
 import { wrapPlainText } from "../src/ui/format.js";
 import type { ModelSource } from "../src/ui/model-picker.js";
@@ -2310,6 +2319,32 @@ describe("Fabric dynamic UI", () => {
         createdAt: current.now,
       },
     ];
+    current.state.push(
+      {
+        key: "state/current",
+        label: "Current state",
+        status: "committed",
+        value: { status: "committed" },
+        version: 3,
+        updatedAt: current.now,
+      },
+      {
+        key: "state/complexity/src/index.ts",
+        label: "index.ts complexity",
+        status: "state",
+        value: { count: 12 },
+        version: 1,
+        updatedAt: current.now,
+      },
+      {
+        key: "schema/contracts/transition",
+        label: "Transition contract",
+        status: "state",
+        value: { version: 1 },
+        version: 1,
+        updatedAt: current.now,
+      },
+    );
     const dashboard = new FabricDashboard(
       { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI,
       theme,
@@ -2319,6 +2354,75 @@ describe("Fabric dynamic UI", () => {
     try {
       dashboard.handleInput("2");
       const live = dashboard.render(140).join("\n");
+      let toured = live;
+      for (let index = 0; index < 12; index++) {
+        dashboard.handleInput("\t");
+        toured += `\n${dashboard.render(140).join("\n")}`;
+      }
+      expect(live).toContain("Participants");
+      expect(live).toContain("Mesh");
+      expect(toured).toContain("Fabric");
+      expect(topologyParticipantGroup("root")).toEqual({ id: "sessions", label: "Sessions", order: 0 });
+      expect(topologyParticipantGroup("peer")).toEqual({ id: "sessions", label: "Sessions", order: 0 });
+      expect(topologyParticipantGroup("agent")).toEqual({ id: "agents", label: "Agents", order: 1 });
+      expect(topologyParticipantGroup("actor")).toEqual({ id: "actors", label: "Actors", order: 2 });
+      expect(topologyTopicGroupPath("fabric.state")).toEqual([
+        { id: "fabric", label: "Fabric" },
+      ]);
+      expect(topologyTopicGroupPath("fabric.actor.input")).toEqual([
+        { id: "fabric", label: "Fabric" },
+        { id: "fabric:actor", label: "Actor" },
+      ]);
+      expect(topologyTopicGroupPath("team.review")).toEqual([
+        { id: "project", label: "Project topics" },
+        { id: "project:team", label: "team" },
+      ]);
+      expect(topologyTopicGroupPath("alerts")).toEqual([
+        { id: "project", label: "Project topics" },
+      ]);
+      expect(topologyStateGroupPath("state/current")).toEqual([
+        { id: "world", label: "World state" },
+      ]);
+      expect(topologyStateGroupPath("state/complexity/src/index.ts")).toEqual([
+        { id: "world", label: "World state" },
+        { id: "world:complexity", label: "Complexity" },
+        { id: "world:complexity:src", label: "src" },
+      ]);
+      expect(topologyStateGroupPath("schema/workspace")).toEqual([
+        { id: "schema", label: "Schema" },
+      ]);
+      expect(topologyStateGroupPath("schema/hypothesis/abc")).toEqual([
+        { id: "schema", label: "Schema" },
+        { id: "schema:hypotheses", label: "Hypotheses" },
+      ]);
+      expect(topologyStateGroupPath("schema/certificate/abc")).toEqual([
+        { id: "schema", label: "Schema" },
+        { id: "schema:certificates", label: "Certificates" },
+      ]);
+      expect(topologyStateGroupPath("tasks/package-a")).toEqual([
+        { id: "project", label: "Project state" },
+        { id: "project:tasks", label: "tasks" },
+      ]);
+      const tree = new Map<string, { parentId?: string }>([
+        ["main", {}],
+        ["participants", { parentId: "main" }],
+        ["agents", { parentId: "participants" }],
+        ["agent", { parentId: "agents" }],
+        ["mesh", { parentId: "main" }],
+        ["topics", { parentId: "mesh" }],
+        ["fabric", { parentId: "topics" }],
+        ["fabric.state", { parentId: "fabric" }],
+      ]);
+      expect(topologyTreeRouteNodeIds(tree, "agent", "fabric.state")).toEqual([
+        "agent",
+        "agents",
+        "participants",
+        "main",
+        "mesh",
+        "topics",
+        "fabric",
+        "fabric.state",
+      ]);
       expect(live).toContain("fabric.state");
       expect(live).not.toContain("main → fabric.state");
       expect(live).toContain("live decay");
@@ -2334,9 +2438,62 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput("H");
       expect(dashboard.render(140).join("\n")).toContain("history");
       dashboard.handleInput("M");
-      expect(dashboard.render(140).join("\n")).toContain("reduced motion");
+      expect(dashboard.render(140).join("\n")).toContain("motion:reduced");
     } finally {
       dashboard.dispose();
+    }
+  });
+
+  it("renders state-owned project files with highlighted readable previews", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-state-preview-"));
+    fs.mkdirSync(path.join(root, "src"));
+    fs.writeFileSync(
+      path.join(root, "src", "answer.ts"),
+      "export const answer: number = 42;\nif (answer > 0) console.log(answer);\n",
+    );
+    const current = snapshot();
+    current.main.cwd = root;
+    current.runs = [];
+    current.agents = [];
+    current.actors = [];
+    current.events = [];
+    current.state = [{
+      key: "state/complexity/src/answer.ts",
+      label: "state/complexity/src/answer.ts",
+      status: "state",
+      value: {
+        file: "src/answer.ts",
+        language: "typescript/javascript",
+        count: 1,
+      },
+      version: 1,
+      updatedAt: current.now,
+    }];
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      dashboard.handleInput("2");
+      dashboard.handleInput("G");
+      const topology = dashboard.render(140).join("\n");
+      const topologyText = topology.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+      expect(topologyText).toContain("file src/answer.ts");
+      expect(topologyText).toContain("export const answer");
+      expect(topologyText).toContain("1 │");
+
+      dashboard.handleInput("\r");
+      const detail = dashboard.render(140).join("\n");
+      const detailText = detail.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+      expect(detailText).toContain("File: src/answer.ts");
+      expect(detailText).toContain("Preview:");
+      expect(detailText).toContain("if (answer > 0)");
+      expect(detailText).toContain("2 │");
+    } finally {
+      dashboard.dispose();
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 

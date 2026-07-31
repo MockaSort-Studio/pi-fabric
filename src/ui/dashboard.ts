@@ -49,6 +49,7 @@ import { formatClock, formatDuration, formatTokens, padToWidth, safeText, wrapPl
 import { highlightCode } from "./highlight.js";
 import { INHERIT_VALUE, type ModelSource } from "./model-picker.js";
 import { formatJsonAsYaml } from "./structured.js";
+import { loadStateFilePreview, renderStateFilePreview } from "./state-file-preview.js";
 import {
   buildProjectMeshTopology,
   type FabricProjectMeshModel,
@@ -141,6 +142,7 @@ export class FabricDashboard implements Component, Focusable {
   private graphReplaySpeed = 1;
   private graphReplayAdvancedAt = 0;
   private graphReplayLength = 0;
+  private graphReplayLabel: string | undefined;
   private phaseIndex = 0;
   private entityIndex = 0;
   private runIndex = 0;
@@ -1042,7 +1044,7 @@ export class FabricDashboard implements Component, Focusable {
     const help = [
       ["Navigate", "Topology: arrows/h/l move spatially · j/k ordered selection · tab next · enter inspect · esc back"],
       ["Views", "1 Activity · 2 unified Topology"],
-      ["Topology", "One spring-followed graph maps Main, peers, agents, actors, topics, and shared state; traffic travels on decaying edges"],
+      ["Topology", "Main branches into Participants (sessions, agents, actors) and Mesh (namespaced topics and hierarchical state); traffic travels on decaying edges"],
       ["Motion", "r replay/live · space pause/play · ←/→ step · +/- speed · H history · M reduced motion"],
       ["Runs", "[ older · ] newer · f cycle status filter"],
       ...(mainActions.length > 1 ? [["Main", mainActions.join(" · ")]] : []),
@@ -1469,11 +1471,8 @@ export class FabricDashboard implements Component, Focusable {
             run?.currentPhaseId
               ? `current ${run.phases.find((phase) => phase.id === run.currentPhaseId)?.name ?? run.currentPhaseId}`
               : undefined,
-            `${snapshot.agents.filter((agent) => isActiveStatus(agent.status)).length}/${snapshot.agents.length} agents active`,
-            `${activeActors}/${snapshot.actors.length} actors active`,
-            `${meshModel.participants.length} remote participants`,
-            `${meshModel.topics.length} topics`,
-            `${snapshot.state.length} state`,
+            `Participants ${snapshot.agents.filter((agent) => isActiveStatus(agent.status)).length}/${snapshot.agents.length} agents · ${activeActors}/${snapshot.actors.length} actors · ${meshModel.participants.length} remote`,
+            `Mesh ${meshModel.topics.length} topics · ${snapshot.state.length} state`,
             this.graphReplayIndex !== undefined
               ? `${this.graphReplayPlaying ? "▶" : "Ⅱ"} replay ${this.graphReplayIndex + 1}/${Math.max(1, this.graphReplayLength)} · ${this.graphReplaySpeed}×`
               : undefined,
@@ -1563,6 +1562,7 @@ export class FabricDashboard implements Component, Focusable {
       const replayFrame = this.graphReplayIndex === undefined
         ? undefined
         : replayFrames[this.graphReplayIndex];
+      this.graphReplayLabel = replayFrame?.event.kind;
       const renderGraph = () => renderFabricTopologyPanel({
         theme: this.theme,
         filter: this.filter,
@@ -1575,6 +1575,7 @@ export class FabricDashboard implements Component, Focusable {
         width: innerWidth,
         height: maxBody,
         camera: this.graphCamera,
+        invalidate: this.highlightInvalidate,
         animation: {
           now: Date.now(),
           reducedMotion: this.graphReducedMotion,
@@ -1661,8 +1662,8 @@ export class FabricDashboard implements Component, Focusable {
     const navigationHint =
       this.overviewView === "topology"
         ? this.graphReplayIndex !== undefined
-          ? `replay ${this.graphReplayIndex + 1}/${Math.max(1, this.graphReplayLength)} · r live · space ${this.graphReplayPlaying ? "pause" : "play"} · ←/→ step · +/- speed:${this.graphReplaySpeed}× · H history · M motion · ? help`
-          : `arrows/h/l move · j/k order · r replay · H history · M motion · f filter:${this.filter} · 1 activity · ? help`
+          ? `replay ${this.graphReplayIndex + 1}/${Math.max(1, this.graphReplayLength)}${this.graphReplayLabel ? ` · ${safeText(this.graphReplayLabel)}` : ""} · r live · space ${this.graphReplayPlaying ? "pause" : "play"} · ←/→ step · +/- speed:${this.graphReplaySpeed}× · H history · M motion:${this.graphReducedMotion ? "reduced" : "full"} · ? help`
+          : `arrows/h/l move · j/k order · r replay · H history · M motion:${this.graphReducedMotion ? "reduced" : "full"} · f filter:${this.filter} · 1 activity · ? help`
         : `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · 2 topology · [ older · ] newer · ? help`;
     lines.push(this.row(width, this.theme.fg("dim", navigationHint)));
     const selectedEntity = entities[this.entityIndex];
@@ -1890,7 +1891,7 @@ export class FabricDashboard implements Component, Focusable {
     const lines = [this.topBorder(width, `${kindLabel} · ${entity.label}${viewLabel}`)];
     const content = transcriptView
       ? this.transcriptLines(entity, innerWidth)
-      : this.detailLines(entity, innerWidth, snapshot.now);
+      : this.detailLines(entity, innerWidth, snapshot.now, snapshot.main.cwd ?? process.cwd());
     const terminalRows = this.tui.terminal?.rows ?? process.stdout.rows ?? 28;
     const maxBody = Math.max(1, Math.min(24, terminalRows - 8 - actionLines.length));
     const maxScroll = Math.max(0, content.length - maxBody);
@@ -2254,7 +2255,7 @@ export class FabricDashboard implements Component, Focusable {
     return "Read-only detail.";
   }
 
-  private detailLines(entity: Entity, width: number, now: number): string[] {
+  private detailLines(entity: Entity, width: number, now: number, cwd: string): string[] {
     const lines: string[] = [];
     const field = (label: string, value: unknown): void => {
       const text = safeText(value);
@@ -2561,6 +2562,18 @@ export class FabricDashboard implements Component, Focusable {
       field("Version", entry.version);
       field("Updated", new Date(entry.updatedAt).toLocaleString());
       field("Detail", entry.detail);
+      const filePreview = loadStateFilePreview(entry, cwd);
+      if (filePreview) {
+        field("File", filePreview.path);
+        lines.push(this.theme.fg("dim", "Preview:"));
+        lines.push(...renderStateFilePreview(
+          filePreview,
+          this.theme,
+          width,
+          120,
+          this.highlightInvalidate,
+        ));
+      }
       structuredField("Value", entry.value);
     }
     return lines.length > 0 ? lines : [this.theme.fg("dim", "No details")];
@@ -2720,7 +2733,7 @@ export class FabricDashboard implements Component, Focusable {
       (entity.kind === "agent" || entity.kind === "actor") && this.detailView === "transcript";
     const content = transcriptView
       ? this.transcriptLines(entity, width)
-      : this.detailLines(entity, width, snapshot.now);
+      : this.detailLines(entity, width, snapshot.now, snapshot.main.cwd ?? process.cwd());
     const terminalRows = this.tui.terminal?.rows ?? process.stdout.rows ?? 28;
     const maxBody = Math.max(1, terminalRows - 2);
     this.detailMaxScroll = Math.max(0, content.length - maxBody);

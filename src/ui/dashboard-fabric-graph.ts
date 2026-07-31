@@ -7,6 +7,7 @@ import { padToWidth, safeText } from "./format.js";
 import type { FabricProjectMeshModel, FabricProjectMeshRoute } from "./topology.js";
 import type { FabricDashboardSnapshot } from "./types.js";
 import { isActiveStatus } from "./types.js";
+import { loadStateFilePreview, renderStateFilePreview } from "./state-file-preview.js";
 
 export interface FabricGraphPoint {
   x: number;
@@ -19,6 +20,7 @@ type GraphNodeKind =
   | "agent"
   | "actor"
   | "participant"
+  | "group"
   | "topic"
   | "state"
   | "route";
@@ -33,6 +35,7 @@ interface GraphNode {
   startedAt?: number;
   queued?: number;
   stale?: boolean;
+  order?: number;
   x: number;
   y: number;
 }
@@ -68,10 +71,11 @@ const kindRank: Record<GraphNodeKind, number> = {
   actor: 1,
   participant: 2,
   peer: 3,
-  topic: 4,
-  state: 5,
-  route: 6,
-  main: 7,
+  group: 4,
+  topic: 5,
+  state: 6,
+  route: 7,
+  main: 8,
 };
 
 const activeRank = (status: string): number =>
@@ -130,6 +134,7 @@ const graphGlyph = (node: GraphNode, animation: FabricGraphAnimation): string =>
     return "◇";
   }
   if (node.kind === "peer") return "◈";
+  if (node.kind === "group") return "▱";
   if (node.kind === "topic") {
     const hot = node.activityAt !== undefined && animation.now - node.activityAt <= 10_000;
     return hot && !animation.reducedMotion ? ["◎", "◉", "⦿", "◉"][frame % 4]! : "◎";
@@ -151,10 +156,94 @@ const graphGlyph = (node: GraphNode, animation: FabricGraphAnimation): string =>
   return "■";
 };
 
+const PARTICIPANTS_GROUP_ID = "group:participants";
+const MESH_GROUP_ID = "group:mesh";
+const TOPICS_GROUP_ID = "group:mesh:topics";
+const STATE_GROUP_ID = "group:mesh:state";
+
+export interface FabricTopologyGroupSegment {
+  id: string;
+  label: string;
+}
+
+export const topologyParticipantGroup = (
+  kind: "root" | "peer" | "agent" | "actor",
+): FabricTopologyGroupSegment & { order: number } => {
+  if (kind === "actor") return { id: "actors", label: "Actors", order: 2 };
+  if (kind === "agent") return { id: "agents", label: "Agents", order: 1 };
+  return { id: "sessions", label: "Sessions", order: 0 };
+};
+
+const titleSegment = (value: string): string =>
+  value.length === 0 ? value : value[0]!.toUpperCase() + value.slice(1);
+
+const namespaceParts = (value: string): string[] =>
+  value.split(/[.:/]+/).map((part) => part.trim()).filter(Boolean);
+
+export const topologyTopicGroupPath = (name: string): FabricTopologyGroupSegment[] => {
+  const parts = namespaceParts(name);
+  if (parts[0] === "fabric") {
+    return [
+      { id: "fabric", label: "Fabric" },
+      ...(parts.length > 2 && parts[1]
+        ? [{ id: `fabric:${parts[1]}`, label: titleSegment(parts[1]) }]
+        : []),
+    ];
+  }
+  return [
+    { id: "project", label: "Project topics" },
+    ...(parts.length > 1 && parts[0]
+      ? [{ id: `project:${parts[0]}`, label: parts[0] }]
+      : []),
+  ];
+};
+
+export const topologyStateGroupPath = (key: string): FabricTopologyGroupSegment[] => {
+  const parts = key.split("/").map((part) => part.trim()).filter(Boolean);
+  if (parts[0] === "state") {
+    const path: FabricTopologyGroupSegment[] = [{ id: "world", label: "World state" }];
+    if (parts[1] === "complexity") {
+      let prefix = "world:complexity";
+      path.push({ id: prefix, label: "Complexity" });
+      for (const directory of parts.slice(2, -1)) {
+        prefix += `:${directory}`;
+        path.push({ id: prefix, label: directory });
+      }
+    } else {
+      let prefix = "world";
+      for (const directory of parts.slice(1, -1)) {
+        prefix += `:${directory}`;
+        path.push({ id: prefix, label: titleSegment(directory) });
+      }
+    }
+    return path;
+  }
+  if (parts[0] === "schema") {
+    const path: FabricTopologyGroupSegment[] = [{ id: "schema", label: "Schema" }];
+    const family = parts[1];
+    if (family === "hypothesis") path.push({ id: "schema:hypotheses", label: "Hypotheses" });
+    else if (family === "certificate") path.push({ id: "schema:certificates", label: "Certificates" });
+    else {
+      let prefix = "schema";
+      for (const directory of parts.slice(1, -1)) {
+        prefix += `:${directory}`;
+        path.push({ id: prefix, label: titleSegment(directory) });
+      }
+    }
+    return path;
+  }
+  const path: FabricTopologyGroupSegment[] = [{ id: "project", label: "Project state" }];
+  let prefix = "project";
+  for (const directory of parts.slice(0, -1)) {
+    prefix += `:${directory}`;
+    path.push({ id: prefix, label: directory });
+  }
+  return path;
+};
+
 const parentReference = (entity: Entity): string | undefined => {
   if (entity.kind === "agent") return entity.value.parentId ?? entity.value.actorId;
   if (entity.kind === "meshParticipant") return entity.value.participant?.parentId;
-  if (entity.kind === "state") return entity.value.owner;
   if (entity.kind === "meshRoute") return entity.value.fromId;
   return undefined;
 };
@@ -177,11 +266,78 @@ const buildLayout = (
   aliases.set(snapshot.main.name, mainId);
   aliases.set("main", mainId);
 
+  const groups = new Map<string, GraphNode>();
+  const ensureGroup = (
+    id: string,
+    label: string,
+    parentId: string,
+    order: number,
+  ): string => {
+    if (!groups.has(id)) {
+      groups.set(id, {
+        id,
+        label,
+        status: "idle",
+        kind: "group",
+        parentId,
+        order,
+        x: 0,
+        y: 0,
+      });
+    }
+    return id;
+  };
+  const ensurePath = (
+    rootId: string,
+    path: FabricTopologyGroupSegment[],
+  ): string => {
+    let parentId = rootId;
+    for (let index = 0; index < path.length; index++) {
+      const segment = path[index]!;
+      const id = `${rootId}:${segment.id}`;
+      parentId = ensureGroup(id, segment.label, parentId, index);
+    }
+    return parentId;
+  };
+  const participantCategory = (entity: Entity): FabricTopologyGroupSegment & { order: number } => {
+    if (entity.kind === "actor") return topologyParticipantGroup("actor");
+    if (entity.kind === "agent") return topologyParticipantGroup("agent");
+    if (entity.kind === "peer") return topologyParticipantGroup("peer");
+    return topologyParticipantGroup(
+      entity.kind === "meshParticipant" ? entity.value.participant?.kind ?? "root" : "root",
+    );
+  };
   const nodes: GraphNode[] = entities
     .filter((entity) => entity.kind !== "meshRoute")
     .map((entity) => {
       const parentRef = parentReference(entity);
-      const parentId = parentRef ? aliases.get(parentRef) : undefined;
+      const explicitParentId = parentRef ? aliases.get(parentRef) : undefined;
+      let parentId = explicitParentId;
+      if (entity.kind !== "main") {
+        if (
+          ["agent", "actor", "peer", "meshParticipant"].includes(entity.kind) &&
+          (!parentId || parentId === mainId)
+        ) {
+          ensureGroup(PARTICIPANTS_GROUP_ID, "Participants", mainId, 0);
+          const category = participantCategory(entity);
+          parentId = ensureGroup(
+            `${PARTICIPANTS_GROUP_ID}:${category.id}`,
+            category.label,
+            PARTICIPANTS_GROUP_ID,
+            category.order,
+          );
+        } else if (entity.kind === "meshTopic") {
+          ensureGroup(MESH_GROUP_ID, "Mesh", mainId, 1);
+          ensureGroup(TOPICS_GROUP_ID, "Topics", MESH_GROUP_ID, 0);
+          parentId = ensurePath(TOPICS_GROUP_ID, topologyTopicGroupPath(entity.value.name));
+        } else if (entity.kind === "state") {
+          ensureGroup(MESH_GROUP_ID, "Mesh", mainId, 1);
+          ensureGroup(STATE_GROUP_ID, "State", MESH_GROUP_ID, 1);
+          parentId = ensurePath(STATE_GROUP_ID, topologyStateGroupPath(entity.value.key));
+        } else if (!parentId) {
+          parentId = mainId;
+        }
+      }
       const activityAt = entity.kind === "meshTopic" ? entity.value.lastEventAt : undefined;
       const startedAt = entity.kind === "agent" ? entity.value.startedAt : undefined;
       const queued = entity.kind === "actor" ? entity.value.queued : undefined;
@@ -192,10 +348,14 @@ const buildLayout = (
           : undefined;
       return {
         id: entity.id,
-        label: entity.kind === "main" ? "Main" : entity.label,
+        label: entity.kind === "main"
+          ? "Main"
+          : entity.kind === "state" && entity.value.label === entity.value.key
+            ? entity.value.key.split("/").at(-1) ?? entity.value.label
+            : entity.label,
         status: entity.status,
         kind: nodeKind(entity),
-        ...(entity.kind !== "main" ? { parentId: parentId ?? mainId } : {}),
+        ...(parentId ? { parentId } : {}),
         ...(activityAt !== undefined ? { activityAt } : {}),
         ...(startedAt !== undefined ? { startedAt } : {}),
         ...(queued !== undefined ? { queued } : {}),
@@ -204,6 +364,7 @@ const buildLayout = (
         y: 0,
       };
     });
+  nodes.push(...groups.values());
 
   const nodeById = new Map(nodes.map((node) => [node.id, node] as const));
   const children = new Map<string, GraphNode[]>();
@@ -222,6 +383,7 @@ const buildLayout = (
       (left, right) =>
         activeRank(left.status) - activeRank(right.status) ||
         Number(inSelectedRun(right)) - Number(inSelectedRun(left)) ||
+        (left.order ?? 0) - (right.order ?? 0) ||
         kindRank[left.kind] - kindRank[right.kind] ||
         left.label.localeCompare(right.label),
     );
@@ -236,7 +398,7 @@ const buildLayout = (
     const descendants = (children.get(node.id) ?? []).filter((child) => !visited.has(child.id));
     if (descendants.length === 0) {
       node.y = nextLeafY;
-      nextLeafY += 3;
+      nextLeafY += 2;
       return node.y;
     }
     const childRows = descendants.map((child) => place(child, depth + 1));
@@ -263,6 +425,14 @@ const buildLayout = (
     for (const subscriber of topic.subscribers) {
       const source = aliases.get(subscriber.id) ?? aliases.get(subscriber.name);
       if (source && source !== target) edges.push({ from: source, to: target, kind: "subscription" });
+    }
+  }
+  for (const entity of entities) {
+    if (entity.kind !== "state" || !entity.value.owner) continue;
+    const owner = aliases.get(entity.value.owner);
+    const target = aliases.get(entity.value.key) ?? aliases.get(entity.value.label);
+    if (owner && target && owner !== target) {
+      edges.push({ from: owner, to: target, kind: "subscription" });
     }
   }
   for (const route of mesh.routes) {
@@ -299,6 +469,34 @@ const styleForStatus = (status: string): Cell["style"] => {
   if (status === "blocked") return "warning";
   if (isActiveStatus(status)) return "success";
   return "dim";
+};
+
+export const topologyTreeRouteNodeIds = (
+  nodes: ReadonlyMap<string, { parentId?: string }>,
+  fromId: string,
+  toId: string,
+): string[] => {
+  if (fromId === toId) return [fromId];
+  const ancestry = (start: string): string[] => {
+    const path: string[] = [];
+    const seen = new Set<string>();
+    let current: string | undefined = start;
+    while (current && !seen.has(current)) {
+      path.push(current);
+      seen.add(current);
+      current = nodes.get(current)?.parentId;
+    }
+    return path;
+  };
+  const fromAncestors = ancestry(fromId);
+  const fromSet = new Set(fromAncestors);
+  const toAncestors = ancestry(toId);
+  const common = toAncestors.find((id) => fromSet.has(id));
+  if (!common) return [fromId, toId];
+  return [
+    ...fromAncestors.slice(0, fromAncestors.indexOf(common) + 1),
+    ...toAncestors.slice(0, toAncestors.indexOf(common)).reverse(),
+  ];
 };
 
 const routeGlyph = (route: FabricProjectMeshRoute): string => {
@@ -375,7 +573,7 @@ const renderCanvas = (
       addMask(x, y, (y > worldStart ? 1 : 0) | (y < worldEnd ? 4 : 0));
     }
   };
-  const pathPoints = (from: GraphNode, to: GraphNode): FabricGraphPoint[] => {
+  const edgePathPoints = (from: GraphNode, to: GraphNode): FabricGraphPoint[] => {
     const fromEnd = from.x + Math.min(16, visibleWidth(safeText(from.label)) + 3);
     const toStart = to.x - 2;
     const bend = Math.max(fromEnd + 1, Math.floor((fromEnd + toStart) / 2));
@@ -391,6 +589,25 @@ const renderCanvas = (
     appendLine(fromEnd, from.y, bend, from.y);
     appendLine(bend, from.y, bend, to.y);
     appendLine(bend, to.y, toStart, to.y);
+    return points;
+  };
+  const treePathPoints = (from: GraphNode, to: GraphNode): FabricGraphPoint[] => {
+    const ids = topologyTreeRouteNodeIds(nodeById, from.id, to.id);
+    const points: FabricGraphPoint[] = [];
+    for (let index = 0; index < ids.length - 1; index++) {
+      const left = nodeById.get(ids[index]!);
+      const right = nodeById.get(ids[index + 1]!);
+      if (!left || !right) continue;
+      const segment = right.parentId === left.id
+        ? edgePathPoints(left, right)
+        : left.parentId === right.id
+          ? edgePathPoints(right, left).reverse()
+          : edgePathPoints(left, right);
+      const previous = points.at(-1);
+      const first = segment[0];
+      if (previous && first && previous.x === first.x && previous.y === first.y) segment.shift();
+      points.push(...segment);
+    }
     return points;
   };
 
@@ -421,7 +638,7 @@ const renderCanvas = (
     if (!from || !to) continue;
     if (!edge.route) {
       if (edge.from !== selectedEntityId && edge.to !== selectedEntityId) continue;
-      const points = pathPoints(from, to);
+      const points = treePathPoints(from, to);
       for (let index = 0; index < points.length; index += 2) {
         const point = points[index]!;
         setCell(point.x, point.y, "·", "accent");
@@ -435,7 +652,7 @@ const renderCanvas = (
   }
 
   for (const group of traffic.values()) {
-    const points = pathPoints(group.from, group.to);
+    const points = treePathPoints(group.from, group.to);
     if (points.length === 0) continue;
     const selected = group.routes.find((route) => route.id === selectedEntityId);
     const replay = group.routes.find((route) => route.id === animation.replayRouteId);
@@ -548,6 +765,7 @@ const inspectorLines = (
   run: FabricActivityRun | undefined,
   width: number,
   height: number,
+  invalidate?: () => void,
 ): string[] => {
   const inner = Math.max(1, width - 2);
   const border = (value: string): string => theme.fg("borderMuted", value);
@@ -580,6 +798,18 @@ const inspectorLines = (
     } else if (entity.kind === "state") {
       content.push(`version ${entity.value.version}`);
       if (entity.value.owner) content.push(`owner   ${safeText(entity.value.owner)}`);
+      const filePreview = loadStateFilePreview(entity.value, snapshot.main.cwd ?? process.cwd());
+      if (filePreview) {
+        content.push("");
+        content.push(`file ${safeText(filePreview.path)}`);
+        content.push(...renderStateFilePreview(
+          filePreview,
+          theme,
+          Math.max(1, inner - 2),
+          Math.max(0, height - content.length - 3),
+          invalidate,
+        ));
+      }
     }
   } else {
     content.push(theme.fg("dim", "No node selected"));
@@ -634,6 +864,7 @@ export const renderFabricTopologyPanel = ({
   height,
   camera,
   animation,
+  invalidate,
 }: {
   theme: Theme;
   filter: StatusFilter;
@@ -647,6 +878,7 @@ export const renderFabricTopologyPanel = ({
   height: number;
   camera: FabricGraphPoint;
   animation: FabricGraphAnimation;
+  invalidate?: () => void;
 }): FabricTopologyRenderResult => {
   const graphEntities = graphContextEntities(allEntities, entities);
   const layout = buildLayout(snapshot, graphEntities, run, mesh);
@@ -656,7 +888,7 @@ export const renderFabricTopologyPanel = ({
   const graphWidth = Math.max(1, width - inspectorWidth);
   const graph = renderCanvas(theme, layout, selected?.id, graphWidth, height, camera, animation);
   const inspector = inspectorWidth > 0
-    ? inspectorLines(theme, selected, snapshot, run, inspectorWidth, height)
+    ? inspectorLines(theme, selected, snapshot, run, inspectorWidth, height, invalidate)
     : [];
   const lines = inspectorWidth > 0
     ? graph.map((line, index) =>
@@ -693,6 +925,7 @@ export const renderFabricTopologyPanel = ({
       "■ agent",
       "◇ actor",
       "◎ topic",
+      "▱ group",
       animation.replayRouteId ? "▶ replay" : animation.showHistory ? "history" : "live decay",
       animation.reducedMotion ? "reduced motion" : undefined,
       filter !== "all" ? `${entities.length}/${allEntities.length} ${filter}` : undefined,
