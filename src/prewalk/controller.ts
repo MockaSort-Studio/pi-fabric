@@ -1,5 +1,6 @@
 import type { FabricPrewalkMode } from "../config.js";
 import type { FabricCallAudit } from "../core/action-registry.js";
+import { isFabricThinking, type FabricThinking } from "../thinking.js";
 
 const PREWALK_TRIGGER_REFS = new Set([
   "pi.edit",
@@ -14,6 +15,7 @@ interface FabricPrewalkArm {
   armedAt: number;
   alwaysRearm: boolean;
   task?: string;
+  thinking?: FabricThinking;
 }
 
 export type FabricPrewalkStatus =
@@ -43,9 +45,13 @@ export class PrewalkController {
     sessionId: string;
     task?: string;
     alwaysRearm?: boolean;
+    thinking?: FabricThinking;
   }): FabricPrewalkStatus {
     const model = input.model.trim();
     if (!model.includes("/")) throw new Error("Prewalk requires a provider/model executor target");
+    if (input.thinking !== undefined && !isFabricThinking(input.thinking)) {
+      throw new Error(`Invalid prewalk thinking level: ${String(input.thinking)}`);
+    }
     const task = normalizedTask(input.task);
     this.#status = {
       state: "armed",
@@ -55,6 +61,7 @@ export class PrewalkController {
       armedAt: Date.now(),
       alwaysRearm: input.alwaysRearm === true,
       ...(task ? { task } : {}),
+      ...(input.thinking ? { thinking: input.thinking } : {}),
     };
     return this.status();
   }
@@ -104,6 +111,7 @@ export class PrewalkController {
       sessionId: this.#status.sessionId,
       armedAt: Date.now(),
       alwaysRearm: true,
+      ...(this.#status.thinking ? { thinking: this.#status.thinking } : {}),
     };
     return this.status();
   }
@@ -125,6 +133,7 @@ export class PrewalkController {
       armedAt: this.#status.armedAt,
       alwaysRearm: this.#status.alwaysRearm,
       ...(this.#status.task ? { task: this.#status.task } : {}),
+      ...(this.#status.thinking ? { thinking: this.#status.thinking } : {}),
     };
     this.#status = { state: "handing_off", ...arm };
     return { arm, mutation };

@@ -272,10 +272,123 @@ describe("outer-boundary Prewalk", () => {
       completed: true,
       implementation: "implemented",
     });
+    expect(ext.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customType: "pi-fabric-prewalk-continue",
+        display: false,
+        content: expect.stringContaining("do not redo it"),
+        details: expect.objectContaining({ mode: "trajectory" }),
+      }),
+      { deliverAs: "followUp", triggerTurn: true },
+    );
     expect(ctx.setStatus).toHaveBeenLastCalledWith(
       "fabric-prewalk",
       "trajectory executor implemented",
     );
+  });
+
+  it("does not queue the verify continuation after a failed trajectory handoff", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      mode: "trajectory",
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "auto");
+    const ctx = context();
+    const ext = extension();
+    const runner = {
+      executeHandoff: vi.fn(async () => ({
+        handedOff: true,
+        completed: false,
+        status: "failed",
+        error: "child crashed",
+      })),
+    };
+    const result = await runFabricHandoffAtBoundary(
+      controller,
+      runner,
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+
+    expect(result).toMatchObject({ prewalk: true, mode: "trajectory", completed: false });
+    expect(ext.sendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ customType: "pi-fabric-prewalk-continue" }),
+      expect.anything(),
+    );
+  });
+
+  it("threads the configured thinking level into the trajectory executor args", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      mode: "trajectory",
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+      thinking: "high",
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "auto");
+    expect(pending!.args).toMatchObject({ model: "anthropic/executor", thinking: "high" });
+
+    const ctx = context();
+    const ext = extension();
+    let receivedArgs: Record<string, unknown> | undefined;
+    const runner = {
+      executeHandoff: vi.fn(async (args) => {
+        receivedArgs = args;
+        return { handedOff: true, completed: true, status: "completed", implementation: "done" };
+      }),
+    };
+    await runFabricHandoffAtBoundary(
+      controller,
+      runner,
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+    expect(receivedArgs).toMatchObject({ thinking: "high" });
+  });
+
+  it("keeps thinking out of in-place continuation args", () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      thinking: "high",
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "auto");
+    expect(pending!.kind).toBe("prewalk-in-place");
+    expect(pending!.args).not.toHaveProperty("thinking");
+  });
+
+  it("preserves the thinking level across a re-armed trajectory handoff", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      mode: "trajectory",
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      thinking: "xhigh",
+      alwaysRearm: true,
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "auto");
+    await runFabricHandoffAtBoundary(
+      controller,
+      { executeHandoff: vi.fn(async () => ({ handedOff: true, completed: true, status: "completed" })) },
+      extension().value,
+      pending!,
+      outerResult(),
+      context().value,
+    );
+    expect(controller.status()).toMatchObject({
+      state: "armed",
+      thinking: "xhigh",
+      alwaysRearm: true,
+    });
   });
 
   it("re-arms after an in-place continuation when configured", async () => {
@@ -400,14 +513,14 @@ describe("prewalkArmedPrompt", () => {
     const text = prewalkArmedPrompt("trajectory", "anthropic/executor");
     expect(text).toContain("anthropic/executor (trajectory)");
     expect(text).toContain("pi.edit / pi.write / schema.commit");
-    expect(text).toContain("your turn ends there and the executor continues the work.");
+    expect(text).toContain("the executor takes over the implementation there, and a hidden follow-up asks you to verify its work and summarize when it finishes.");
     expect(text).toContain("restate the remaining steps before your first edit");
   });
 
   it("describes in-place continuation for Main", () => {
     const text = prewalkArmedPrompt("in-place", "anthropic/executor");
     expect(text).toContain("this session switches to anthropic/executor and keeps working.");
-    expect(text).not.toContain("your turn ends there");
+    expect(text).not.toContain("hidden follow-up asks you to verify");
   });
 });
 
@@ -460,7 +573,7 @@ describe("withTrajectoryRearmDirective", () => {
     expect(text.startsWith("OUTPUT\n\n")).toBe(true);
     expect(text).toContain("result above is final");
     expect(text).toContain("pi.edit / pi.write in fabric_exec to hand off again");
-    expect(text).toContain("Re-check only what the executor left incomplete.");
+    expect(text).toContain("keep any fixes scoped to what verification fails.");
   });
 
   it("omits the directive for in-place pendings", () => {

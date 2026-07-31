@@ -60,6 +60,8 @@ interface FabricPrewalkConfig {
   mode: FabricPrewalkMode;
   model?: string;
   alwaysRearm: boolean;
+  // Reasoning effort for the trajectory executor; unset inherits agents.thinking.
+  thinking?: FabricThinking;
 }
 
 export interface FabricAgentConfig {
@@ -487,6 +489,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       ]),
   );
   const prewalkModel = stringValue(prewalk.model);
+  const prewalkThinking = isFabricThinking(prewalk.thinking) ? prewalk.thinking : undefined;
   const agentModel = stringValue(agents.model);
   const claudeBinary = stringValue(claude.binary);
   const claudeModel = stringValue(claude.model);
@@ -583,6 +586,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     prewalk: {
       mode: prewalkModeValue(prewalk.mode, DEFAULT_FABRIC_CONFIG.prewalk.mode),
       ...(prewalkModel ? { model: prewalkModel } : {}),
+      ...(prewalkThinking ? { thinking: prewalkThinking } : {}),
       alwaysRearm: booleanValue(
         prewalk.alwaysRearm,
         DEFAULT_FABRIC_CONFIG.prewalk.alwaysRearm,

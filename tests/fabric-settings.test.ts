@@ -431,6 +431,40 @@ describe("FabricSettingsComponent", () => {
     expect(clearedUnsetLine).toContain("✓");
   });
 
+  it("persists a Prewalk thinking selection and clears it back to Agents default", () => {
+    const applied: Array<{ id: string; value: unknown }> = [];
+    const items = buildFabricSettingsItems(
+      theme,
+      structuredClone(DEFAULT_FABRIC_CONFIG),
+      (id, value) => applied.push({ id, value }),
+      { keepVisibleCandidates: ["fabric_exec"], modelSource: fakeModelSource },
+    );
+    const prewalk = items.find((item) => item.id === "prewalk")!;
+    expect(prewalk.currentValue).toBe("in-place · Ask each time");
+    const section = prewalk.submenu!("", () => {}) as any;
+    const list = section.settingsList as any;
+    const row = list.items.find((item: { id: string }) => item.id === "prewalk.thinking");
+    expect(row.currentValue).toBe("Agents default");
+    list.selectedIndex = list.items.findIndex(
+      (item: { id: string }) => item.id === "prewalk.thinking",
+    );
+
+    list.activateItem();
+    list.submenuComponent.selectList.onSelect({ value: "high", label: "High" });
+
+    expect(applied.at(-1)).toEqual({ id: "prewalk.thinking", value: "high" });
+    expect(list.items[list.selectedIndex].currentValue).toBe("High");
+
+    list.activateItem();
+    list.submenuComponent.selectList.onSelect({
+      value: "Agents default",
+      label: "Agents default",
+    });
+
+    expect(applied.at(-1)).toEqual({ id: "prewalk.thinking", value: "" });
+    expect(list.items[list.selectedIndex].currentValue).toBe("Agents default");
+  });
+
   it("exposes a dedicated prewalk executor model picker", () => {
     const config = {
       ...DEFAULT_FABRIC_CONFIG,
@@ -537,6 +571,74 @@ describe("FabricSettingsComponent", () => {
     const lines = agents.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Token limit");
     expect(lines).toContain("500k");
+  });
+
+  it("persists a picked Prewalk thinking level through the real settings dialog flow", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-settings-thinking-"));
+    try {
+      const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+      const applyFabricMode = vi.fn();
+      const state = {
+        config,
+        ensure: vi.fn().mockResolvedValue(undefined),
+        reloadConfig: vi.fn(() => {
+          const saved = JSON.parse(
+            fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8"),
+          ) as { prewalk?: { thinking?: import("../src/thinking.js").FabricThinking } };
+          config.prewalk = {
+            ...config.prewalk,
+            ...(saved.prewalk?.thinking ? { thinking: saved.prewalk.thinking } : {}),
+          };
+        }),
+        agents: { claudeModels: vi.fn().mockResolvedValue([]) },
+      } as unknown as FabricState;
+      let rootList: any;
+      let nestedList: any;
+      const notify = vi.fn();
+      const context = {
+        mode: "tui",
+        cwd,
+        isProjectTrusted: () => true,
+        modelRegistry: { getAvailable: () => fakeModelSource.models },
+        ui: {
+          notify,
+          custom: vi.fn(async (factory) => {
+            const component = factory({}, theme, {}, () => {}) as FabricSettingsComponent;
+            rootList = component.settingsList;
+            rootList.selectedIndex = rootList.items.findIndex(
+              (item: { id: string }) => item.id === "prewalk",
+            );
+            rootList.activateItem();
+            nestedList = rootList.submenuComponent.settingsList;
+            nestedList.selectedIndex = nestedList.items.findIndex(
+              (item: { id: string }) => item.id === "prewalk.thinking",
+            );
+            nestedList.activateItem();
+            nestedList.submenuComponent.selectList.onSelect({ value: "xhigh", label: "XHigh" });
+          }),
+        },
+      } as unknown as ExtensionContext;
+
+      await openFabricSettings(context, {
+        state,
+        applyFabricMode,
+        capturedTools: { list: () => [] } as unknown as CapturedToolCatalog,
+      });
+
+      expect(
+        JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8")),
+      ).toMatchObject({
+        prewalk: { thinking: "xhigh" },
+      });
+      expect(config.prewalk.thinking).toBe("xhigh");
+      expect(
+        rootList.items.find((item: { id: string }) => item.id === "prewalk").currentValue,
+      ).toBe("in-place · Ask each time · XHigh");
+      expect(applyFabricMode).toHaveBeenCalledOnce();
+      expect(notify).toHaveBeenCalledWith("Fabric settings saved.", "info");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("persists a picked Prewalk model through the real settings dialog flow", async () => {

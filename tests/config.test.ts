@@ -111,6 +111,22 @@ describe("Fabric configuration", () => {
     );
   });
 
+  it("keeps a valid prewalk thinking level and drops invalid or empty ones", () => {
+    expect(normalizeFabricConfig({ prewalk: { thinking: "high" } }).prewalk.thinking).toBe(
+      "high",
+    );
+    expect(normalizeFabricConfig({ prewalk: { thinking: "xhigh" } }).prewalk.thinking).toBe(
+      "xhigh",
+    );
+    expect(
+      normalizeFabricConfig({ prewalk: { thinking: "extreme" } }).prewalk.thinking,
+    ).toBeUndefined();
+    expect(
+      normalizeFabricConfig({ prewalk: { thinking: "" } }).prewalk.thinking,
+    ).toBeUndefined();
+    expect(normalizeFabricConfig({}).prewalk.thinking).toBeUndefined();
+  });
+
   it("forces QuickJS in Schema enforce mode", () => {
     const config = normalizeFabricConfig({
       executor: { runtime: "node-process", memoryLimitBytes: Number.MAX_SAFE_INTEGER },

@@ -270,6 +270,9 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           mode: state.config.prewalk.mode,
           sessionId: context.sessionManager.getSessionId(),
           ...(task ? { task } : {}),
+          ...(state.config.prewalk.thinking
+            ? { thinking: state.config.prewalk.thinking }
+            : {}),
           alwaysRearm: state.config.prewalk.alwaysRearm,
         });
         // Hidden advisory framing, queued for the next prompt (rules before

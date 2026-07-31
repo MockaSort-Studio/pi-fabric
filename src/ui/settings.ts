@@ -65,6 +65,7 @@ const CORE_DEFAULT_TOOL_CANDIDATES = ["read", "bash", "edit", "write", "grep", "
 const BUDGET_VALUES = [0, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10];
 const TOKEN_VALUES = [0, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_000_000];
 const PREWALK_MODEL_UNSET_LABEL = "Ask each time";
+const PREWALK_THINKING_INHERIT_LABEL = "Agents default";
 const PREWALK_MODES = ["in-place", "trajectory"] as const;
 const ROOT_ITEM_IDS = [
   "fullCodeMode",
@@ -224,7 +225,8 @@ const coerceValue = (id: string, value: string, config: FabricConfig): unknown =
   ) {
     return value === INHERIT_VALUE || value === PREWALK_MODEL_UNSET_LABEL ? "" : value;
   }
-  if (id === "agents.thinking") {
+  if (id === "prewalk.thinking" && value === PREWALK_THINKING_INHERIT_LABEL) return "";
+  if (id === "agents.thinking" || id === "prewalk.thinking") {
     return THINKING_LEVELS.find((level) => thinkingLabel(level) === value) ?? value;
   }
   return value;
@@ -257,7 +259,7 @@ const summaryFor = (id: string, config: FabricConfig): string => {
     case "mcp":
       return config.mcp.enabled ? "enabled" : "disabled";
     case "prewalk":
-      return `${config.prewalk.mode} · ${config.prewalk.model || PREWALK_MODEL_UNSET_LABEL}${config.prewalk.alwaysRearm ? " · repeat" : ""}`;
+      return `${config.prewalk.mode} · ${config.prewalk.model || PREWALK_MODEL_UNSET_LABEL}${config.prewalk.thinking ? ` · ${thinkingLabel(config.prewalk.thinking)}` : ""}${config.prewalk.alwaysRearm ? " · repeat" : ""}`;
     case "agents":
       return `${config.agents.runner}/${config.agents.transport}`;
     case "capture":
@@ -399,20 +401,32 @@ class SelectSubmenu extends Container {
   }
 }
 
-const thinkingSubmenu = (theme: Theme): SettingsSubmenu => (currentValue, done) => {
+const thinkingSubmenu = (
+  theme: Theme,
+  overrides: {
+    title?: string;
+    description?: string;
+    // Label of an extra first option that clears the override (persists "").
+    inheritLabel?: string;
+  } = {},
+): SettingsSubmenu => (currentValue, done) => {
   const canonicalCurrent =
     THINKING_LEVELS.find((level) => thinkingLabel(level) === currentValue) ?? currentValue;
   const options: SelectItem[] = THINKING_LEVELS.map((level) => ({
     value: level,
     label: thinkingLabel(level),
   }));
+  if (overrides.inheritLabel) {
+    options.unshift({ value: overrides.inheritLabel, label: overrides.inheritLabel });
+  }
   if (!options.some((option) => option.value === canonicalCurrent)) {
     options.unshift({ value: canonicalCurrent, label: currentValue });
   }
   return new SelectSubmenu(
     theme,
-    "Default thinking",
-    "Reasoning effort forwarded to spawned agents and actors when a call does not specify one. The level is clamped to each model's supported levels (next highest if unsupported).",
+    overrides.title ?? "Default thinking",
+    overrides.description ??
+      "Reasoning effort forwarded to spawned agents and actors when a call does not specify one. The level is clamped to each model's supported levels (next highest if unsupported).",
     options,
     canonicalCurrent,
     (value) => done(options.find((option) => option.value === value)?.label ?? value),
@@ -742,7 +756,7 @@ export const buildFabricSettingsItems = (
         [
           setting("prewalk.mode", "Mode", config.prewalk.mode, {
             description:
-              "In-place switches Main, retains that model, and queues a hidden continuation. Trajectory moves the session snapshot to a visible child executor and leaves Main idle when it finishes.",
+              "In-place switches Main, retains that model, and queues a hidden continuation. Trajectory moves the session snapshot to a visible child executor, then queues a hidden verify-and-summarize continuation for Main when it finishes.",
             values: PREWALK_MODES,
           }),
           setting(
@@ -753,6 +767,23 @@ export const buildFabricSettingsItems = (
               description:
                 "After a task settles or continues, arm prewalk again for the next user task until explicitly cancelled.",
               values: BOOLEANS,
+            },
+          ),
+          setting(
+            "prewalk.thinking",
+            "Thinking",
+            config.prewalk.thinking
+              ? thinkingLabel(config.prewalk.thinking)
+              : PREWALK_THINKING_INHERIT_LABEL,
+            {
+              description:
+                "Reasoning effort for the trajectory child executor. Agents default inherits Agents › Default thinking; in-place keeps Main's session level. The level is clamped to each model's supported levels.",
+              submenu: thinkingSubmenu(theme, {
+                title: "Prewalk thinking",
+                description:
+                  "Reasoning effort for the trajectory child executor. Agents default uses the Agents section's Default thinking; in-place keeps Main's session level. Clamped to each model's supported levels (next highest if unsupported).",
+                inheritLabel: PREWALK_THINKING_INHERIT_LABEL,
+              }),
             },
           ),
           setting(

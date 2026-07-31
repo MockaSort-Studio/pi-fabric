@@ -26,6 +26,15 @@ const PREWALK_CONTINUE_PROMPT = [
   "Finish the remaining implementation, check matching call sites for consistency, and run the relevant verification before reporting completion.",
 ].join(" ");
 
+// Forced continuation after a completed trajectory handoff: Main must not
+// settle idle at the boundary. The executor's implementation is the source of
+// truth — Main verifies it with real checks and reports, redoing nothing.
+const PREWALK_TRAJECTORY_VERIFY_PROMPT = [
+  "Prewalk trajectory handoff complete: the executor's implementation above is final — do not redo it.",
+  "Continue now: run the relevant verification (matching test module, build, or an equivalent probe) and check the changed call sites for consistency, then summarize what the executor implemented and how the checks went.",
+  "If a check fails, fix only the failing part; keep the fix scoped. If this verification already happened in this turn, respond with the summary only.",
+].join(" ");
+
 export const PREWALK_ARMED_MESSAGE_TYPE = "pi-fabric-prewalk-armed";
 
 // Advisory arm-time framing, delivered as a hidden nextTurn custom message:
@@ -35,7 +44,7 @@ export const prewalkArmedPrompt = (mode: FabricPrewalkMode, model: string): stri
   [
     `Prewalk armed → ${model} (${mode}): the first successful pi.edit / pi.write / schema.commit inside fabric_exec hands off to the executor automatically; ${
       mode === "trajectory"
-        ? "your turn ends there and the executor continues the work."
+        ? "the executor takes over the implementation there, and a hidden follow-up asks you to verify its work and summarize when it finishes."
         : `this session switches to ${model} and keeps working.`
     }`,
     "Reads never fire it; for multi-step work, restate the remaining steps before your first edit.",
@@ -96,7 +105,7 @@ export interface PendingFabricHandoff {
 const TRAJECTORY_REARM_DIRECTIVE = [
   "Prewalk handoff completed — the executor's result above is final; don't redo it.",
   "Prewalk re-armed: on the next request, restate remaining steps (skip if trivial), then make changes via pi.edit / pi.write in fabric_exec to hand off again.",
-  "Re-check only what the executor left incomplete.",
+  "A hidden follow-up turn verifies the executor's work and summarizes; keep any fixes scoped to what verification fails.",
 ].join("\n");
 
 export const withTrajectoryRearmDirective = (
@@ -147,6 +156,8 @@ export const claimFabricHandoff = (
     model: claim.arm.model,
     name: inPlace ? "In-place Prewalk" : "Prewalk trajectory executor",
     ...(claim.arm.task ? { task: claim.arm.task } : {}),
+    // Thinking applies to the child executor only; in-place keeps Main's level.
+    ...(!inPlace && claim.arm.thinking ? { thinking: claim.arm.thinking } : {}),
   };
   const audit: FabricCallAudit = {
     ref: inPlace ? "fabric.prewalk" : "agents.handoff",
@@ -270,6 +281,28 @@ export const runFabricHandoffAtBoundary = async (
     pending.audit.success = completed;
     pending.audit.result = result;
     pending.audit.endedAt = Date.now();
+    if (pending.kind === "prewalk-trajectory" && completed) {
+      // Main is never left idle after a delegated implementation: queue a
+      // hidden verify-and-summarize continuation the same way in-place does.
+      // Best-effort — the executor's completed result stays authoritative.
+      try {
+        extension.sendMessage(
+          {
+            customType: "pi-fabric-prewalk-continue",
+            content: PREWALK_TRAJECTORY_VERIFY_PROMPT,
+            display: false,
+            details: {
+              mode: "trajectory",
+              model,
+              trigger: pending.triggerRef,
+            },
+          },
+          { deliverAs: "followUp", triggerTurn: true },
+        );
+      } catch {
+        // Swallow: a missed verification turn must not fail the handoff.
+      }
+    }
     context.ui.setStatus(
       "fabric-prewalk",
       completed ? "trajectory executor implemented" : `trajectory ${String(result.status ?? "failed")}`,
