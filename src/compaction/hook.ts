@@ -12,6 +12,7 @@ import {
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { clipUtf8, MAX_SUMMARY_BYTES } from "./bounds.js";
+import { modelCompactionKey } from "./threshold.js";
 import { NO_BUILTIN_ENRICHERS, runEnrichers, type CompactionEnricher } from "./enrichers.js";
 import { compileFabricBranchSummary } from "./branch-summary.js";
 import {
@@ -735,6 +736,7 @@ const SECTION_HEADERS: { key: keyof Sections; header: string }[] = [
 export interface CompactionHookOptions {
   getEngine: () => CompactionEngine;
   getTargetContextRatio?: () => number;
+  getThresholdContextRatio?: (modelKey: string) => number | undefined;
   enrichers?: readonly CompactionEnricher[];
 }
 
@@ -749,9 +751,21 @@ const notifyInstructionError = (
 export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHookOptions): void => {
   pi.on("session_before_compact", (event: SessionBeforeCompactEvent, context: ExtensionContext) => {
     if (event.customInstructions === "__pi_vcc__") return;
-    if (options.getEngine() !== "fabric") return;
     const { preparation, branchEntries } = event;
     const contextWindow = context?.model?.contextWindow;
+    const modelKey = modelCompactionKey(context?.model);
+    const threshold = modelKey === undefined
+      ? undefined
+      : options.getThresholdContextRatio?.(modelKey);
+    if (
+      event.reason === "threshold"
+      && typeof threshold === "number"
+      && typeof contextWindow === "number"
+      && preparation.tokensBefore / contextWindow < threshold
+    ) {
+      return { cancel: true };
+    }
+    if (options.getEngine() !== "fabric") return;
     const targetContextRatio = options.getTargetContextRatio?.();
     const settings = preparation.settings ?? DEFAULT_COMPACTION_SETTINGS;
     const budget = typeof contextWindow === "number"

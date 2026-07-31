@@ -176,13 +176,29 @@ describe("compaction config", () => {
     const configured = normalizeFabricConfig({
       compaction: { engine: "pi", targetContextRatio: 0.7 },
     }).compaction;
-    expect(configured).toEqual({ engine: "pi", targetContextRatio: 0.7 });
+    expect(configured).toEqual({ engine: "pi", targetContextRatio: 0.7, thresholds: {} });
     expect(normalizeFabricConfig({ compaction: { engine: "bogus", targetContextRatio: 2 } }).compaction)
-      .toEqual({ engine: "fabric", targetContextRatio: 0.85 });
+      .toEqual({ engine: "fabric", targetContextRatio: 0.85, thresholds: {} });
     expect(normalizeFabricConfig({ compaction: { targetContextRatio: 0.1 } }).compaction.targetContextRatio)
       .toBe(0.25);
     expect(normalizeFabricConfig({ compaction: { targetContextRatio: "large" } }).compaction.targetContextRatio)
       .toBe(0.65);
+  });
+
+  it("normalizes model-linked thresholds", () => {
+    expect(normalizeFabricConfig({
+      compaction: {
+        thresholds: {
+          "anthropic/sonnet": 0.8,
+          "openai/gpt": 2,
+          malformed: 0.5,
+          "google/gemini": "high",
+        },
+      },
+    }).compaction.thresholds).toEqual({
+      "anthropic/sonnet": 0.8,
+      "openai/gpt": 0.95,
+    });
   });
 });
 

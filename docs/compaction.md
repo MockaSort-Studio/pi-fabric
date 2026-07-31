@@ -15,6 +15,28 @@ Fabric targets 65% of the model's advertised context window after compaction by 
 
 Use `{ "compaction": { "engine": "pi" } }` to disable the Fabric engine.
 
+`/fabric settings` also exposes a **Threshold** for the active model. Thresholds
+are context-window occupancy ratios and are stored by canonical
+`provider/model` key, so switching models selects that model's own value.
+`Pi default` leaves Pi's built-in threshold unchanged.
+
+```json
+{
+  "compaction": {
+    "thresholds": {
+      "anthropic/claude-sonnet-4-5": 0.8,
+      "openai/gpt-5.4": 0.9
+    }
+  }
+}
+```
+
+Configured values are bounded to `0.25`–`0.95`. Fabric triggers compaction at a
+safe settled boundary when a configured threshold is lower than Pi's built-in
+threshold. When Pi's built-in threshold is lower, Fabric defers that automatic
+compaction until the model-specific threshold is reached; overflow and manual
+compactions are never deferred.
+
 ## Invariants
 
 1. **The session log is ground truth.** The summary is a bounded continuation view with stable entry-id and file addresses.

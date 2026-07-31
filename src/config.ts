@@ -120,6 +120,7 @@ interface FabricUiConfig {
 interface FabricCompactionConfig {
   engine: FabricCompactionEngine;
   targetContextRatio: number;
+  thresholds: Record<string, number>;
 }
 
 export interface FabricRetentionConfig {
@@ -262,6 +263,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   compaction: {
     engine: "fabric",
     targetContextRatio: 0.65,
+    thresholds: {},
   },
   retention: {
     orphanedTempRunMs: 6 * 60 * 60 * 1_000,
@@ -472,6 +474,18 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const configPath = stringValue(mcp.configPath);
   const meshRoot = stringValue(mesh.root);
   const memoryIndexDir = stringValue(memory.indexDir);
+  const compactionThresholds = Object.fromEntries(
+    Object.entries(objectValue(compaction.thresholds))
+      .filter(([model, threshold]) =>
+        model.includes("/")
+        && typeof threshold === "number"
+        && Number.isFinite(threshold),
+      )
+      .map(([model, threshold]) => [
+        model,
+        Math.min(0.95, Math.max(0.25, threshold as number)),
+      ]),
+  );
   const prewalkModel = stringValue(prewalk.model);
   const agentModel = stringValue(agents.model);
   const claudeBinary = stringValue(claude.binary);
@@ -664,6 +678,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         0.25,
         0.85,
       ),
+      thresholds: compactionThresholds,
     },
     retention: {
       orphanedTempRunMs: boundedInteger(

@@ -22,6 +22,7 @@ import {
   buildClaudeModelSource,
   buildModelSource,
   INHERIT_VALUE,
+  modelKey,
   type ModelSource,
 } from "./model-picker.js";
 import {
@@ -47,6 +48,12 @@ const WIDGET_MODES = ["auto", "always", "hidden"] as const;
 const RESULT_FORMATS = ["auto", "yaml", "json", "text"] as const;
 const EXECUTOR_RUNTIMES = ["quickjs", "node-process"] as const;
 const COMPACTION_ENGINES = ["fabric", "pi"] as const;
+const COMPACTION_THRESHOLD_SETTING_ID = "compaction.threshold";
+const COMPACTION_DEFAULT_THRESHOLD_LABEL = "Pi default";
+const COMPACTION_THRESHOLDS = [
+  COMPACTION_DEFAULT_THRESHOLD_LABEL,
+  ...Array.from({ length: 15 }, (_, index) => `${25 + index * 5}%`),
+];
 const COMPACTION_TARGET_RATIOS = [
   "0.25",
   "0.4",
@@ -206,6 +213,10 @@ export const parseFormattedNumericValue = (value: string): number => {
 };
 
 const coerceValue = (id: string, value: string, config: FabricConfig): unknown => {
+  if (id === COMPACTION_THRESHOLD_SETTING_ID) {
+    if (value === COMPACTION_DEFAULT_THRESHOLD_LABEL) return null;
+    return Number(value.replace("%", "")) / 100;
+  }
   const current = getPath(config, id);
   if (typeof current === "boolean") return value === "true";
   if (typeof current === "number") return parseFormattedNumericValue(value);
@@ -521,6 +532,7 @@ export const buildFabricSettingsItems = (
     keepVisibleCandidates: readonly string[];
     modelSource: ModelSource;
     claudeModelSource?: ModelSource;
+    activeModelKey?: string;
   },
 ): SettingItem[] => {
   const persist = (id: string, newValue: string): void =>
@@ -1023,6 +1035,19 @@ export const buildFabricSettingsItems = (
         "Compaction",
         "Choose Fabric deterministic compaction or Pi core model-driven compaction.",
         [
+          ...(options.activeModelKey
+            ? [setting(
+                COMPACTION_THRESHOLD_SETTING_ID,
+                "Threshold",
+                config.compaction.thresholds[options.activeModelKey] === undefined
+                  ? COMPACTION_DEFAULT_THRESHOLD_LABEL
+                  : `${Math.round(config.compaction.thresholds[options.activeModelKey]! * 100)}%`,
+                {
+                  description: `Context occupancy that triggers compaction for ${options.activeModelKey}.`,
+                  values: COMPACTION_THRESHOLDS,
+                },
+              )]
+            : []),
           setting("compaction.engine", "Engine", config.compaction.engine, {
             description:
               "Fabric uses deterministic branch summaries; Pi delegates compaction to Pi core.",
@@ -1193,8 +1218,14 @@ export async function openFabricSettings(
   const changedSections = new Set<string>();
   let dirty = false;
 
+  const activeModelKey = context.model
+    ? modelKey(context.model.provider, context.model.id)
+    : undefined;
+
   const apply = (id: string, value: unknown): void => {
-    const partial = buildPartial(id, value);
+    const partial = id === COMPACTION_THRESHOLD_SETTING_ID && activeModelKey
+      ? { compaction: { thresholds: { [activeModelKey]: value } } }
+      : buildPartial(id, value);
     try {
       saveFabricConfig(
         { cwd: context.cwd, agentDir, projectTrusted: context.isProjectTrusted() },
@@ -1251,6 +1282,7 @@ export async function openFabricSettings(
         keepVisibleCandidates,
         modelSource,
         claudeModelSource,
+        ...(activeModelKey ? { activeModelKey } : {}),
       });
       const component = new FabricSettingsComponent(theme, items, persist, () => done());
       rootList = component.settingsList;

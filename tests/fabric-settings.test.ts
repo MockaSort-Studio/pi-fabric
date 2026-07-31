@@ -37,6 +37,7 @@ const buildItems = (keepVisibleCandidates: string[] = ["fabric_exec"]) =>
   buildFabricSettingsItems(theme, DEFAULT_FABRIC_CONFIG, () => {}, {
     keepVisibleCandidates,
     modelSource: fakeModelSource,
+    activeModelKey: "anthropic/claude-sonnet-4-5",
   });
 
 describe("FabricSettingsComponent", () => {
@@ -162,10 +163,38 @@ describe("FabricSettingsComponent", () => {
     const compaction = items.find((item) => item.id === "compaction");
     expect(compaction?.currentValue).toBe("fabric");
     const lines = compaction!.submenu!("", () => {}).render(80).join("\n");
+    expect(lines).toContain("Threshold");
+    expect(lines).toContain("Pi default");
+    expect(lines).toContain("anthropic/claude-sonnet-4-5");
     expect(lines).toContain("Engine");
     expect(lines).toContain("fabric");
     expect(lines).toContain("Target occupancy");
     expect(lines).toContain("0.65");
+  });
+
+  it("persists the active model's compaction threshold as a ratio", () => {
+    const applied: Array<{ id: string; value: unknown }> = [];
+    const items = buildFabricSettingsItems(
+      theme,
+      structuredClone(DEFAULT_FABRIC_CONFIG),
+      (id, value) => applied.push({ id, value }),
+      {
+        keepVisibleCandidates: ["fabric_exec"],
+        modelSource: fakeModelSource,
+        activeModelKey: "openai/gpt-5.5",
+      },
+    );
+    const section = items.find((item) => item.id === "compaction")!.submenu!("", () => {}) as any;
+    const list = section.settingsList as any;
+    list.selectedIndex = list.items.findIndex((item: { id: string }) => item.id === "compaction.threshold");
+    expect(list.items[list.selectedIndex].values).toEqual([
+      "Pi default",
+      ...Array.from({ length: 15 }, (_, index) => `${25 + index * 5}%`),
+    ]);
+    for (let index = 0; index < 12; index++) list.activateItem();
+
+    expect(applied.at(-1)).toEqual({ id: "compaction.threshold", value: 0.8 });
+    expect(list.items[list.selectedIndex].currentValue).toBe("80%");
   });
 
   it("exposes temporal retention defaults", () => {

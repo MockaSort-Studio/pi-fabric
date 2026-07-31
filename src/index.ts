@@ -19,6 +19,7 @@ import {
   effectiveToolCaptureConfig,
 } from "./config.js";
 import { registerCompactionHook } from "./compaction/hook.js";
+import { compactAtConfiguredThreshold } from "./compaction/threshold.js";
 import {
   FabricToolLifecycle,
   FabricToolOwnership,
@@ -295,6 +296,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     // so ExtensionRunner does not finish this handler (and Pi does not publish
     // its public agent_settled event) before compaction settles.
     await state.compact.maybeCommit(context);
+    await compactAtConfiguredThreshold(context, state.config);
     await state.publishHostLifecycle("pi.agent_settled", event);
   });
 
@@ -413,6 +415,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       state.initialized
         ? state.config.compaction.targetContextRatio
         : DEFAULT_FABRIC_CONFIG.compaction.targetContextRatio,
+    getThresholdContextRatio: (modelKey) =>
+      state.initialized
+        ? state.config.compaction.thresholds[modelKey]
+        : DEFAULT_FABRIC_CONFIG.compaction.thresholds[modelKey],
   });
 
   pi.on("context", (event) => {
