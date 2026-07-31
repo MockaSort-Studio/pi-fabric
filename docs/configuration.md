@@ -113,17 +113,20 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
 `prewalk.model` is the optional Pi `provider/model` selected by `/fabric prewalk`. `prewalk.mode` chooses how execution continues:
 
 - `"in-place"` (default) switches Main to the executor model and queues a hidden follow-up in the same session.
-- `"trajectory"` forks the finalized outer Fabric call/result to a visible Pi child and waits; Main is idle when the child finishes.
+- `"trajectory"` forks the finalized outer Fabric call/result to a visible Pi child and waits; when the child finishes, a hidden continuation turn has Main verify the work and summarize instead of going idle.
 
 ```json
 {
   "prewalk": {
     "mode": "in-place",
     "model": "anthropic/claude-haiku-4-5",
+    "thinking": "high",
     "alwaysRearm": true
   }
 }
 ```
+
+`prewalk.thinking` is the optional reasoning effort (`off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`) for the trajectory child executor, clamped to each model's supported levels. When unset, the executor inherits `agents.thinking`; in-place mode keeps Main's session level.
 
 `prewalk.alwaysRearm` defaults to `false`. When enabled, prewalk returns to an armed, taskless state after each continuation or settled task. The settings UI labels an unset model **Ask each time**; non-interactive sessions must configure a model. In-place mode does not require child agents. Trajectory mode requires `agents.enabled` and exposes child spawn, progress, nested tools, metrics, and completion in Main's Fabric activity UI.
 
