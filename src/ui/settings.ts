@@ -54,17 +54,10 @@ const COMPACTION_THRESHOLDS = [
   COMPACTION_DEFAULT_THRESHOLD_LABEL,
   ...Array.from({ length: 15 }, (_, index) => `${25 + index * 5}%`),
 ];
-const COMPACTION_TARGET_RATIOS = [
-  "0.25",
-  "0.4",
-  "0.5",
-  "0.6",
-  "0.65",
-  "0.7",
-  "0.75",
-  "0.8",
-  "0.85",
-] as const;
+const COMPACTION_TARGET_RATIOS = Array.from(
+  { length: 13 },
+  (_, index) => String((25 + index * 5) / 100),
+);
 const ACTOR_SCOPES = ["project", "session"] as const;
 const RISKS = ["read", "write", "execute", "network", "agent"] as const;
 const CORE_RISK_TOOLS = ["read", "grep", "find", "edit", "write", "bash"] as const;

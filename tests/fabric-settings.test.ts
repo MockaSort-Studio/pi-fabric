@@ -170,6 +170,13 @@ describe("FabricSettingsComponent", () => {
     expect(lines).toContain("fabric");
     expect(lines).toContain("Target occupancy");
     expect(lines).toContain("0.65");
+    const section = compaction!.submenu!("", () => {}) as any;
+    const target = section.settingsList.items.find(
+      (item: { id: string }) => item.id === "compaction.targetContextRatio",
+    );
+    expect(target.values).toEqual(
+      Array.from({ length: 13 }, (_, index) => String((25 + index * 5) / 100)),
+    );
   });
 
   it("persists the active model's compaction threshold as a ratio", () => {
