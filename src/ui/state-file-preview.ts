@@ -69,7 +69,7 @@ export const loadStateFilePreview = (
     const allLines = decoded.split("\n");
     const boundedLines = allLines.slice(0, MAX_FILE_LINES);
     const preview: FabricStateFilePreview = {
-      path: path.relative(root, absolute) || path.basename(absolute),
+      path: (path.relative(root, absolute) || path.basename(absolute)).split(path.sep).join("/"),
       language: languageFromPath(absolute) ?? "text",
       content: boundedLines.join("\n"),
       lines: boundedLines,
