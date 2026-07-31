@@ -14,6 +14,7 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { FabricActivityCall, FabricActivityRun } from "../activity/types.js";
+import type { MeshEvent } from "../mesh/store.js";
 import type { FabricAgentMessageDelivery } from "../main-agent.js";
 import type { FabricActorDelivery, FabricActorHostEvent } from "../actors/types.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
@@ -51,6 +52,7 @@ import { formatJsonAsYaml } from "./structured.js";
 import {
   buildProjectMeshTopology,
   type FabricProjectMeshModel,
+  type FabricProjectMeshRoute,
 } from "./topology.js";
 import type { FabricAgentTranscript, FabricTranscriptEntry } from "./transcript.js";
 import type { FabricDashboardSnapshot, FabricUiActor, FabricUiAgent } from "./types.js";
@@ -131,6 +133,14 @@ export class FabricDashboard implements Component, Focusable {
   private graphCameraInitialized = false;
   private graphAnimation: ReturnType<typeof setInterval> | undefined;
   private graphAnimationAt = 0;
+  private graphEffectsAnimation: ReturnType<typeof setInterval> | undefined;
+  private graphReducedMotion = false;
+  private graphShowHistory = false;
+  private graphReplayIndex: number | undefined;
+  private graphReplayPlaying = false;
+  private graphReplaySpeed = 1;
+  private graphReplayAdvancedAt = 0;
+  private graphReplayLength = 0;
   private phaseIndex = 0;
   private entityIndex = 0;
   private runIndex = 0;
@@ -510,7 +520,10 @@ export class FabricDashboard implements Component, Focusable {
     if (data === "1" || data === "2") {
       const nextOverview: OverviewView = data === "1" ? "activity" : "topology";
       if (nextOverview !== this.overviewView) {
-        if (nextOverview === "activity") this.stopGraphAnimation();
+        if (nextOverview === "activity") {
+          this.stopGraphAnimation();
+          this.stopGraphEffectsAnimation();
+        }
         this.overviewView = nextOverview;
         this.pane = nextOverview === "activity" ? "phases" : "entities";
         this.entityIndex = 0;
@@ -528,6 +541,45 @@ export class FabricDashboard implements Component, Focusable {
         this.done();
         return;
       }
+    } else if (this.overviewView === "topology" && data === "r") {
+      this.toggleGraphReplay(snapshot, projectMesh);
+      this.startGraphEffectsAnimation();
+      this.tui.requestRender();
+      return;
+    } else if (
+      this.overviewView === "topology" &&
+      this.graphReplayIndex !== undefined &&
+      data === " "
+    ) {
+      this.graphReplayPlaying = !this.graphReplayPlaying;
+      this.graphReplayAdvancedAt = Date.now();
+      this.startGraphEffectsAnimation();
+      this.tui.requestRender();
+      return;
+    } else if (
+      this.overviewView === "topology" &&
+      this.graphReplayIndex !== undefined &&
+      (matchesKey(data, Key.left) || matchesKey(data, Key.right))
+    ) {
+      this.stepGraphReplay(matchesKey(data, Key.left) ? -1 : 1);
+      this.tui.requestRender();
+      return;
+    } else if (this.overviewView === "topology" && (data === "+" || data === "=" || data === "-")) {
+      const speeds = [0.5, 1, 2, 4];
+      const current = speeds.indexOf(this.graphReplaySpeed);
+      const direction = data === "-" ? -1 : 1;
+      this.graphReplaySpeed = speeds[Math.max(0, Math.min(speeds.length - 1, current + direction))] ?? 1;
+      this.graphReplayAdvancedAt = Date.now();
+      this.tui.requestRender();
+      return;
+    } else if (this.overviewView === "topology" && data === "H") {
+      this.graphShowHistory = !this.graphShowHistory;
+      this.tui.requestRender();
+      return;
+    } else if (this.overviewView === "topology" && data === "M") {
+      this.graphReducedMotion = !this.graphReducedMotion;
+      this.tui.requestRender();
+      return;
     } else if (
       this.overviewView === "topology" &&
       (matchesKey(data, Key.left) || matchesKey(data, Key.right) ||
@@ -774,6 +826,7 @@ export class FabricDashboard implements Component, Focusable {
     this.agentMessageTarget = undefined;
     this.pendingStop = undefined;
     this.stopGraphAnimation();
+    this.stopGraphEffectsAnimation();
     this.transcriptMarkdown.clear();
     this.mode = "overview";
   }
@@ -989,7 +1042,8 @@ export class FabricDashboard implements Component, Focusable {
     const help = [
       ["Navigate", "Topology: arrows/h/l move spatially · j/k ordered selection · tab next · enter inspect · esc back"],
       ["Views", "1 Activity · 2 unified Topology"],
-      ["Topology", "One spring-followed graph maps Main, peers, agents, actors, topics, shared state, and recent routes"],
+      ["Topology", "One spring-followed graph maps Main, peers, agents, actors, topics, and shared state; traffic travels on decaying edges"],
+      ["Motion", "r replay/live · space pause/play · ←/→ step · +/- speed · H history · M reduced motion"],
       ["Runs", "[ older · ] newer · f cycle status filter"],
       ...(mainActions.length > 1 ? [["Main", mainActions.join(" · ")]] : []),
       ...(agentActions.length > 1 ? [["Agents", agentActions.join(" · ")]] : []),
@@ -1244,6 +1298,75 @@ export class FabricDashboard implements Component, Focusable {
     });
   }
 
+  private replayFrames(
+    snapshot: FabricDashboardSnapshot,
+    topology: FabricProjectMeshModel,
+  ): Array<{ event: MeshEvent; route: FabricProjectMeshRoute }> {
+    return snapshot.events.flatMap((event) => {
+      const route = topology.routes.find(
+        (candidate) =>
+          candidate.topic === event.topic &&
+          candidate.kind === event.kind &&
+          (candidate.fromId === event.from.id || candidate.fromName === event.from.name),
+      );
+      return route ? [{ event, route }] : [];
+    });
+  }
+
+  private startGraphEffectsAnimation(): void {
+    if (this.graphEffectsAnimation) return;
+    this.graphReplayAdvancedAt = Date.now();
+    this.graphEffectsAnimation = setInterval(() => {
+      const now = Date.now();
+      if (
+        this.graphReplayPlaying &&
+        this.graphReplayIndex !== undefined &&
+        this.graphReplayLength > 0 &&
+        now - this.graphReplayAdvancedAt >= 850 / this.graphReplaySpeed
+      ) {
+        if (this.graphReplayIndex < this.graphReplayLength - 1) {
+          this.graphReplayIndex++;
+          this.graphReplayAdvancedAt = now;
+        } else {
+          this.graphReplayPlaying = false;
+        }
+      }
+      this.tui.requestRender();
+    }, 80);
+    this.graphEffectsAnimation.unref?.();
+  }
+
+  private stopGraphEffectsAnimation(): void {
+    if (this.graphEffectsAnimation) clearInterval(this.graphEffectsAnimation);
+    this.graphEffectsAnimation = undefined;
+    this.graphReplayPlaying = false;
+  }
+
+  private toggleGraphReplay(snapshot: FabricDashboardSnapshot, topology?: FabricProjectMeshModel): void {
+    const model = topology ?? this.projectMesh(snapshot);
+    const frames = model ? this.replayFrames(snapshot, model) : [];
+    this.graphReplayLength = frames.length;
+    if (frames.length === 0) return;
+    if (this.graphReplayIndex === undefined) {
+      this.graphReplayIndex = 0;
+      this.graphReplayPlaying = true;
+    } else {
+      this.graphReplayIndex = undefined;
+      this.graphReplayPlaying = false;
+    }
+    this.graphReplayAdvancedAt = Date.now();
+  }
+
+  private stepGraphReplay(delta: number): void {
+    if (this.graphReplayIndex === undefined || this.graphReplayLength === 0) return;
+    this.graphReplayIndex = Math.max(
+      0,
+      Math.min(this.graphReplayLength - 1, this.graphReplayIndex + delta),
+    );
+    this.graphReplayPlaying = false;
+    this.graphReplayAdvancedAt = Date.now();
+  }
+
   private setGraphCameraTarget(point: FabricGraphPoint): void {
     if (!this.graphCameraInitialized) {
       this.graphCamera = { ...point };
@@ -1351,6 +1474,9 @@ export class FabricDashboard implements Component, Focusable {
             `${meshModel.participants.length} remote participants`,
             `${meshModel.topics.length} topics`,
             `${snapshot.state.length} state`,
+            this.graphReplayIndex !== undefined
+              ? `${this.graphReplayPlaying ? "▶" : "Ⅱ"} replay ${this.graphReplayIndex + 1}/${Math.max(1, this.graphReplayLength)} · ${this.graphReplaySpeed}×`
+              : undefined,
             snapshot.runs.length > 1 ? `run ${this.runIndex + 1}/${snapshot.runs.length}` : undefined,
           ]
         : [
@@ -1425,6 +1551,18 @@ export class FabricDashboard implements Component, Focusable {
         ...(snapshot.participants ? { participants: snapshot.participants } : {}),
         now: snapshot.now,
       });
+      this.startGraphEffectsAnimation();
+      const replayFrames = this.replayFrames(snapshot, topology);
+      this.graphReplayLength = replayFrames.length;
+      if (this.graphReplayIndex !== undefined && replayFrames.length === 0) {
+        this.graphReplayIndex = undefined;
+        this.graphReplayPlaying = false;
+      } else if (this.graphReplayIndex !== undefined) {
+        this.graphReplayIndex = Math.min(this.graphReplayIndex, replayFrames.length - 1);
+      }
+      const replayFrame = this.graphReplayIndex === undefined
+        ? undefined
+        : replayFrames[this.graphReplayIndex];
       const renderGraph = () => renderFabricTopologyPanel({
         theme: this.theme,
         filter: this.filter,
@@ -1437,6 +1575,14 @@ export class FabricDashboard implements Component, Focusable {
         width: innerWidth,
         height: maxBody,
         camera: this.graphCamera,
+        animation: {
+          now: Date.now(),
+          reducedMotion: this.graphReducedMotion,
+          showHistory: this.graphShowHistory,
+          ...(replayFrame
+            ? { replayRouteId: replayFrame.route.id, replayLabel: replayFrame.event.kind }
+            : {}),
+        },
       });
       const cameraWasInitialized = this.graphCameraInitialized;
       let rendered = renderGraph();
@@ -1514,7 +1660,9 @@ export class FabricDashboard implements Component, Focusable {
     lines.push(this.middleBorder(width));
     const navigationHint =
       this.overviewView === "topology"
-        ? `arrows/h/l move · j/k order · enter inspect · f filter:${this.filter} · [ older · ] newer · 1 activity · ? help`
+        ? this.graphReplayIndex !== undefined
+          ? `replay ${this.graphReplayIndex + 1}/${Math.max(1, this.graphReplayLength)} · r live · space ${this.graphReplayPlaying ? "pause" : "play"} · ←/→ step · +/- speed:${this.graphReplaySpeed}× · H history · M motion · ? help`
+          : `arrows/h/l move · j/k order · r replay · H history · M motion · f filter:${this.filter} · 1 activity · ? help`
         : `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · 2 topology · [ older · ] newer · ? help`;
     lines.push(this.row(width, this.theme.fg("dim", navigationHint)));
     const selectedEntity = entities[this.entityIndex];

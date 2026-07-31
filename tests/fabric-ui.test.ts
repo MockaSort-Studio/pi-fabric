@@ -2288,6 +2288,58 @@ describe("Fabric dynamic UI", () => {
     }
   });
 
+  it("animates collapsed traffic edges and supports replay controls", () => {
+    const current = snapshot();
+    current.events = [
+      {
+        id: "transition",
+        sequence: 1,
+        topic: "fabric.state",
+        kind: "transition",
+        from: { id: current.main.id, name: "main", kind: "main" },
+        text: "state moving",
+        createdAt: current.now - 500,
+      },
+      {
+        id: "certified",
+        sequence: 2,
+        topic: "fabric.state",
+        kind: "state.certified",
+        from: { id: current.main.id, name: "main", kind: "main" },
+        text: "state certified",
+        createdAt: current.now,
+      },
+    ];
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      dashboard.handleInput("2");
+      const live = dashboard.render(140).join("\n");
+      expect(live).toContain("fabric.state");
+      expect(live).not.toContain("main → fabric.state");
+      expect(live).toContain("live decay");
+
+      dashboard.handleInput("r");
+      const replay = dashboard.render(140).join("\n");
+      expect(replay).toContain("replay 1/2");
+      expect(replay).toContain("transition");
+      expect(replay).toContain("space pause");
+
+      dashboard.handleInput("\u001b[C");
+      expect(dashboard.render(140).join("\n")).toContain("replay 2/2");
+      dashboard.handleInput("H");
+      expect(dashboard.render(140).join("\n")).toContain("history");
+      dashboard.handleInput("M");
+      expect(dashboard.render(140).join("\n")).toContain("reduced motion");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
   it("keeps current workflow phase context in the merged topology", () => {
     const current = snapshot();
     current.agents[0] = {

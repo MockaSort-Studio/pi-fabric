@@ -4,7 +4,7 @@ import type { FabricActivityRun } from "../activity/types.js";
 import type { Entity, StatusFilter } from "./dashboard-model.js";
 import { colorStatus, entityTail, statusGlyph } from "./dashboard-presentation.js";
 import { padToWidth, safeText } from "./format.js";
-import type { FabricProjectMeshModel } from "./topology.js";
+import type { FabricProjectMeshModel, FabricProjectMeshRoute } from "./topology.js";
 import type { FabricDashboardSnapshot } from "./types.js";
 import { isActiveStatus } from "./types.js";
 
@@ -29,6 +29,10 @@ interface GraphNode {
   status: string;
   kind: GraphNodeKind;
   parentId?: string;
+  activityAt?: number;
+  startedAt?: number;
+  queued?: number;
+  stale?: boolean;
   x: number;
   y: number;
 }
@@ -37,6 +41,7 @@ interface GraphEdge {
   from: string;
   to: string;
   kind: "structure" | "route" | "subscription";
+  route?: FabricProjectMeshRoute;
 }
 
 interface FabricGraphLayout {
@@ -48,6 +53,14 @@ interface FabricGraphLayout {
 interface Cell {
   char: string;
   style: "plain" | "edge" | "dim" | "accent" | "success" | "warning" | "error";
+}
+
+export interface FabricGraphAnimation {
+  now: number;
+  reducedMotion: boolean;
+  showHistory: boolean;
+  replayRouteId?: string;
+  replayLabel?: string;
 }
 
 const kindRank: Record<GraphNodeKind, number> = {
@@ -107,14 +120,34 @@ const graphLabel = (value: string, maxWidth: number): string => {
   return output;
 };
 
-const graphGlyph = (kind: GraphNodeKind): string => {
-  if (kind === "main") return "◆";
-  if (kind === "actor") return "◇";
-  if (kind === "peer") return "◈";
-  if (kind === "topic") return "◎";
-  if (kind === "state") return "◫";
-  if (kind === "route") return "↝";
-  if (kind === "participant") return "▧";
+const graphGlyph = (node: GraphNode, animation: FabricGraphAnimation): string => {
+  if (node.stale) return animation.reducedMotion ? "·" : ["▧", "▫", "·", " "][Math.floor(animation.now / 240) % 4]!;
+  const frame = Math.floor(animation.now / 160);
+  const active = isActiveStatus(node.status);
+  if (node.kind === "main") return active && !animation.reducedMotion ? ["◇", "◈", "◆", "◈"][frame % 4]! : "◆";
+  if (node.kind === "actor") {
+    if ((node.queued ?? 0) > 0 && !animation.reducedMotion) return ["◇", "◈", "◆", "◈"][frame % 4]!;
+    return "◇";
+  }
+  if (node.kind === "peer") return "◈";
+  if (node.kind === "topic") {
+    const hot = node.activityAt !== undefined && animation.now - node.activityAt <= 10_000;
+    return hot && !animation.reducedMotion ? ["◎", "◉", "⦿", "◉"][frame % 4]! : "◎";
+  }
+  if (node.kind === "state") {
+    if (/certified|committed|complete/.test(node.status) && !animation.reducedMotion) {
+      return ["◫", "▣", "✦", "▣"][Math.floor(animation.now / 280) % 4]!;
+    }
+    return "◫";
+  }
+  if (node.kind === "participant") return "▧";
+  if (node.kind === "agent" && !animation.reducedMotion) {
+    const spawnAge = node.startedAt === undefined ? Number.POSITIVE_INFINITY : animation.now - node.startedAt;
+    if (spawnAge >= 0 && spawnAge <= 1_600) {
+      return ["·", "▪", "▫", "▣", "■"][Math.min(4, Math.floor(spawnAge / 320))]!;
+    }
+    if (active) return ["■", "▣", "▪", "▣"][frame % 4]!;
+  }
   return "■";
 };
 
@@ -144,19 +177,33 @@ const buildLayout = (
   aliases.set(snapshot.main.name, mainId);
   aliases.set("main", mainId);
 
-  const nodes: GraphNode[] = entities.map((entity) => {
-    const parentRef = parentReference(entity);
-    const parentId = parentRef ? aliases.get(parentRef) : undefined;
-    return {
-      id: entity.id,
-      label: entity.kind === "main" ? "Main" : entity.label,
-      status: entity.status,
-      kind: nodeKind(entity),
-      ...(entity.kind !== "main" ? { parentId: parentId ?? mainId } : {}),
-      x: 0,
-      y: 0,
-    };
-  });
+  const nodes: GraphNode[] = entities
+    .filter((entity) => entity.kind !== "meshRoute")
+    .map((entity) => {
+      const parentRef = parentReference(entity);
+      const parentId = parentRef ? aliases.get(parentRef) : undefined;
+      const activityAt = entity.kind === "meshTopic" ? entity.value.lastEventAt : undefined;
+      const startedAt = entity.kind === "agent" ? entity.value.startedAt : undefined;
+      const queued = entity.kind === "actor" ? entity.value.queued : undefined;
+      const stale = entity.kind === "meshParticipant"
+        ? entity.value.participant?.stale
+        : entity.kind === "agent"
+          ? entity.value.stale
+          : undefined;
+      return {
+        id: entity.id,
+        label: entity.kind === "main" ? "Main" : entity.label,
+        status: entity.status,
+        kind: nodeKind(entity),
+        ...(entity.kind !== "main" ? { parentId: parentId ?? mainId } : {}),
+        ...(activityAt !== undefined ? { activityAt } : {}),
+        ...(startedAt !== undefined ? { startedAt } : {}),
+        ...(queued !== undefined ? { queued } : {}),
+        ...(stale !== undefined ? { stale } : {}),
+        x: 0,
+        y: 0,
+      };
+    });
 
   const nodeById = new Map(nodes.map((node) => [node.id, node] as const));
   const children = new Map<string, GraphNode[]>();
@@ -221,13 +268,22 @@ const buildLayout = (
   for (const route of mesh.routes) {
     const source = aliases.get(route.fromId) ?? aliases.get(route.fromName);
     const target = aliases.get(route.targetId) ?? aliases.get(route.targetName) ?? aliases.get(route.topic);
-    if (source && target && source !== target) edges.push({ from: source, to: target, kind: "route" });
+    if (source && target && source !== target) {
+      edges.push({ from: source, to: target, kind: "route", route });
+    }
   }
-  return {
-    nodes,
-    edges,
-    positions: new Map(nodes.map((node) => [node.id, { x: node.x, y: node.y }] as const)),
-  };
+  const positions = new Map(nodes.map((node) => [node.id, { x: node.x, y: node.y }] as const));
+  for (const edge of edges) {
+    if (!edge.route) continue;
+    const from = nodeById.get(edge.from);
+    const to = nodeById.get(edge.to);
+    if (!from || !to) continue;
+    positions.set(edge.route.id, {
+      x: Math.round((from.x + to.x) / 2),
+      y: Math.round((from.y + to.y) / 2),
+    });
+  }
+  return { nodes, edges, positions };
 };
 
 const lineChar = (mask: number): string => {
@@ -245,6 +301,23 @@ const styleForStatus = (status: string): Cell["style"] => {
   return "dim";
 };
 
+const routeGlyph = (route: FabricProjectMeshRoute): string => {
+  if (route.status === "failed") return "!";
+  const kind = route.kind.toLowerCase();
+  if (kind.includes("certif")) return "✦";
+  if (kind.includes("commit")) return "◆";
+  if (kind.includes("control") || kind.includes("steer")) return "↯";
+  if (kind.includes("message") || kind.includes("directive")) return "✉";
+  return "•";
+};
+
+const routeStyle = (route: FabricProjectMeshRoute): Cell["style"] =>
+  route.status === "failed"
+    ? "error"
+    : route.kind.toLowerCase().includes("certif")
+      ? "warning"
+      : "accent";
+
 const renderCanvas = (
   theme: Theme,
   layout: FabricGraphLayout,
@@ -252,6 +325,7 @@ const renderCanvas = (
   width: number,
   height: number,
   camera: FabricGraphPoint,
+  animation: FabricGraphAnimation,
 ): string[] => {
   const originX = Math.round(camera.x - width / 2);
   const originY = Math.round(camera.y - height / 2);
@@ -260,6 +334,15 @@ const renderCanvas = (
   );
   const masks: number[][] = Array.from({ length: height }, () => Array<number>(width).fill(0));
   const nodeById = new Map(layout.nodes.map((node) => [node.id, node] as const));
+  const selectedRoute = layout.edges.find((edge) => edge.route?.id === selectedEntityId)?.route;
+  const related = new Set<string>(selectedEntityId ? [selectedEntityId] : []);
+  for (const edge of layout.edges) {
+    if (edge.from === selectedEntityId || edge.to === selectedEntityId || edge.route?.id === selectedEntityId) {
+      related.add(edge.from);
+      related.add(edge.to);
+      if (edge.route) related.add(edge.route.id);
+    }
+  }
   const setCell = (x: number, y: number, char: string, style: Cell["style"]): void => {
     const sx = x - originX;
     const sy = y - originY;
@@ -292,17 +375,30 @@ const renderCanvas = (
       addMask(x, y, (y > worldStart ? 1 : 0) | (y < worldEnd ? 4 : 0));
     }
   };
-  const meshPaths: Array<{ from: GraphNode; to: GraphNode }> = [];
+  const pathPoints = (from: GraphNode, to: GraphNode): FabricGraphPoint[] => {
+    const fromEnd = from.x + Math.min(16, visibleWidth(safeText(from.label)) + 3);
+    const toStart = to.x - 2;
+    const bend = Math.max(fromEnd + 1, Math.floor((fromEnd + toStart) / 2));
+    const points: FabricGraphPoint[] = [];
+    const appendLine = (x1: number, y1: number, x2: number, y2: number): void => {
+      const dx = Math.sign(x2 - x1);
+      const dy = Math.sign(y2 - y1);
+      const steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
+      for (let step = points.length === 0 ? 0 : 1; step <= steps; step++) {
+        points.push({ x: x1 + dx * step, y: y1 + dy * step });
+      }
+    };
+    appendLine(fromEnd, from.y, bend, from.y);
+    appendLine(bend, from.y, bend, to.y);
+    appendLine(bend, to.y, toStart, to.y);
+    return points;
+  };
 
   for (const edge of layout.edges) {
-    if (edge.kind !== "structure" && edge.from !== selectedEntityId && edge.to !== selectedEntityId) continue;
+    if (edge.kind !== "structure") continue;
     const from = nodeById.get(edge.from);
     const to = nodeById.get(edge.to);
     if (!from || !to) continue;
-    if (edge.kind !== "structure") {
-      meshPaths.push({ from, to });
-      continue;
-    }
     const fromEnd = from.x + Math.min(16, visibleWidth(safeText(from.label)) + 3);
     const toStart = to.x - 2;
     const bend = Math.max(fromEnd + 1, Math.floor((fromEnd + toStart) / 2));
@@ -317,41 +413,99 @@ const renderCanvas = (
     }
   }
 
-  for (const { from, to } of meshPaths) {
-    const fromEnd = from.x + Math.min(16, visibleWidth(safeText(from.label)) + 3);
-    const toStart = to.x - 2;
-    const bend = Math.max(fromEnd + 1, Math.floor((fromEnd + toStart) / 2));
-    const drawDots = (x1: number, y1: number, x2: number, y2: number): void => {
-      if (y1 === y2) {
-        if (y1 < originY || y1 >= originY + height) return;
-        const worldStart = Math.min(x1, x2);
-        const start = Math.max(worldStart, originX);
-        const end = Math.min(Math.max(x1, x2), originX + width - 1);
-        const alignedStart = start + ((start - worldStart) % 2);
-        for (let x = alignedStart; x <= end; x += 2) setCell(x, y1, "·", "accent");
-        return;
+  const traffic = new Map<string, { from: GraphNode; to: GraphNode; routes: FabricProjectMeshRoute[] }>();
+  for (const edge of layout.edges) {
+    if (edge.kind === "structure") continue;
+    const from = nodeById.get(edge.from);
+    const to = nodeById.get(edge.to);
+    if (!from || !to) continue;
+    if (!edge.route) {
+      if (edge.from !== selectedEntityId && edge.to !== selectedEntityId) continue;
+      const points = pathPoints(from, to);
+      for (let index = 0; index < points.length; index += 2) {
+        const point = points[index]!;
+        setCell(point.x, point.y, "·", "accent");
       }
-      if (x1 < originX || x1 >= originX + width) return;
-      const worldStart = Math.min(y1, y2);
-      const start = Math.max(worldStart, originY);
-      const end = Math.min(Math.max(y1, y2), originY + height - 1);
-      const alignedStart = start + ((start - worldStart) % 2);
-      for (let y = alignedStart; y <= end; y += 2) setCell(x1, y, "·", "accent");
-    };
-    drawDots(fromEnd, from.y, bend, from.y);
-    drawDots(bend, from.y, bend, to.y);
-    drawDots(bend, to.y, toStart, to.y);
+      continue;
+    }
+    const key = `${edge.from}\u0000${edge.to}`;
+    const group = traffic.get(key) ?? { from, to, routes: [] };
+    group.routes.push(edge.route);
+    traffic.set(key, group);
+  }
+
+  for (const group of traffic.values()) {
+    const points = pathPoints(group.from, group.to);
+    if (points.length === 0) continue;
+    const selected = group.routes.find((route) => route.id === selectedEntityId);
+    const replay = group.routes.find((route) => route.id === animation.replayRouteId);
+    const newest = group.routes.reduce((latest, route) => route.lastAt > latest.lastAt ? route : latest);
+    const route = replay ?? selected ?? newest;
+    const age = Math.max(0, animation.now - route.lastAt);
+    const connected = group.from.id === selectedEntityId || group.to.id === selectedEntityId;
+    const visible = Boolean(replay || selected || connected || animation.showHistory || age <= 60_000);
+    if (!visible) continue;
+    const fresh = Boolean(replay || age <= 10_000);
+    const style: Cell["style"] = selected || replay
+      ? routeStyle(route)
+      : fresh
+        ? "accent"
+        : "dim";
+    const stride = fresh ? 1 : 2;
+    for (let index = 0; index < points.length; index += stride) {
+      const point = points[index]!;
+      const trail = fresh && !animation.reducedMotion && index % 3 === 0 ? "━" : fresh ? "·" : "╌";
+      setCell(point.x, point.y, trail, style);
+    }
+    const packetActive = !animation.reducedMotion && Boolean(replay || age <= 2_000);
+    if (packetActive) {
+      const duration = 1_200;
+      const phase = replay
+        ? (animation.now % duration) / duration
+        : Math.min(0.999, age / 2_000);
+      const packetIndex = Math.min(points.length - 1, Math.floor(phase * points.length));
+      const point = points[packetIndex]!;
+      setCell(point.x, point.y, routeGlyph(route), routeStyle(route));
+      if (route.kind.toLowerCase().includes("certif")) {
+        const ripple = points[Math.max(0, points.length - 1 - packetIndex)]!;
+        setCell(ripple.x, ripple.y, "✦", "warning");
+      } else if (route.status === "failed") {
+        const impact = points.at(-1)!;
+        setCell(impact.x, impact.y, Math.floor(animation.now / 120) % 2 === 0 ? "╳" : "!", "error");
+      }
+      const label = graphLabel(animation.replayLabel ?? route.kind, 18);
+      let offset = 2;
+      for (const char of label) {
+        setCell(point.x + offset, point.y, char, routeStyle(route));
+        offset += visibleWidth(char);
+      }
+    } else {
+      const count = group.routes.reduce((total, candidate) => total + candidate.count, 0);
+      if (count > 1) {
+        const point = points[Math.floor(points.length / 2)]!;
+        const label = `×${count}`;
+        for (let index = 0; index < label.length; index++) {
+          setCell(point.x + index, point.y, label[index]!, style);
+        }
+      }
+    }
   }
 
   for (const node of layout.nodes) {
     const selected = node.id === selectedEntityId;
-    const glyph = selected ? "▣" : graphGlyph(node.kind);
+    const spotlighted = !selectedRoute || related.has(node.id);
+    const glyph = selected ? "▣" : graphGlyph(node, animation);
     const label = graphLabel(safeText(node.label), 14);
-    setCell(node.x, node.y, glyph, selected ? "accent" : styleForStatus(node.status));
+    const nodeStyle = selected
+      ? "accent"
+      : !spotlighted
+        ? "dim"
+        : styleForStatus(node.status);
+    setCell(node.x, node.y, glyph, nodeStyle);
     setCell(node.x + 1, node.y, " ", "plain");
     let offset = 0;
     for (const char of label) {
-      setCell(node.x + 2 + offset, node.y, char, selected ? "accent" : "plain");
+      setCell(node.x + 2 + offset, node.y, char, selected ? "accent" : spotlighted ? "plain" : "dim");
       offset += visibleWidth(char);
     }
   }
@@ -381,7 +535,6 @@ const renderCanvas = (
     return truncateToWidth(rendered, width, "");
   });
 };
-
 const wrapInspector = (theme: Theme, label: string, value: string, width: number): string[] => {
   const clean = safeText(value);
   const first = truncateToWidth(clean, Math.max(1, width - label.length - 1), "…");
@@ -421,7 +574,9 @@ const inspectorLines = (
       content.push(`${entity.value.recentEvents} recent events`);
     } else if (entity.kind === "meshRoute") {
       content.push(`${safeText(entity.value.fromName)} → ${safeText(entity.value.targetName)}`);
-      content.push(theme.fg("dim", safeText(entity.value.topic)));
+      content.push(`kind  ${safeText(entity.value.kind)}`);
+      content.push(`topic ${theme.fg("dim", safeText(entity.value.topic))}`);
+      content.push(`count ${entity.value.count}`);
     } else if (entity.kind === "state") {
       content.push(`version ${entity.value.version}`);
       if (entity.value.owner) content.push(`owner   ${safeText(entity.value.owner)}`);
@@ -478,6 +633,7 @@ export const renderFabricTopologyPanel = ({
   width,
   height,
   camera,
+  animation,
 }: {
   theme: Theme;
   filter: StatusFilter;
@@ -490,6 +646,7 @@ export const renderFabricTopologyPanel = ({
   width: number;
   height: number;
   camera: FabricGraphPoint;
+  animation: FabricGraphAnimation;
 }): FabricTopologyRenderResult => {
   const graphEntities = graphContextEntities(allEntities, entities);
   const layout = buildLayout(snapshot, graphEntities, run, mesh);
@@ -497,7 +654,7 @@ export const renderFabricTopologyPanel = ({
   const selected = entities.find((entity) => entity.id === selectedEntityId) ?? entities[0];
   const inspectorWidth = width >= 92 ? Math.min(36, Math.max(30, Math.floor(width * 0.3))) : 0;
   const graphWidth = Math.max(1, width - inspectorWidth);
-  const graph = renderCanvas(theme, layout, selected?.id, graphWidth, height, camera);
+  const graph = renderCanvas(theme, layout, selected?.id, graphWidth, height, camera, animation);
   const inspector = inspectorWidth > 0
     ? inspectorLines(theme, selected, snapshot, run, inspectorWidth, height)
     : [];
@@ -536,6 +693,8 @@ export const renderFabricTopologyPanel = ({
       "■ agent",
       "◇ actor",
       "◎ topic",
+      animation.replayRouteId ? "▶ replay" : animation.showHistory ? "history" : "live decay",
+      animation.reducedMotion ? "reduced motion" : undefined,
       filter !== "all" ? `${entities.length}/${allEntities.length} ${filter}` : undefined,
     ].filter((value): value is string => Boolean(value)).join(" · ");
     const graphLegend = padToWidth(theme.fg("dim", truncateToWidth(legend, graphWidth, "")), graphWidth);
