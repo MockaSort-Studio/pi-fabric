@@ -96,6 +96,7 @@ Advanced patterns are user-invoked and are not advertised for automatic selectio
 | Parallel audits, migrations, or research with verification | `/skill:fabric-workflow Audit every auth file and synthesize verified findings.` |
 | Work too big for one context window | `/skill:fabric-rlm Produce a compact architecture map of this repo.` |
 | A persistent watcher for one measurable goal | `/skill:fabric-supervisor Watch this migration until it is complete and tested.` |
+| A strict auditor for one feature design spec | `/skill:fabric-spec Implement docs/specs/checkout.md to the tee; nothing missing, nothing extra.` |
 | A quiet decision-point reviewer | `/skill:fabric-advisor Focus on migration correctness.` |
 | Same-model independent reviewers and one decision | `/skill:fabric-council Review this design for correctness, security, and operability.` |
 | Multi-model compare-not-merge deliberation | `/skill:fabric-fusion Deliberate this design across models.` |

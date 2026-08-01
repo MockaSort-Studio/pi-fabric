@@ -43,5 +43,6 @@ A mandatory pointer is disclosure for legibility and single-source maintenance, 
 - `/skill:fabric-schema` — evidence-gated mutation.
 - `/skill:fabric-advisor` — persistent peer advice.
 - `/skill:fabric-supervisor` — persistent goal supervision.
+- `/skill:fabric-spec` — persistent spec-compliance supervision.
 - `/skill:fabric-ambient` — direct advisor/supervisor profile router.
 - `/skill:fabric-swarm` — durable actor coordination.

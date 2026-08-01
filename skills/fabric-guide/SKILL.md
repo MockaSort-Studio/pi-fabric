@@ -17,6 +17,7 @@ Recommend the smallest sufficient path; do not invoke it. Core coding needs no a
 | Evidence-gated or transactional local-file mutation | `/skill:fabric-schema` |
 | Persistent material peer advice | `/skill:fabric-advisor` |
 | Persistent progress toward one measurable goal | `/skill:fabric-supervisor` |
+| Strict feature-spec compliance, audited until verified | `/skill:fabric-spec` |
 | One command that infers advisor versus supervisor | `/skill:fabric-ambient` |
 | Durable actor team with mailboxes and CAS tasks | `/skill:fabric-swarm` |
 

@@ -71,6 +71,7 @@ describe("fabric-exec skill provider contracts", () => {
 
     const profiles = {
       "fabric-advisor": "../fabric-ambient/references/setup.md",
+      "fabric-spec": "../fabric-ambient/references/setup.md",
       "fabric-supervisor": "../fabric-ambient/references/setup.md",
       "fabric-ambient": "references/setup.md",
     } as const;
@@ -146,6 +147,7 @@ describe("fabric-exec skill provider contracts", () => {
       "fabric-supervisor": ["agent_settled", "tool_error", "Goal verified complete", "without recreating or retrying automatically"],
       "fabric-swarm": ["ifVersion: 0", "observed version", "CAS-unblock dependents", "agents.tell"],
       "fabric-workflow": ["parallel(thunks", "WorkOutcome", 'status: "partial"', "fallback: completed", "automatic whole-workflow rerun"],
+      "fabric-spec": ["agent_settled", "tool_error", "Spec verified complete", "never the approach", "without recreating or retrying automatically"],
     };
 
     for (const [name, signals] of Object.entries(required)) {
