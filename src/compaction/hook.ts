@@ -86,6 +86,11 @@ interface AdaptiveCutPlan {
 const SUMMARY_RAW_TOKEN_BUDGET = Math.ceil(MAX_SUMMARY_BYTES / 4);
 const HARD_CEILING_SAFETY_RATIO = 0.9;
 const MAX_PRECOMPACTION_RATIO = 0.95;
+// An overflow rejection proves the provider's effective window is below the
+// failed request size, so the observation is stronger evidence than the
+// advertised (possibly proxy-inflated) model window. The haircut absorbs the
+// removed error message and estimator slop.
+const OVERFLOW_WINDOW_EVIDENCE_RATIO = 0.9;
 
 const isMessageEntry = (entry: SessionEntry): entry is Extract<SessionEntry, { type: "message" }> =>
   entry.type === "message";
@@ -768,12 +773,28 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
     if (options.getEngine() !== "fabric") return;
     const targetContextRatio = options.getTargetContextRatio?.();
     const settings = preparation.settings ?? DEFAULT_COMPACTION_SETTINGS;
-    const budget = typeof contextWindow === "number"
+    const tokensBefore = preparation.tokensBefore;
+    const evidenceWindow = event.reason === "overflow"
+      && typeof tokensBefore === "number"
+      && Number.isFinite(tokensBefore)
+      && tokensBefore > 0
+      ? Math.max(1, Math.floor(tokensBefore * OVERFLOW_WINDOW_EVIDENCE_RATIO))
+      : undefined;
+    const advertisedWindow = typeof contextWindow === "number"
       && Number.isFinite(contextWindow)
+      && contextWindow > 0
+      ? contextWindow
+      : undefined;
+    const effectiveWindow = evidenceWindow === undefined
+      ? advertisedWindow
+      : advertisedWindow === undefined
+        ? evidenceWindow
+        : Math.min(advertisedWindow, evidenceWindow);
+    const budget = effectiveWindow !== undefined
       && typeof targetContextRatio === "number"
       && Number.isFinite(targetContextRatio)
       ? {
-          contextWindow,
+          contextWindow: effectiveWindow,
           targetContextRatio,
           reserveTokens: settings.reserveTokens,
           keepRecentTokens: settings.keepRecentTokens,

@@ -1070,6 +1070,46 @@ describe("adaptive compaction budget", () => {
     expect(budget?.projectedTokensAfter).toBeLessThanOrEqual(Math.floor(tokensBefore * 0.95));
   });
 
+  it("clamps an overflow recovery cut to the observed failing request size", () => {
+    resetIds();
+    resetClock();
+    const { entries, tokensBefore } = longSingleTurn();
+    let handler: ((event: SessionBeforeCompactEvent, context: ExtensionContext) => unknown) | undefined;
+    const pi = {
+      on(name: string, candidate: unknown) {
+        if (name === "session_before_compact") {
+          handler = candidate as typeof handler;
+        }
+      },
+    } as unknown as ExtensionAPI;
+    registerCompactionHook(pi, {
+      getEngine: () => "fabric",
+      getTargetContextRatio: () => 0.65,
+      getThresholdContextRatio: () => undefined,
+    });
+    const context = {
+      model: { provider: "openai", id: "gpt-5-proxied", contextWindow: 400_000 },
+    } as unknown as ExtensionContext;
+    const event = {
+      reason: "overflow",
+      preparation: { tokensBefore },
+      branchEntries: entries,
+    } as unknown as SessionBeforeCompactEvent;
+
+    const overflowResult = handler?.(event, context) as {
+      compaction?: { details?: { budget?: FabricCompactionBudgetDetails } };
+    } | undefined;
+    const overflowBudget = overflowResult?.compaction?.details?.budget;
+    expect(overflowBudget?.contextWindow).toBe(Math.floor(tokensBefore * 0.9));
+    expect(overflowBudget?.targetContextTokens).toBeLessThanOrEqual(Math.floor(tokensBefore * 0.9));
+    expect(overflowBudget?.projectedTokensAfter).toBeLessThan(tokensBefore);
+
+    const thresholdResult = handler?.({ ...event, reason: "threshold" } as SessionBeforeCompactEvent, context) as {
+      compaction?: { details?: { budget?: FabricCompactionBudgetDetails } };
+    } | undefined;
+    expect(thresholdResult?.compaction?.details?.budget?.contextWindow).toBe(400_000);
+  });
+
   it("cancels rather than expanding when even compact-all cannot fit the target", () => {
     resetIds();
     resetClock();
