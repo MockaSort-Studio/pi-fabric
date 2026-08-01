@@ -514,7 +514,20 @@ export class FabricState {
       () => this.#config?.ui.showNestedToolCalls ?? true,
     );
     this.#control.start((command, from) => this.#agentsProvider!.acceptControl(command, from));
-    await this.#participants.start();
+    try {
+      await this.#participants.start();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[pi-fabric] Initial mesh publish failed (${detail}); the participant heartbeat will keep retrying.`,
+      );
+      if (context.hasUI) {
+        context.ui.notify(
+          `Pi Fabric could not reach the mesh (${detail}); retrying in the background.`,
+          "warning",
+        );
+      }
+    }
     this.#lifecycle.start();
     this.#registry.register(this.#agentsProvider);
     if (this.#config.memory.enabled) {

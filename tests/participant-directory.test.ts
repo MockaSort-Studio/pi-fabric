@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
 import { ParticipantDirectory } from "../src/topology/participant-directory.js";
 import type { FabricParticipantRecord } from "../src/topology/types.js";
@@ -388,5 +388,38 @@ describe("ParticipantDirectory", () => {
       "session:local",
       "agent:local",
     ]);
+  });
+
+  it("recovers via heartbeat when the initial publish fails at startup", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-topology-"));
+    roots.push(root);
+    const meshRoot = path.join(root, "mesh");
+    const identity: MeshIdentity = {
+      id: "session:alpha",
+      name: "main",
+      kind: "main",
+      sessionId: "alpha",
+    };
+    const directory = createDirectory(meshRoot, identity, identity.id, () => [
+      rootRecord(identity.id, identity.id, "alpha"),
+    ]);
+    let failures = 1;
+    const publish = directory.mesh.put.bind(directory.mesh);
+    vi.spyOn(directory.mesh, "put").mockImplementation(async (input) => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("mesh offline");
+      }
+      return publish(input);
+    });
+
+    await expect(directory.start()).rejects.toThrow("mesh offline");
+
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline && directory.mesh.listAll("topology/hosts/").length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(directory.mesh.listAll("topology/hosts/")).toHaveLength(1);
+    expect(directory.mesh.listAll("topology/participants/")).toHaveLength(1);
   });
 });

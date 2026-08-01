@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
+import { MeshStore, type MeshIdentity, type MeshStoreOptions } from "../src/mesh/store.js";
 
 const roots: string[] = [];
 const identity: MeshIdentity = {
@@ -12,10 +12,10 @@ const identity: MeshIdentity = {
   sessionId: "test",
 };
 
-const createStore = (): MeshStore => {
+const createStore = (options?: MeshStoreOptions): MeshStore => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-mesh-"));
   roots.push(root);
-  return new MeshStore(root, 64 * 1024, 100);
+  return new MeshStore(root, 64 * 1024, 100, options);
 };
 
 afterEach(() => {
@@ -178,5 +178,67 @@ describe("MeshStore", () => {
     expect(state.tombstoneOrder).toEqual(["state/b", "state/c"]);
     expect(state.versions["state/a"]).toBeUndefined();
     expect(recreated.version).toBe(1);
+  });
+});
+
+describe("MeshStore lock recovery", () => {
+  const holdLock = (store: MeshStore, owner?: string): string => {
+    const lockPath = path.join(store.root, ".lock");
+    fs.mkdirSync(lockPath, { mode: 0o700 });
+    if (owner !== undefined) fs.writeFileSync(path.join(lockPath, "owner"), owner);
+    return lockPath;
+  };
+
+  it("sweeps a stale lock whose owner process is dead", async () => {
+    const store = createStore();
+    const lockPath = holdLock(store, `crashed\n999999999\n${Date.now() - 60_000}\n`);
+
+    const event = await store.publish({ topic: "team.auth", from: identity, text: "recovered" });
+
+    expect(event.sequence).toBe(1);
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("sweeps an ownerless lock left by a crash older than the stale window", async () => {
+    const store = createStore();
+    const lockPath = holdLock(store);
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockPath, past, past);
+
+    const event = await store.publish({ topic: "team.auth", from: identity, text: "recovered" });
+
+    expect(event.sequence).toBe(1);
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("sweeps a lock whose owner file is corrupt", async () => {
+    const store = createStore();
+    const lockPath = holdLock(store, "not-a-valid-owner");
+
+    const event = await store.publish({ topic: "team.auth", from: identity, text: "recovered" });
+
+    expect(event.sequence).toBe(1);
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("never sweeps a lock owned by a live process and times out instead", async () => {
+    const store = createStore({ lockTimeoutMs: 300 });
+    const lockPath = holdLock(store, `other\n${process.pid}\n${Date.now() - 60_000}\n`);
+
+    await expect(
+      store.publish({ topic: "team.auth", from: identity, text: "blocked" }),
+    ).rejects.toThrow("Timed out waiting for the Fabric mesh lock");
+    expect(fs.existsSync(lockPath)).toBe(true);
+    expect(fs.readFileSync(path.join(lockPath, "owner"), "utf8")).toContain(`${process.pid}\n`);
+  });
+
+  it("waits out a fresh ownerless lock instead of sweeping an in-flight acquisition", async () => {
+    const store = createStore({ lockTimeoutMs: 300 });
+    const lockPath = holdLock(store);
+
+    await expect(
+      store.publish({ topic: "team.auth", from: identity, text: "blocked" }),
+    ).rejects.toThrow("Timed out waiting for the Fabric mesh lock");
+    expect(fs.existsSync(lockPath)).toBe(true);
   });
 });

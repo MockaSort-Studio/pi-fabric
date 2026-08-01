@@ -47,6 +47,8 @@ export interface MeshStoreOptions {
   retainedEventLogBytes?: number;
   maxStateBytes?: number;
   maxStateTombstones?: number;
+  lockTimeoutMs?: number;
+  staleLockMs?: number;
 }
 
 const TOPIC_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/;
@@ -68,6 +70,16 @@ const errorCode = (error: unknown): string | undefined =>
   error instanceof Error && "code" in error && typeof error.code === "string"
     ? error.code
     : undefined;
+
+const processAlive = (pid: number): boolean => {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 const jsonClone = <T>(value: T): T => {
   const serialized = JSON.stringify(value);
@@ -145,6 +157,8 @@ export class MeshStore {
   readonly #retainedEventLogBytes: number;
   readonly #maxStateBytes: number;
   readonly #maxStateTombstones: number;
+  readonly #lockTimeoutMs: number;
+  readonly #staleLockMs: number;
   #stateCache:
     | { device: number; inode: number; size: number; modifiedAt: number; state: MeshStateFile }
     | undefined;
@@ -179,6 +193,8 @@ export class MeshStore {
       1,
       Math.floor(options.maxStateTombstones ?? DEFAULT_MAX_STATE_TOMBSTONES),
     );
+    this.#lockTimeoutMs = Math.max(100, Math.floor(options.lockTimeoutMs ?? LOCK_TIMEOUT_MS));
+    this.#staleLockMs = Math.max(100, Math.floor(options.staleLockMs ?? STALE_LOCK_MS));
     fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   }
 
@@ -575,18 +591,9 @@ export class MeshStore {
 
   async #withLock<T>(operation: () => T): Promise<T> {
     fs.mkdirSync(this.root, { recursive: true, mode: 0o700 });
-    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    const deadline = Date.now() + this.#lockTimeoutMs;
     const token = randomUUID();
     const ownerPath = path.join(this.#lockPath, "owner");
-    const processAlive = (pid: number): boolean => {
-      if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
     while (true) {
       try {
         fs.mkdirSync(this.#lockPath, { mode: 0o700 });
@@ -597,18 +604,7 @@ export class MeshStore {
         break;
       } catch (error) {
         if (errorCode(error) !== "EEXIST") throw error;
-        try {
-          const firstOwner = fs.readFileSync(ownerPath, "utf8");
-          const [, pidText, createdText] = firstOwner.trim().split("\n");
-          const age = Date.now() - Number(createdText);
-          if (age > STALE_LOCK_MS && !processAlive(Number(pidText))) {
-            const secondOwner = fs.readFileSync(ownerPath, "utf8");
-            if (secondOwner === firstOwner) {
-              fs.rmSync(this.#lockPath, { recursive: true, force: true });
-              continue;
-            }
-          }
-        } catch { /* stale lock already gone or unreadable; retry */ }
+        if (this.#clearStaleLock(ownerPath)) continue;
         if (Date.now() >= deadline) throw new Error("Timed out waiting for the Fabric mesh lock");
         await delay(10);
       }
@@ -624,6 +620,50 @@ export class MeshStore {
       } catch {
         // Another process already recovered or removed this lock.
       }
+    }
+  }
+
+  // Returns true when a stale lock was removed and acquisition should retry.
+  // A lock is stale when it outlived the stale window without a live owner:
+  // either the owner file names a dead process, or the owner file is missing
+  // or corrupt — the owner crashed between creating the lock directory and
+  // writing the owner file — and the untouched lock directory itself is
+  // stale. Removal re-reads the state it judged stale so a freshly rotated
+  // owner is never deleted mid-check.
+  #clearStaleLock(ownerPath: string): boolean {
+    let lockModifiedAt: number | undefined;
+    let owner: string | undefined;
+    try {
+      owner = fs.readFileSync(ownerPath, "utf8");
+    } catch {
+      try {
+        lockModifiedAt = fs.statSync(this.#lockPath).mtimeMs;
+      } catch {
+        return false;
+      }
+    }
+    if (owner !== undefined) {
+      const [, pidText, createdText] = owner.trim().split("\n");
+      const createdAt = Number(createdText);
+      if (Number.isFinite(createdAt) && Date.now() - createdAt <= this.#staleLockMs) return false;
+      if (processAlive(Number(pidText))) return false;
+      try {
+        if (fs.readFileSync(ownerPath, "utf8") !== owner) return false;
+        fs.rmSync(this.#lockPath, { recursive: true, force: true });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    if (lockModifiedAt === undefined || Date.now() - lockModifiedAt <= this.#staleLockMs) {
+      return false;
+    }
+    try {
+      if (fs.statSync(this.#lockPath).mtimeMs !== lockModifiedAt) return false;
+      fs.rmSync(this.#lockPath, { recursive: true, force: true });
+      return true;
+    } catch {
+      return false;
     }
   }
 

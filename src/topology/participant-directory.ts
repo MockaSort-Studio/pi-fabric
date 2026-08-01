@@ -254,10 +254,21 @@ export class ParticipantDirectory implements FabricParticipantSource {
   async start(): Promise<void> {
     if (this.#timer) return;
     this.#closed = false;
-    await this.refresh();
-    if (!this.options.enabled) return;
-    this.#timer = setInterval(() => void this.refresh().catch(() => undefined), this.#heartbeatMs);
-    this.#timer.unref();
+    let initialError: unknown;
+    try {
+      await this.refresh();
+    } catch (error) {
+      initialError = error;
+    }
+    if (this.options.enabled) {
+      // The heartbeat doubles as the recovery path: even when the initial
+      // publish fails (for example a contended mesh lock at startup), keep
+      // retrying so this host joins the mesh once the lock clears instead of
+      // staying invisible until the next restart.
+      this.#timer = setInterval(() => void this.refresh().catch(() => undefined), this.#heartbeatMs);
+      this.#timer.unref();
+    }
+    if (initialError) throw initialError;
   }
 
   scheduleRefresh(): void {
