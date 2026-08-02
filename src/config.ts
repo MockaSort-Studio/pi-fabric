@@ -115,8 +115,8 @@ interface FabricUiConfig {
   refreshMs: number;
   eventHistory: number;
   haltOnEscape: boolean;
-  showNestedToolCalls: boolean;
-  nestedToolDebounceMs: number;
+  showAgentToolPreview: boolean;
+  updateDebounceMs: number;
 }
 
 interface FabricCompactionConfig {
@@ -259,8 +259,8 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     refreshMs: 500,
     eventHistory: 80,
     haltOnEscape: true,
-    showNestedToolCalls: true,
-    nestedToolDebounceMs: 100,
+    showAgentToolPreview: true,
+    updateDebounceMs: 100,
   },
   compaction: {
     engine: "fabric",
@@ -663,13 +663,17 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         500,
       ),
       haltOnEscape: booleanValue(ui.haltOnEscape, DEFAULT_FABRIC_CONFIG.ui.haltOnEscape),
-      showNestedToolCalls: booleanValue(
-        ui.showNestedToolCalls,
-        DEFAULT_FABRIC_CONFIG.ui.showNestedToolCalls,
+      // Renamed from ui.showNestedToolCalls; the v2 migration rewrites persisted
+      // files, and this fallback covers configs normalized without migration.
+      showAgentToolPreview: booleanValue(
+        ui.showAgentToolPreview ?? ui.showNestedToolCalls,
+        DEFAULT_FABRIC_CONFIG.ui.showAgentToolPreview,
       ),
-      nestedToolDebounceMs: boundedInteger(
-        ui.nestedToolDebounceMs,
-        DEFAULT_FABRIC_CONFIG.ui.nestedToolDebounceMs,
+      // Renamed from ui.nestedToolDebounceMs (v3): the window coalesces every
+      // live fabric_exec card update — nested calls, progress, agent previews.
+      updateDebounceMs: boundedInteger(
+        ui.updateDebounceMs ?? ui.nestedToolDebounceMs,
+        DEFAULT_FABRIC_CONFIG.ui.updateDebounceMs,
         0,
         2_000,
       ),

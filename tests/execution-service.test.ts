@@ -277,7 +277,7 @@ return "complete outer result";
     const debouncedConfig = structuredClone(DEFAULT_FABRIC_CONFIG);
     debouncedConfig.fullCodeMode = false;
     debouncedConfig.approvals.read = "allow";
-    debouncedConfig.ui.nestedToolDebounceMs = 10_000;
+    debouncedConfig.ui.updateDebounceMs = 10_000;
     const debouncedPartials: Array<{ audits: unknown[] }> = [];
     const debounced = await new FabricExecutionService(registry, debouncedConfig).execute({
       code,
@@ -293,7 +293,7 @@ return "complete outer result";
     expect(debouncedPartials[0]?.audits).toHaveLength(3);
 
     const immediateConfig = structuredClone(debouncedConfig);
-    immediateConfig.ui.nestedToolDebounceMs = 0;
+    immediateConfig.ui.updateDebounceMs = 0;
     const immediatePartials: unknown[] = [];
     await new FabricExecutionService(registry, immediateConfig).execute({
       code,
@@ -378,7 +378,7 @@ return "complete outer result";
     const config = structuredClone(DEFAULT_FABRIC_CONFIG);
     config.fullCodeMode = false;
     config.approvals.read = "allow";
-    config.ui.nestedToolDebounceMs = 50;
+    config.ui.updateDebounceMs = 50;
     const partials: Array<{ progress?: string | undefined; audits: Array<{ success?: boolean }> }> = [];
 
     const result = await new FabricExecutionService(registry, config).execute({
@@ -397,7 +397,7 @@ return "complete outer result";
 
   it("coalesces rapid workflow phase updates through the same debounce", async () => {
     const config = structuredClone(DEFAULT_FABRIC_CONFIG);
-    config.ui.nestedToolDebounceMs = 10_000;
+    config.ui.updateDebounceMs = 10_000;
     const partials: Array<{ phases: string[] }> = [];
     const result = await new FabricExecutionService(new ActionRegistry(), config).execute({
       code: `

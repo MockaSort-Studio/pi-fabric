@@ -48,7 +48,13 @@ import type {
   AgentSessionSeed,
 } from "../agents/types.js";
 import { isFabricThinking } from "../thinking.js";
-import { AgentTranscriptReader, recentTranscriptTools } from "../ui/transcript.js";
+import {
+  AgentTranscriptReader,
+  recentTranscriptTools,
+  type FabricAgentToolPreview,
+  type FabricAgentToolPreviewNode,
+  type FabricTranscriptEntry,
+} from "../ui/transcript.js";
 
 const runProperties = {
   task: { type: "string", description: "A self-contained task for the child agent" },
@@ -128,6 +134,8 @@ const lifecycleEventSchema = {
 const AGENT_PROGRESS_INTERVAL_MS = 1_000;
 const AGENT_PREVIEW_TEXT_CODE_POINTS = 2_000;
 const AGENT_PREVIEW_TOOL_LIMIT = 8;
+const AGENT_PREVIEW_TREE_MAX_DEPTH = 4;
+const AGENT_PREVIEW_TREE_MAX_NODES = 24;
 
 const tailCodePoints = (value: string, limit: number): string => {
   if (value.length <= limit) return value;
@@ -799,6 +807,49 @@ const actorRequest = (
 
 type AgentProgressStatus = ReturnType<AgentManager["status"]>;
 
+export interface AgentToolPreviewTreeOptions {
+  tools: (record: AgentRunRecord) => FabricTranscriptEntry[];
+  maxDepth?: number;
+  maxNodes?: number;
+}
+
+// Map an agent run tree (AgentRunRecord.nestedAgents) onto bounded preview
+// nodes. Depth and total-node budgets keep recursive runs cheap to build and
+// cheap to diff against the previous revision every progress tick.
+export const collectAgentToolPreviewNodes = (
+  records: readonly AgentRunRecord[],
+  options: AgentToolPreviewTreeOptions,
+  depth = 0,
+  budget = { remaining: options.maxNodes ?? AGENT_PREVIEW_TREE_MAX_NODES },
+): FabricAgentToolPreviewNode[] => {
+  const maxDepth = options.maxDepth ?? AGENT_PREVIEW_TREE_MAX_DEPTH;
+  const nodes: FabricAgentToolPreviewNode[] = [];
+  for (const record of records) {
+    if (budget.remaining <= 0) break;
+    budget.remaining -= 1;
+    const descendants = Array.isArray(record.nestedAgents) ? record.nestedAgents : [];
+    const agents =
+      depth + 1 < maxDepth && descendants.length > 0 && budget.remaining > 0
+        ? collectAgentToolPreviewNodes(descendants, options, depth + 1, budget)
+        : [];
+    nodes.push({
+      id: record.id,
+      name: record.actorName ?? record.name,
+      status: record.status,
+      ...(record.runner === "pi" || record.runner === "claude" ? { runner: record.runner } : {}),
+      owner: record.actorId ? "actor" : "agent",
+      ...(record.currentTool ? { currentTool: record.currentTool } : {}),
+      ...(record.text
+        ? { text: tailCodePoints(record.text, AGENT_PREVIEW_TEXT_CODE_POINTS) }
+        : {}),
+      tools: options.tools(record),
+      ...(agents.length > 0 ? { agents } : {}),
+      ...(descendants.length > agents.length ? { agentsTruncated: true } : {}),
+    });
+  }
+  return nodes;
+};
+
 const attachAgentToolPreview = (
   status: AgentProgressStatus,
   transcripts: AgentTranscriptReader,
@@ -807,15 +858,27 @@ const attachAgentToolPreview = (
   previousRevision?: string,
 ): string => {
   if (!context.attachPreview) return agentProgressRevision(status);
+  const previewTools = (source: {
+    id: string;
+    status: string;
+    logFile?: string | undefined;
+  }): FabricTranscriptEntry[] => {
+    if (!enabled() || !source.logFile) return [];
+    try {
+      return recentTranscriptTools(
+        transcripts.read({ id: source.id, status: source.status, logFile: source.logFile }),
+        AGENT_PREVIEW_TOOL_LIMIT,
+      );
+    } catch {
+      // Descendant runs can clean up mid-read; keep the rest of the tree.
+      return [];
+    }
+  };
   try {
-    const tools =
-      enabled() && "logFile" in status && status.logFile
-        ? recentTranscriptTools(
-            transcripts.read({ id: status.id, status: status.status, logFile: status.logFile }),
-            AGENT_PREVIEW_TOOL_LIMIT,
-          )
-        : [];
-    const preview = {
+    const nestedRecords =
+      "nestedAgents" in status && Array.isArray(status.nestedAgents) ? status.nestedAgents : [];
+    const descendants = collectAgentToolPreviewNodes(nestedRecords, { tools: previewTools });
+    const preview: FabricAgentToolPreview = {
       kind: "fabric-agent-tools",
       id: status.id,
       name: status.actorName ?? status.name,
@@ -825,7 +888,9 @@ const attachAgentToolPreview = (
       ...("text" in status && status.text
         ? { text: tailCodePoints(status.text, AGENT_PREVIEW_TEXT_CODE_POINTS) }
         : {}),
-      tools,
+      tools: previewTools(status),
+      ...(descendants.length > 0 ? { agents: descendants } : {}),
+      ...(nestedRecords.length > descendants.length ? { agentsTruncated: true } : {}),
     };
     // The preview is bounded before this point. Comparing its compact snapshot
     // keeps the one-second filesystem poll cheap while still noticing transcript
@@ -893,7 +958,7 @@ const waitWithProgress = async (
   transcripts: AgentTranscriptReader,
   id: string,
   context: FabricInvocationContext,
-  nestedToolsEnabled: () => boolean,
+  agentToolPreviewEnabled: () => boolean,
 ): Promise<AgentRunResult> => {
   const result = manager.wait(id);
   let lastPreviewRevision: string | undefined;
@@ -904,7 +969,7 @@ const waitWithProgress = async (
         status,
         transcripts,
         context,
-        nestedToolsEnabled,
+        agentToolPreviewEnabled,
         lastPreviewRevision,
       );
       if (revision === lastPreviewRevision) return;
@@ -932,7 +997,7 @@ const waitWithProgress = async (
   } finally {
     try {
       const status = manager.status(id);
-      attachAgentToolPreview(status, transcripts, context, nestedToolsEnabled);
+      attachAgentToolPreview(status, transcripts, context, agentToolPreviewEnabled);
       const displayName = status.actorName ?? status.name;
       context.update(`Agent ${displayName}: ${status.status}`);
     } catch {
@@ -948,7 +1013,7 @@ const waitWithActorProgress = async (
   actorName: string,
   result: Promise<FabricActorMessage>,
   context: FabricInvocationContext,
-  nestedToolsEnabled: () => boolean,
+  agentToolPreviewEnabled: () => boolean,
 ): Promise<FabricActorMessage> => {
   let lastPreviewRevision: string | undefined;
   try {
@@ -959,7 +1024,7 @@ const waitWithActorProgress = async (
             worker,
             transcripts,
             context,
-            nestedToolsEnabled,
+            agentToolPreviewEnabled,
             lastPreviewRevision,
           )
         : "queued";
@@ -975,7 +1040,7 @@ const waitWithActorProgress = async (
     });
   } finally {
     const worker = actorWorker(manager, actorId, true);
-    if (worker) attachAgentToolPreview(worker, transcripts, context, nestedToolsEnabled);
+    if (worker) attachAgentToolPreview(worker, transcripts, context, agentToolPreviewEnabled);
   }
 };
 
@@ -993,7 +1058,7 @@ export class AgentsProvider implements FabricProvider {
     readonly participants: FabricParticipantSource,
     readonly control: FabricControlPlane | undefined,
     readonly lifecycle: LifecycleBroker,
-    readonly nestedToolsEnabled: () => boolean = () => true,
+    readonly agentToolPreviewEnabled: () => boolean = () => true,
   ) {}
 
   async list(
@@ -1067,7 +1132,7 @@ export class AgentsProvider implements FabricProvider {
       this.#transcripts,
       handle.id,
       context,
-      this.nestedToolsEnabled,
+      this.agentToolPreviewEnabled,
     );
     context.update(
       completed.status === "completed"
@@ -1103,7 +1168,7 @@ export class AgentsProvider implements FabricProvider {
           this.#transcripts,
           handle.id,
           context,
-          this.nestedToolsEnabled,
+          this.agentToolPreviewEnabled,
         );
       }
       case "handoff":
@@ -1135,7 +1200,7 @@ export class AgentsProvider implements FabricProvider {
           this.#transcripts,
           id,
           context,
-          this.nestedToolsEnabled,
+          this.agentToolPreviewEnabled,
         );
       }
       case "status": {
@@ -1270,7 +1335,7 @@ export class AgentsProvider implements FabricProvider {
           actor.name,
           this.actorManager.ask(actor.id, String(args.message), args.data, context.signal),
           context,
-          this.nestedToolsEnabled,
+          this.agentToolPreviewEnabled,
         );
       }
       case "tell": {

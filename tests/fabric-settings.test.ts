@@ -223,8 +223,8 @@ describe("FabricSettingsComponent", () => {
     const ui = items.find((item) => item.id === "ui");
     expect(ui?.submenu).toBeDefined();
     const lines = ui!.submenu!("", () => {}).render(80).join("\n");
-    expect(lines).toContain("Nested tool calls");
-    expect(lines).toContain("Nested tool debounce");
+    expect(lines).toContain("Agent tool preview");
+    expect(lines).toContain("Update debounce");
     expect(lines).toContain("100ms");
   });
 

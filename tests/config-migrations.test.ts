@@ -38,11 +38,11 @@ describe("Fabric configuration migrations", () => {
     expect(result).toMatchObject({
       fromVersion: 0,
       toVersion: CURRENT_FABRIC_CONFIG_VERSION,
-      appliedVersions: [1],
+      appliedVersions: [1, 2, 3],
       changed: true,
     });
     expect(result.document).toEqual({
-      configVersion: 1,
+      configVersion: 3,
       agents: { runner: "claude", defaultTools: ["read"] },
       ui: { enabled: false },
     });
@@ -71,7 +71,7 @@ describe("Fabric configuration migrations", () => {
 
   it("rejects invalid, future, and legacy keys in current documents", () => {
     expect(() => migrateFabricConfigDocument({ configVersion: -1 })).toThrow(/non-negative integer/);
-    expect(() => migrateFabricConfigDocument({ configVersion: 2 })).toThrow(/newer than supported/);
+    expect(() => migrateFabricConfigDocument({ configVersion: 4 })).toThrow(/newer than supported/);
     expect(() =>
       migrateFabricConfigDocument({ configVersion: 1, subagents: {} }),
     ).toThrow(/removed key/);
@@ -84,9 +84,9 @@ describe("Fabric configuration migrations", () => {
 
     const config = loadFabricConfig({ cwd: paths.cwd, agentDir: paths.agentDir, projectTrusted: true });
     expect(config.agents).toMatchObject({ runner: "pi", transport: "tmux", maxConcurrent: 2 });
-    expect(JSON.parse(fs.readFileSync(paths.globalPath, "utf8"))).toMatchObject({ configVersion: 1, agents: { runner: "claude" } });
+    expect(JSON.parse(fs.readFileSync(paths.globalPath, "utf8"))).toMatchObject({ configVersion: 3, agents: { runner: "claude" } });
     expect(JSON.parse(fs.readFileSync(paths.projectPath, "utf8"))).toEqual({
-      configVersion: 1,
+      configVersion: 3,
       agents: { runner: "pi", transport: "tmux" },
     });
   });
@@ -103,7 +103,7 @@ describe("Fabric configuration migrations", () => {
 
   it("does not rewrite an already-current config during load", () => {
     const paths = fixture();
-    const current = JSON.stringify({ configVersion: 1, agents: { maxConcurrent: 3 } }, null, 2) + "\n";
+    const current = JSON.stringify({ configVersion: 3, agents: { maxConcurrent: 3 } }, null, 2) + "\n";
     fs.writeFileSync(paths.globalPath, current);
     const before = fs.statSync(paths.globalPath).mtimeMs;
 
@@ -123,7 +123,7 @@ describe("Fabric configuration migrations", () => {
     );
 
     expect(JSON.parse(fs.readFileSync(paths.projectPath, "utf8"))).toEqual({
-      configVersion: 1,
+      configVersion: 3,
       agents: { transport: "screen", maxConcurrent: 7 },
     });
   });
@@ -145,7 +145,7 @@ describe("Fabric configuration migrations", () => {
       expect(config.agents.maxConcurrent).toBe(5);
       expect(fs.lstatSync(paths.globalPath).isSymbolicLink()).toBe(true);
       expect(JSON.parse(fs.readFileSync(target, "utf8"))).toEqual({
-        configVersion: 1,
+        configVersion: 3,
         agents: { maxConcurrent: 5 },
       });
     },
@@ -186,5 +186,76 @@ describe("Fabric configuration migrations", () => {
     const options = { cwd: paths.cwd, agentDir: paths.agentDir, projectTrusted: true };
     expect(() => saveFabricConfig(options, { subagents: {} })).toThrow(/current schema/);
     expect(() => saveFabricConfig(options, { configVersion: 1 })).toThrow(/current schema/);
+  });
+
+  it("renames ui.showNestedToolCalls to ui.showAgentToolPreview without mutating its input", () => {
+    const input = {
+      configVersion: 1,
+      ui: { showNestedToolCalls: false, maxRows: 8 },
+    };
+    const result = migrateFabricConfigDocument(input);
+
+    expect(result).toMatchObject({
+      fromVersion: 1,
+      toVersion: CURRENT_FABRIC_CONFIG_VERSION,
+      appliedVersions: [2, 3],
+      changed: true,
+    });
+    expect(result.document.ui).toEqual({ showAgentToolPreview: false, maxRows: 8 });
+    expect(input.ui).toHaveProperty("showNestedToolCalls");
+  });
+
+  it("keeps an explicit ui.showAgentToolPreview value over the legacy key", () => {
+    const result = migrateFabricConfigDocument({
+      configVersion: 1,
+      ui: { showNestedToolCalls: false, showAgentToolPreview: true },
+    });
+
+    expect(result.document.ui).toEqual({ showAgentToolPreview: true });
+  });
+
+  it("leaves version 1 documents without the legacy key unchanged in content", () => {
+    const result = migrateFabricConfigDocument({
+      configVersion: 1,
+      ui: { maxRows: 4 },
+    });
+
+    expect(result.changed).toBe(true); // only the version stamp advances
+    expect(result.document).toEqual({ configVersion: 3, ui: { maxRows: 4 } });
+  });
+
+  it("renames ui.nestedToolDebounceMs to ui.updateDebounceMs", () => {
+    const result = migrateFabricConfigDocument({
+      configVersion: 2,
+      ui: { nestedToolDebounceMs: 250 },
+    });
+
+    expect(result).toMatchObject({
+      fromVersion: 2,
+      toVersion: CURRENT_FABRIC_CONFIG_VERSION,
+      appliedVersions: [3],
+      changed: true,
+    });
+    expect(result.document.ui).toEqual({ updateDebounceMs: 250 });
+  });
+
+  it("persists the rename when loading a legacy ui key", () => {
+    const paths = fixture();
+    fs.writeFileSync(
+      paths.globalPath,
+      JSON.stringify({ configVersion: 1, ui: { showNestedToolCalls: false } }),
+    );
+
+    const config = loadFabricConfig({
+      cwd: paths.cwd,
+      agentDir: paths.agentDir,
+      projectTrusted: false,
+    });
+
+    expect(config.ui.showAgentToolPreview).toBe(false);
+    expect(JSON.parse(fs.readFileSync(paths.globalPath, "utf8"))).toEqual({
+      configVersion: 3,
+      ui: { showAgentToolPreview: false },
+    });
   });
 });

@@ -256,8 +256,16 @@ const main = async (): Promise<void> => {
   crashContext = { statusFile: options.statusFile, record };
   process.stdout.write(`[pi-fabric] ${options.name}\n${task}\n\n`);
   fs.mkdirSync(path.dirname(options.logFile), { recursive: true });
-  const logStream = fs.createWriteStream(options.logFile, { flags: "a", mode: 0o600 });
-  logStream.on("error", () => {});
+  // Other processes tail this file while the run is live (transcript reader,
+  // dashboards, preview trees). The previous buffered createWriteStream visibly
+  // stalled mid-run — append synchronously so events are durable immediately.
+  const appendLog = (text: string): void => {
+    try {
+      fs.appendFileSync(options.logFile, text, { encoding: "utf8", mode: 0o600 });
+    } catch {
+      // Event logging is best-effort and must not fail the child run.
+    }
+  };
   const sessionStream =
     options.runner === "claude" && options.sessionFile
       ? fs.createWriteStream(options.sessionFile, { flags: "a", mode: 0o600 })
@@ -689,7 +697,7 @@ const main = async (): Promise<void> => {
   const processEvent = (line: string): void => {
     if (process.env.PI_FABRIC_INJECT_CRASH === "stream") throw new Error("simulated stream crash");
     if (!line.trim()) return;
-    logStream.write(`${line}\n`);
+    appendLog(`${line}\n`);
     sessionStream?.write(`${line}\n`);
     let event: Record<string, unknown>;
     try {
@@ -977,7 +985,7 @@ const main = async (): Promise<void> => {
   });
   const recordStderr = (text: string): void => {
     if (!text) return;
-    logStream.write(`${JSON.stringify({ type: "worker_stderr", text })}\n`);
+    appendLog(`${JSON.stringify({ type: "worker_stderr", text })}\n`);
     process.stderr.write(text);
     stderr = `${stderr}${text}`.slice(-MAX_STDERR_CHARS);
   };
@@ -1086,12 +1094,9 @@ const main = async (): Promise<void> => {
   writeRunRecord(options.statusFile, record);
   terminalWritten = true;
   process.stdout.write(`\n[pi-fabric] ${record.status}\n`);
-  await Promise.all([
-    new Promise<void>((resolve) => logStream.end(resolve)),
-    sessionStream
-      ? new Promise<void>((resolve) => sessionStream.end(resolve))
-      : Promise.resolve(),
-  ]);
+  await new Promise<void>((resolve) =>
+    sessionStream ? sessionStream.end(resolve) : resolve(),
+  );
   process.exitCode = record.status === "completed" ? 0 : 1;
 };
 

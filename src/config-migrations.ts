@@ -1,4 +1,4 @@
-export const CURRENT_FABRIC_CONFIG_VERSION = 1;
+export const CURRENT_FABRIC_CONFIG_VERSION = 3;
 
 export interface FabricConfigMigrationResult {
   document: Record<string, unknown>;
@@ -48,6 +48,40 @@ const migrations: readonly FabricConfigMigration[] = [
           : canonical ?? legacy;
       }
       delete migrated.subagents;
+      return migrated;
+    },
+  },
+  {
+    from: 1,
+    to: 2,
+    migrate(document) {
+      const migrated = { ...document };
+      const ui = migrated.ui;
+      if (isObject(ui) && Object.hasOwn(ui, "showNestedToolCalls")) {
+        const renamed = { ...ui };
+        if (!Object.hasOwn(renamed, "showAgentToolPreview")) {
+          renamed.showAgentToolPreview = renamed.showNestedToolCalls;
+        }
+        delete renamed.showNestedToolCalls;
+        migrated.ui = renamed;
+      }
+      return migrated;
+    },
+  },
+  {
+    from: 2,
+    to: 3,
+    migrate(document) {
+      const migrated = { ...document };
+      const ui = migrated.ui;
+      if (isObject(ui) && Object.hasOwn(ui, "nestedToolDebounceMs")) {
+        const renamed = { ...ui };
+        if (!Object.hasOwn(renamed, "updateDebounceMs")) {
+          renamed.updateDebounceMs = renamed.nestedToolDebounceMs;
+        }
+        delete renamed.nestedToolDebounceMs;
+        migrated.ui = renamed;
+      }
       return migrated;
     },
   },

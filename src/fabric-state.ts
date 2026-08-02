@@ -511,7 +511,7 @@ export class FabricState {
       this.#participants,
       this.#control,
       this.#lifecycle,
-      () => this.#config?.ui.showNestedToolCalls ?? true,
+      () => this.#config?.ui.showAgentToolPreview ?? true,
     );
     this.#control.start((command, from) => this.#agentsProvider!.acceptControl(command, from));
     try {

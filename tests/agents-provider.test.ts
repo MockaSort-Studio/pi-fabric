@@ -20,9 +20,10 @@ import type {
   FabricPeerInfo,
 } from "../src/topology/types.js";
 import type { FabricInvocationContext } from "../src/protocol.js";
-import { AgentsProvider } from "../src/providers/agents-provider.js";
+import { AgentsProvider, collectAgentToolPreviewNodes } from "../src/providers/agents-provider.js";
 import { snapshotHandoffSession } from "../src/agents/handoff.js";
 import { AgentManager } from "../src/agents/manager.js";
+import type { AgentRunRecord } from "../src/agents/types.js";
 
 const roots: string[] = [];
 const actorManagers: ActorManager[] = [];
@@ -1123,5 +1124,101 @@ describe("AgentsProvider steering", () => {
     await expect(
       provider.invoke("compact", { id: "not-a-real-id" }, context),
     ).rejects.toThrow(/Unknown Fabric agent/);
+  });
+});
+
+describe("collectAgentToolPreviewNodes", () => {
+  const previewRecord = (overrides: Record<string, unknown>): AgentRunRecord =>
+    ({
+      id: "id",
+      name: "agent",
+      task: "task",
+      status: "running",
+      runner: "pi",
+      transport: "process",
+      cwd: "/tmp",
+      startedAt: 0,
+      updatedAt: 0,
+      turns: 0,
+      toolCalls: 0,
+      text: "",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+      ...overrides,
+    }) as AgentRunRecord;
+
+  const toolEntry = (record: AgentRunRecord) => ({
+    id: `tool-${record.id}`,
+    kind: "tool" as const,
+    label: "read",
+  });
+
+  it("maps a nested run tree onto recursive preview nodes", () => {
+    const nodes = collectAgentToolPreviewNodes(
+      [
+        previewRecord({
+          id: "parent",
+          name: "parent",
+          nestedAgents: [
+            previewRecord({
+              id: "child",
+              name: "child",
+              currentTool: "grep",
+              nestedAgents: [previewRecord({ id: "grand", name: "grand" })],
+            }),
+          ],
+        }),
+      ],
+      { tools: (record) => [toolEntry(record)] },
+    );
+
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]?.tools[0]?.id).toBe("tool-parent");
+    const child = nodes[0]?.agents?.[0];
+    expect(child).toMatchObject({ id: "child", name: "child", currentTool: "grep", owner: "agent" });
+    expect(child?.tools[0]?.id).toBe("tool-child");
+    expect(child?.agents?.[0]).toMatchObject({ id: "grand" });
+    expect(child?.agentsTruncated).toBeUndefined();
+  });
+
+  it("marks nodes whose descendants exceed the depth budget", () => {
+    const nodes = collectAgentToolPreviewNodes(
+      [
+        previewRecord({
+          id: "parent",
+          nestedAgents: [
+            previewRecord({ id: "child", nestedAgents: [previewRecord({ id: "grand" })] }),
+          ],
+        }),
+      ],
+      { tools: () => [], maxDepth: 2 },
+    );
+
+    const child = nodes[0]?.agents?.[0];
+    expect(child?.agents).toBeUndefined();
+    expect(child?.agentsTruncated).toBe(true);
+  });
+
+  it("caps the total node count across the breadth of the tree", () => {
+    const nodes = collectAgentToolPreviewNodes(
+      [
+        previewRecord({ id: "first" }),
+        previewRecord({ id: "second", nestedAgents: [previewRecord({ id: "third" })] }),
+        previewRecord({ id: "fourth" }),
+      ],
+      { tools: () => [], maxNodes: 2 },
+    );
+
+    expect(nodes.map((node) => node.id)).toEqual(["first", "second"]);
+    expect(nodes[1]?.agents).toBeUndefined();
+    expect(nodes[1]?.agentsTruncated).toBe(true);
+  });
+
+  it("labels actor-runs with the actor owner kind", () => {
+    const nodes = collectAgentToolPreviewNodes(
+      [previewRecord({ id: "run", actorId: "actor-1", actorName: "mailbox-bot" })],
+      { tools: () => [] },
+    );
+
+    expect(nodes[0]).toMatchObject({ owner: "actor", name: "mailbox-bot" });
   });
 });

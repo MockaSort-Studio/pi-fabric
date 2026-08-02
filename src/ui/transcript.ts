@@ -32,15 +32,24 @@ export interface FabricTranscriptSource {
   logFile?: string;
 }
 
-export interface FabricNestedToolPreview {
-  kind: "fabric-agent-tools";
+export interface FabricAgentToolPreviewNode {
   id: string;
   name: string;
-  status: string;
+  status?: string;
   runner?: "pi" | "claude";
-  owner: "agent" | "actor";
+  owner?: "agent" | "actor";
+  /** Most recent tool the agent was observed running, when known. */
+  currentTool?: string;
   text?: string;
   tools: FabricTranscriptEntry[];
+  /** Descendant previews, one branch per spawned nested agent run. */
+  agents?: FabricAgentToolPreviewNode[];
+  /** True when descendant previews were cut by the preview tree budget. */
+  agentsTruncated?: boolean;
+}
+
+export interface FabricAgentToolPreview extends FabricAgentToolPreviewNode {
+  kind: "fabric-agent-tools";
 }
 
 export const projectAgentTranscript = (
@@ -52,16 +61,30 @@ export const projectAgentTranscript = (
   return accumulator.snapshot(olderAvailable);
 };
 
-export const isFabricNestedToolPreview = (value: unknown): value is FabricNestedToolPreview => {
+const PREVIEW_TREE_GUARD_MAX_DEPTH = 8;
+
+const isFabricAgentToolPreviewNode = (
+  value: unknown,
+  depth: number,
+): value is FabricAgentToolPreviewNode => {
   const record = recordOf(value);
-  return (
-    record?.kind === "fabric-agent-tools" &&
-    typeof record.id === "string" &&
-    typeof record.name === "string" &&
-    (record.text === undefined || typeof record.text === "string") &&
-    Array.isArray(record.tools)
-  );
+  if (
+    !record ||
+    typeof record.id !== "string" ||
+    typeof record.name !== "string" ||
+    (record.text !== undefined && typeof record.text !== "string") ||
+    (record.currentTool !== undefined && typeof record.currentTool !== "string") ||
+    !Array.isArray(record.tools)
+  ) {
+    return false;
+  }
+  if (record.agents === undefined) return true;
+  if (depth >= PREVIEW_TREE_GUARD_MAX_DEPTH || !Array.isArray(record.agents)) return false;
+  return record.agents.every((child) => isFabricAgentToolPreviewNode(child, depth + 1));
 };
+
+export const isFabricAgentToolPreview = (value: unknown): value is FabricAgentToolPreview =>
+  recordOf(value)?.kind === "fabric-agent-tools" && isFabricAgentToolPreviewNode(value, 0);
 
 export const recentTranscriptTools = (
   transcript: FabricAgentTranscript,

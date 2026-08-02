@@ -253,7 +253,7 @@ export class FabricExecutionService {
     // independently churning rows while preserving a trailing final snapshot.
     const emit = (): void => {
       emitPending = true;
-      const debounceMs = this.config.ui.nestedToolDebounceMs;
+      const debounceMs = this.config.ui.updateDebounceMs;
       if (debounceMs <= 0) {
         flushEmit();
         return;

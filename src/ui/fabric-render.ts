@@ -11,7 +11,7 @@ import {
 import { highlightCode, languageFromPath } from "./highlight.js";
 import { headlineArg } from "../core/call-preview.js";
 import { coreToolTitle, renderCoreToolBody } from "./core-tool-render.js";
-import { isFabricNestedToolPreview, type FabricTranscriptEntry } from "./transcript.js";
+import { isFabricAgentToolPreview, type FabricAgentToolPreviewNode, type FabricTranscriptEntry } from "./transcript.js";
 import { fabricStringLiterals, fabricWriteBindings, type FabricWriteBinding } from "./fabric-code-parser.js";
 export { fabricWriteBindings, type FabricWriteBinding } from "./fabric-code-parser.js";
 import {
@@ -493,7 +493,7 @@ const providerCallDetail = (
   if (provider === "agents") {
     if (previewHeadline) return previewHeadline;
     const name = argString(args, "name");
-    const previewName = isFabricNestedToolPreview(preview) ? preview.name : undefined;
+    const previewName = isFabricAgentToolPreview(preview) ? preview.name : undefined;
     const id = shortIdOf(args.id);
     const message = argString(args, "message");
     const task = argString(args, "task");
@@ -681,19 +681,76 @@ const transcriptToolAudit = (entry: FabricTranscriptEntry): FabricRenderAudit =>
   };
 };
 
-export const renderNestedAgentToolLines = (
+const AGENT_PREVIEW_RENDER_MAX_DEPTH = 6;
+
+type AgentToolPreviewRenderOptions = {
+  expanded: boolean;
+  compact?: boolean | undefined;
+  showTools?: boolean | undefined;
+  core?: { cwd: string; settings: CodePreviewSettings } | undefined;
+  invalidate?: (() => void) | undefined;
+};
+
+const previewStatusGlyph = (status: string | undefined, theme: Theme): string =>
+  status === "running"
+    ? theme.fg("warning", "◐")
+    : status === "failed"
+      ? theme.fg("error", "✗")
+      : theme.fg("dim", "›");
+
+// Collapsed mode allows a single descendant row: prefer the running branch,
+// then follow it depth-first so the breadcrumb always ends at live work.
+const descendantBreadcrumb = (
+  node: FabricAgentToolPreviewNode,
+  theme: Theme,
+): string | undefined => {
+  let tail: FabricAgentToolPreviewNode | undefined =
+    node.agents?.find((child) => child.status === "running") ?? node.agents?.[0];
+  if (!tail) return undefined;
+  const names = [tail.name];
+  for (let depth = 0; depth < AGENT_PREVIEW_RENDER_MAX_DEPTH; depth += 1) {
+    const next: FabricAgentToolPreviewNode | undefined =
+      tail.agents?.find((child) => child.status === "running") ?? tail.agents?.[0];
+    if (!next) break;
+    tail = next;
+    names.push(tail.name);
+  }
+  // Tool executions in transcript tails are short windows; a 1s preview tick
+  // usually samples between them. Falling back to the latest known tool keeps
+  // the crumb informative instead of going blank between executions.
+  const runningTool = tail.tools.slice().reverse().find((entry) => entry.status === "running");
+  const shownTool = runningTool ?? tail.tools.at(-1);
+  const trail = names
+    .map((name) => theme.fg("accent", safeTerminalText(name)))
+    .join(theme.fg("dim", " › "));
+  const tool = shownTool
+    ? theme.fg("dim", " › ") + nestedCallTitle(transcriptToolAudit(shownTool), theme)
+    : "";
+  // Only abnormal states earn a glyph; a terminal "›" would duplicate the
+  // preview-line chevron this crumb is appended after.
+  const glyph =
+    tail.status === "running" || tail.status === "failed"
+      ? `${previewStatusGlyph(tail.status, theme)} `
+      : "";
+  return `${glyph}${trail}${tool}`;
+};
+
+export const renderAgentToolPreviewLines = (
   audit: FabricRenderAudit,
   theme: Theme,
-  options: {
-    expanded: boolean;
-    compact?: boolean | undefined;
-    showTools?: boolean | undefined;
-    core?: { cwd: string; settings: CodePreviewSettings } | undefined;
-    invalidate?: (() => void) | undefined;
-  },
+  options: AgentToolPreviewRenderOptions,
 ): string[] => {
-  if (!isFabricNestedToolPreview(audit.preview)) return [];
-  const rawPreviewText = safeTerminalText(audit.preview.text ?? "").trim();
+  if (!isFabricAgentToolPreview(audit.preview)) return [];
+  return renderAgentToolPreviewNodeLines(audit.preview, theme, options, 0);
+};
+
+const renderAgentToolPreviewNodeLines = (
+  preview: FabricAgentToolPreviewNode,
+  theme: Theme,
+  options: AgentToolPreviewRenderOptions,
+  depth: number,
+): string[] => {
+  const rawPreviewText = safeTerminalText(preview.text ?? "").trim();
   const responseLines = rawPreviewText
     ? options.compact
       ? [rawPreviewText.replace(/\s+/g, " ").trim()]
@@ -712,18 +769,34 @@ export const renderNestedAgentToolLines = (
           return chunks;
         })
     : [];
-  const tools = options.showTools === false ? [] : audit.preview.tools;
+  const tools = options.showTools === false ? [] : preview.tools;
+  // Collapsed cards get one inline row; a live descendant branch is more
+  // informative than the parent's own spinning tool or narrative, so the
+  // breadcrumb wins the slot — matching how a running tool already displaces
+  // response text here.
+  const descendantCrumb =
+    !options.expanded &&
+    options.showTools !== false &&
+    preview.agents !== undefined &&
+    preview.agents.length > 0
+      ? descendantBreadcrumb(preview, theme)
+      : undefined;
   const runningTool = tools.slice().reverse().find((entry) => entry.status === "running");
   const latestTool = tools.at(-1);
-  const collapsedRunningTool = !options.expanded ? runningTool : undefined;
-  const visibleResponseLines = collapsedRunningTool ? [] : responseLines;
-  const visibleTools = options.expanded
-    ? tools
-    : collapsedRunningTool
-      ? [collapsedRunningTool]
-      : responseLines.length === 0 && latestTool
-        ? [latestTool]
-        : [];
+  const collapsedRunningTool =
+    !options.expanded && descendantCrumb === undefined ? runningTool : undefined;
+  const visibleResponseLines =
+    collapsedRunningTool !== undefined || descendantCrumb !== undefined ? [] : responseLines;
+  const visibleTools =
+    options.expanded || descendantCrumb !== undefined
+      ? options.expanded
+        ? tools
+        : []
+      : collapsedRunningTool
+        ? [collapsedRunningTool]
+        : responseLines.length === 0 && latestTool
+          ? [latestTool]
+          : [];
   const chevron = theme.fg("dim", "›");
   const lines: string[] = [];
 
@@ -770,6 +843,40 @@ export const renderNestedAgentToolLines = (
     }
   }
 
+  if (descendantCrumb !== undefined && lines.length === 0) {
+    lines.push(`${chevron} ${descendantCrumb}`);
+  }
+
+  if (options.expanded && options.showTools !== false && preview.agents && preview.agents.length > 0) {
+    if (depth < AGENT_PREVIEW_RENDER_MAX_DEPTH) {
+      for (const child of preview.agents) {
+        const status =
+          child.status && child.status !== "completed"
+            ? theme.fg("dim", ` · ${safeTerminalText(child.status)}`)
+            : "";
+        const currentTool =
+          child.currentTool && child.status === "running"
+            ? theme.fg("dim", ` · ${safeTerminalText(child.currentTool)}`)
+            : "";
+        lines.push(
+          `  ${previewStatusGlyph(child.status, theme)} ${theme.fg("accent", safeTerminalText(child.name))}${status}${currentTool}`,
+        );
+        const childLines = renderAgentToolPreviewNodeLines(
+          child,
+          theme,
+          { ...options, core: undefined },
+          depth + 1,
+        );
+        for (const row of childLines) lines.push(`  ${row}`);
+      }
+      if (preview.agentsTruncated) {
+        lines.push(theme.fg("dim", "  … deeper agent previews hidden"));
+      }
+    } else {
+      lines.push(theme.fg("dim", "  … deeper agent previews hidden"));
+    }
+  }
+
   return lines;
 };
 
@@ -786,14 +893,14 @@ export interface FabricMulticallPartialInput {
   expanded: boolean;
   preview?: FabricMulticallPreview | undefined;
   core?: { cwd: string; settings: CodePreviewSettings } | undefined;
-  showNestedToolCalls?: boolean | undefined;
+  showAgentToolPreview?: boolean | undefined;
   spinner?: string | undefined;
 }
 
 export const singleCallProgressLine = (
   progress: string | undefined,
-  nestedLines: string[],
-): string => progress && nestedLines.length === 0 ? safeTerminalText(progress) : "";
+  previewLines: string[],
+): string => progress && previewLines.length === 0 ? safeTerminalText(progress) : "";
 
 export const compactProgressPreview = (progress: string): string => {
   const lines = safeTerminalText(progress)
@@ -834,20 +941,20 @@ export const renderFabricMulticallPartial = (
         : audit.success === false
           ? theme.fg("error", "✗")
           : theme.fg("dim", "›");
-    const nested = renderNestedAgentToolLines(audit, theme, {
+    const previewLines = renderAgentToolPreviewLines(audit, theme, {
       expanded: input.expanded,
       compact: !input.expanded,
-      showTools: input.showNestedToolCalls,
+      showTools: input.showAgentToolPreview,
       core: input.core,
       ...(invalidate ? { invalidate } : {}),
     });
     let callRow = `${glyph} ${nestedCallTitle(audit, theme, invalidate, input.core)}`;
     if (audit.success === false && audit.error) {
       callRow += ` ${theme.fg("dim", "›")} ${theme.fg("error", truncateOneLine(safeTerminalText(audit.error), 240))}`;
-    } else if (nested[0]) {
-      callRow += ` ${nested[0]}`;
+    } else if (previewLines[0]) {
+      callRow += ` ${previewLines[0]}`;
     }
-    if (nested.length > 0) wrapLineIndexes?.add(rows.length);
+    if (previewLines.length > 0) wrapLineIndexes?.add(rows.length);
     rows.push(callRow);
     if (audit.success !== false && input.preview?.auditIndex === auditIndex) {
       for (const line of input.preview.body.split("\n")) rows.push(`  ${line}`);
@@ -860,8 +967,8 @@ export const renderFabricMulticallPartial = (
         );
       }
     }
-    if (audit.success !== false && nested.length > 1) {
-      for (const line of nested.slice(1)) {
+    if (audit.success !== false && previewLines.length > 1) {
+      for (const line of previewLines.slice(1)) {
         wrapLineIndexes?.add(rows.length);
         rows.push(line);
       }
@@ -985,7 +1092,7 @@ export const captureFabricAgentPreviews = (
     captured.map((preview, index) => [`${preview.ref}\0${preview.id}`, index]),
   );
   for (const audit of audits) {
-    if (!isFabricNestedToolPreview(audit.preview)) continue;
+    if (!isFabricAgentToolPreview(audit.preview)) continue;
     const entry = { ref: audit.ref, id: audit.preview.id, preview: audit.preview };
     const key = `${entry.ref}\0${entry.id}`;
     const index = indexes.get(key);
@@ -1003,7 +1110,7 @@ export const restoreFabricAgentPreviews = (
 ): FabricRenderAudit[] => {
   const remaining = previews.slice();
   return audits.map((audit) => {
-    if (isFabricNestedToolPreview(audit.preview)) return audit;
+    if (isFabricAgentToolPreview(audit.preview)) return audit;
     const requestedId = argString(audit.args ?? {}, "id");
     let index = requestedId
       ? remaining.findIndex((preview) => preview.ref === audit.ref && preview.id === requestedId)

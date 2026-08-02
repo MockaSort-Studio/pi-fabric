@@ -329,7 +329,7 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
         ],
         phases: [],
         expanded: false,
-        showNestedToolCalls: true,
+        showAgentToolPreview: true,
         spinner: "◑",
       },
       plainTheme,
@@ -474,7 +474,7 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
         ],
         phases: [],
         expanded: false,
-        showNestedToolCalls: true,
+        showAgentToolPreview: true,
         core: { cwd: process.cwd(), settings },
       },
       plainTheme,
@@ -485,6 +485,419 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
     expect(visible).not.toContain("[agent");
     expect(visible).not.toContain("const before = 1;");
     expect(visible).not.toContain("const after = 2;");
+  });
+
+  it("renders recursive descendant agent trees when expanded", () => {
+    const tool = (
+      id: string,
+      toolName: string,
+      status: string,
+      args: Record<string, unknown>,
+    ) => ({ id, kind: "tool" as const, label: toolName, toolName, status: status as "running" | "completed" | "failed", args });
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "agents.run",
+            provider: "agents",
+            tool: "run",
+            args: { name: "orchestrator" },
+            preview: {
+              kind: "fabric-agent-tools" as const,
+              id: "agent-parent",
+              name: "orchestrator",
+              status: "running",
+              runner: "pi" as const,
+              owner: "agent" as const,
+              tools: [tool("parent-read", "read", "running", { path: "src/parent.ts" })],
+              agents: [
+                {
+                  id: "agent-child",
+                  name: "planner",
+                  status: "running",
+                  owner: "agent" as const,
+                  currentTool: "fabric_exec",
+                  tools: [tool("child-grep", "grep", "completed", { pattern: "nested", path: "src" })],
+                  agents: [
+                    {
+                      id: "agent-grandchild",
+                      name: "researcher",
+                      status: "running",
+                      owner: "agent" as const,
+                      tools: [
+                        tool("grandchild-edit", "edit", "running", {
+                          path: "src/deep.ts",
+                          edits: [{ oldText: "a", newText: "b" }],
+                        }),
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+        phases: [],
+        expanded: true,
+        showAgentToolPreview: true,
+      },
+      plainTheme,
+    ).render(120).join("\n");
+
+    expect(lines).toContain("read src/parent.ts");
+    expect(lines).toContain("◐ planner · running · fabric_exec");
+    expect(lines).toContain("grep src");
+    expect(lines).toContain("◐ researcher · running");
+    expect(lines).toContain("edit src/deep.ts");
+    const rows = lines.split("\n");
+    const plannerRow = rows.find((line) => line.includes("planner"))!;
+    const researcherRow = rows.find((line) => line.includes("researcher"))!;
+    expect(researcherRow.indexOf("◐")).toBeGreaterThan(plannerRow.indexOf("◐"));
+  });
+
+  it("shows a collapsed descendant breadcrumb that prefers the running branch", () => {
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "agents.run",
+            provider: "agents",
+            tool: "run",
+            args: { name: "orchestrator" },
+            preview: {
+              kind: "fabric-agent-tools" as const,
+              id: "agent-parent",
+              name: "orchestrator",
+              status: "running",
+              owner: "agent" as const,
+              tools: [],
+              agents: [
+                { id: "agent-done", name: "planner", status: "completed", tools: [] },
+                {
+                  id: "agent-live",
+                  name: "researcher",
+                  status: "running",
+                  tools: [],
+                  agents: [
+                    {
+                      id: "agent-deep",
+                      name: "digger",
+                      status: "running",
+                      tools: [
+                        {
+                          id: "deep-read",
+                          kind: "tool" as const,
+                          label: "read",
+                          toolName: "read",
+                          status: "running" as const,
+                          args: { path: "src/deep.ts" },
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+        phases: [],
+        expanded: false,
+        showAgentToolPreview: true,
+        spinner: "◑",
+      },
+      plainTheme,
+    ).render(120);
+
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("run orchestrator");
+    expect(lines[1]).toContain("researcher › digger › read src/deep.ts");
+    expect(lines.join("\n")).not.toContain("planner");
+  });
+
+  it("falls back to the latest known tool in the crumb between executions", () => {
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "agents.run",
+            provider: "agents",
+            tool: "run",
+            args: { name: "orchestrator" },
+            preview: {
+              kind: "fabric-agent-tools" as const,
+              id: "agent-parent",
+              name: "orchestrator",
+              status: "running",
+              owner: "agent" as const,
+              tools: [],
+              agents: [
+                {
+                  id: "agent-live",
+                  name: "researcher",
+                  status: "running",
+                  tools: [
+                    {
+                      id: "leaf-grep",
+                      kind: "tool" as const,
+                      label: "grep",
+                      toolName: "grep",
+                      status: "completed" as const,
+                      args: { pattern: "maxDepth", path: "src" },
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+        phases: [],
+        expanded: false,
+        showAgentToolPreview: true,
+        spinner: "◑",
+      },
+      plainTheme,
+    ).render(120);
+
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("researcher › grep src");
+  });
+
+  it("prefers the live descendant breadcrumb over the parent's own tool when collapsed", () => {
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "agents.run",
+            provider: "agents",
+            tool: "run",
+            args: { name: "orchestrator" },
+            preview: {
+              kind: "fabric-agent-tools" as const,
+              id: "agent-parent",
+              name: "orchestrator",
+              status: "running",
+              owner: "agent" as const,
+              text: "Waiting on the helper chain.",
+              tools: [
+                {
+                  id: "parent-read",
+                  kind: "tool" as const,
+                  label: "read",
+                  toolName: "read",
+                  status: "running" as const,
+                  args: { path: "src/parent.ts" },
+                },
+              ],
+              agents: [
+                {
+                  id: "agent-live",
+                  name: "researcher",
+                  status: "running",
+                  tools: [],
+                  agents: [
+                    {
+                      id: "agent-deep",
+                      name: "digger",
+                      status: "running",
+                      tools: [
+                        {
+                          id: "deep-read",
+                          kind: "tool" as const,
+                          label: "read",
+                          toolName: "read",
+                          status: "running" as const,
+                          args: { path: "src/deep.ts" },
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+        phases: [],
+        expanded: false,
+        showAgentToolPreview: true,
+        spinner: "◑",
+      },
+      plainTheme,
+    ).render(120);
+
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("researcher › digger › read src/deep.ts");
+    expect(lines[1]).not.toContain("src/parent.ts");
+    expect(lines[1]).not.toContain("Waiting on the helper chain.");
+  });
+
+  it("keeps the completed descendant breadcrumb as the final collapsed summary", () => {
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "agents.run",
+            provider: "agents",
+            tool: "run",
+            args: { name: "orchestrator" },
+            preview: {
+              kind: "fabric-agent-tools" as const,
+              id: "agent-parent",
+              name: "orchestrator",
+              status: "completed",
+              owner: "agent" as const,
+              tools: [],
+              agents: [{ id: "agent-child", name: "planner", status: "completed", tools: [] }],
+            },
+          },
+        ],
+        phases: [],
+        expanded: false,
+        showAgentToolPreview: true,
+        spinner: "◑",
+      },
+      plainTheme,
+    ).render(120);
+
+    expect(lines[1]).toContain("run orchestrator › planner");
+    expect(lines[1]).not.toContain("› ›");
+  });
+
+  it("marks descendant previews cut by the tree budget", () => {
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "agents.run",
+            provider: "agents",
+            tool: "run",
+            args: { name: "orchestrator" },
+            preview: {
+              kind: "fabric-agent-tools" as const,
+              id: "agent-parent",
+              name: "orchestrator",
+              status: "running",
+              owner: "agent" as const,
+              tools: [],
+              agents: [{ id: "agent-child", name: "planner", status: "running", tools: [] }],
+              agentsTruncated: true,
+            },
+          },
+        ],
+        phases: [],
+        expanded: true,
+        showAgentToolPreview: true,
+      },
+      plainTheme,
+    ).render(120).join("\n");
+
+    expect(lines).toContain("planner");
+    expect(lines).toContain("… deeper agent previews hidden");
+  });
+
+  it("stops expanding descendants at the render depth cap", () => {
+    const deep = (level: number): Record<string, unknown> => ({
+      id: `agent-lvl${level}`,
+      name: `lvl${level}`,
+      status: "running",
+      tools: [],
+      ...(level < 8 ? { agents: [deep(level + 1)] } : {}),
+    });
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "agents.run",
+            provider: "agents",
+            tool: "run",
+            args: { name: "root" },
+            preview: {
+              kind: "fabric-agent-tools" as const,
+              id: "agent-root",
+              name: "root",
+              status: "running",
+              owner: "agent" as const,
+              tools: [],
+              agents: [deep(1)],
+            },
+          },
+        ],
+        phases: [],
+        expanded: true,
+        showAgentToolPreview: true,
+      },
+      plainTheme,
+    ).render(120).join("\n");
+
+    expect(lines).toContain("lvl5");
+    expect(lines).not.toContain("lvl7");
+    expect(lines).toContain("… deeper agent previews hidden");
+  });
+
+  it("rejects preview trees deeper than the guard allows", () => {
+    const deep = (level: number): Record<string, unknown> => ({
+      id: `agent-lvl${level}`,
+      name: `lvl${level}`,
+      status: "running",
+      tools: [],
+      ...(level < 12 ? { agents: [deep(level + 1)] } : {}),
+    });
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "agents.run",
+            provider: "agents",
+            tool: "run",
+            args: { name: "root" },
+            preview: {
+              kind: "fabric-agent-tools" as const,
+              id: "agent-root",
+              name: "root",
+              status: "running",
+              owner: "agent" as const,
+              tools: [],
+              agents: [deep(1)],
+            },
+          },
+        ],
+        phases: [],
+        expanded: true,
+        showAgentToolPreview: true,
+      },
+      plainTheme,
+    ).render(120).join("\n");
+
+    expect(lines).not.toContain("lvl");
+  });
+
+  it("hides descendant trees when the agent tool preview is disabled", () => {
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "agents.run",
+            provider: "agents",
+            tool: "run",
+            args: { name: "orchestrator" },
+            preview: {
+              kind: "fabric-agent-tools" as const,
+              id: "agent-parent",
+              name: "orchestrator",
+              status: "running",
+              owner: "agent" as const,
+              tools: [],
+              agents: [{ id: "agent-child", name: "planner", status: "running", tools: [] }],
+            },
+          },
+        ],
+        phases: [],
+        expanded: true,
+        showAgentToolPreview: false,
+      },
+      plainTheme,
+    ).render(120).join("\n");
+
+    expect(lines).not.toContain("planner");
   });
 
   it("keeps collapsed multicall narrative on one inline row when tools are hidden", () => {
@@ -519,7 +932,7 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
         ],
         phases: [],
         expanded: false,
-        showNestedToolCalls: false,
+        showAgentToolPreview: false,
       },
       plainTheme,
     ).render(120).join("\n");
@@ -581,7 +994,7 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
         ],
         phases: [],
         expanded: false,
-        showNestedToolCalls: true,
+        showAgentToolPreview: true,
       },
       plainTheme,
     ).render(160).map((line) => line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ""));
@@ -623,7 +1036,7 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
         ],
         phases: [],
         expanded: true,
-        showNestedToolCalls: true,
+        showAgentToolPreview: true,
       },
       plainTheme,
     ).render(160).map((line) => line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ""));
@@ -681,7 +1094,7 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
         ],
         phases: [],
         expanded: true,
-        showNestedToolCalls: true,
+        showAgentToolPreview: true,
         core: { cwd: process.cwd(), settings },
       },
       plainTheme,
@@ -757,7 +1170,7 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
         }],
         phases: [],
         expanded: true,
-        showNestedToolCalls: true,
+        showAgentToolPreview: true,
         core: { cwd: process.cwd(), settings },
       },
       nestedTheme,
@@ -860,7 +1273,7 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
       },
     }));
     const lines = renderFabricMulticallPartial(
-      { audits, phases: [], expanded: true, showNestedToolCalls: true },
+      { audits, phases: [], expanded: true, showAgentToolPreview: true },
       plainTheme,
     ).render(160).map((line) => line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ""));
     const visible = lines.join("\n");

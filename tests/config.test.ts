@@ -238,25 +238,43 @@ describe("Fabric configuration", () => {
     expect(invalid.ui.haltOnEscape).toBe(true);
   });
 
-  it("normalizes nested-tool visibility and the global debounce", () => {
-    expect(DEFAULT_FABRIC_CONFIG.ui.showNestedToolCalls).toBe(true);
-    expect(DEFAULT_FABRIC_CONFIG.ui.nestedToolDebounceMs).toBe(100);
+  it("normalizes agent-preview visibility and the global debounce", () => {
+    expect(DEFAULT_FABRIC_CONFIG.ui.showAgentToolPreview).toBe(true);
+    expect(DEFAULT_FABRIC_CONFIG.ui.updateDebounceMs).toBe(100);
     expect(
       normalizeFabricConfig({
-        ui: { showNestedToolCalls: false, nestedToolDebounceMs: 0 },
+        ui: { showAgentToolPreview: false, updateDebounceMs: 0 },
       }).ui,
-    ).toMatchObject({ showNestedToolCalls: false, nestedToolDebounceMs: 0 });
+    ).toMatchObject({ showAgentToolPreview: false, updateDebounceMs: 0 });
     expect(
-      normalizeFabricConfig({ ui: { nestedToolDebounceMs: -10 } }).ui.nestedToolDebounceMs,
+      normalizeFabricConfig({ ui: { updateDebounceMs: -10 } }).ui.updateDebounceMs,
     ).toBe(0);
     expect(
-      normalizeFabricConfig({ ui: { nestedToolDebounceMs: 99_999 } }).ui.nestedToolDebounceMs,
+      normalizeFabricConfig({ ui: { updateDebounceMs: 99_999 } }).ui.updateDebounceMs,
     ).toBe(2_000);
     expect(
       normalizeFabricConfig({
-        ui: { showNestedToolCalls: "off", nestedToolDebounceMs: "fast" },
+        ui: { showAgentToolPreview: "off", updateDebounceMs: "fast" },
       }).ui,
-    ).toMatchObject({ showNestedToolCalls: true, nestedToolDebounceMs: 100 });
+    ).toMatchObject({ showAgentToolPreview: true, updateDebounceMs: 100 });
+  });
+
+  it("accepts legacy ui keys as fallback for renamed settings", () => {
+    expect(
+      normalizeFabricConfig({ ui: { showNestedToolCalls: false } }).ui.showAgentToolPreview,
+    ).toBe(false);
+    expect(
+      normalizeFabricConfig({
+        ui: { showNestedToolCalls: false, showAgentToolPreview: true },
+      }).ui.showAgentToolPreview,
+    ).toBe(true);
+    expect(
+      normalizeFabricConfig({ ui: { nestedToolDebounceMs: 42 } }).ui.updateDebounceMs,
+    ).toBe(42);
+    expect(
+      normalizeFabricConfig({ ui: { nestedToolDebounceMs: 42, updateDebounceMs: 7 } }).ui
+        .updateDebounceMs,
+    ).toBe(7);
   });
 
   it("normalizes strict Schema mode, transaction bounds, and trusted command definitions", () => {
@@ -426,7 +444,7 @@ describe("Fabric configuration", () => {
     expect(result.path).toBe(path.join(cwd, ".pi", "fabric.json"));
     const saved = JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8"));
     expect(saved).toEqual({
-      configVersion: 1,
+      configVersion: 3,
       agents: { transport: "localterm", maxConcurrent: 8 },
       fullCodeMode: false,
     });
@@ -451,7 +469,7 @@ describe("Fabric configuration", () => {
     expect(result.path).toBe(path.join(agentDir, "fabric.json"));
     expect(fs.existsSync(path.join(cwd, ".pi", "fabric.json"))).toBe(false);
     const saved = JSON.parse(fs.readFileSync(path.join(agentDir, "fabric.json"), "utf8"));
-    expect(saved).toEqual({ configVersion: 1, executor: { timeoutMs: 30_000 } });
+    expect(saved).toEqual({ configVersion: 3, executor: { timeoutMs: 30_000 } });
   });
 
   it("persists and clears the dedicated prewalk model", () => {

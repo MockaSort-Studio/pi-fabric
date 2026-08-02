@@ -85,8 +85,8 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
     "refreshMs": 500,
     "eventHistory": 80,
     "haltOnEscape": true,
-    "showNestedToolCalls": true,
-    "nestedToolDebounceMs": 100
+    "showAgentToolPreview": true,
+    "updateDebounceMs": 100
   },
   "compaction": {
     "engine": "fabric"
@@ -295,8 +295,8 @@ See the [`mcp` reference](../skills/fabric-exec/references/mcp.md) for the call 
 ## UI
 
 - `ui.widget` is `auto`, `always`, or `hidden`. `auto` shows active or retained Fabric runs and worker activity. Active one-shot agents and actor workers occupy rows; their recent nested tools appear beneath them when enabled.
-- `ui.showNestedToolCalls` defaults to `true` and controls child-agent/actor tool rows in both the parent `fabric_exec` card and widget.
-- `ui.nestedToolDebounceMs` defaults to `100` and applies one execution-wide coalescing interval across regular nested calls. Continuous streams emit at most once per interval instead of postponing every render until completion. Set it to `0` to emit every update; accepted values are clamped to `0..2000`.
+- `ui.showAgentToolPreview` defaults to `true` and controls child-agent/actor tool rows in both the parent `fabric_exec` card and widget. Recursive agents render their full descendant tree (bounded by the preview depth/node budget); renamed from `ui.showNestedToolCalls` by the version 2 config migration.
+- `ui.updateDebounceMs` defaults to `100` and applies one execution-wide coalescing interval to every live `fabric_exec` card update — nested calls, progress text, and agent tool previews. Continuous streams emit at most once per interval instead of postponing every render until completion. Set it to `0` to emit every update; accepted values are clamped to `0..2000`. Renamed from `ui.nestedToolDebounceMs` by the version 3 config migration.
 - The widget renders above the chat (like `pi-supervisor`); set `ui.enabled` to `false` to disable both the widget and dashboard controller.
 
 See the [interface reference](interface.md).

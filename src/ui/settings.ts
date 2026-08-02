@@ -995,26 +995,27 @@ export const buildFabricSettingsItems = (
             values: WIDGET_MODES,
           }),
           setting(
-            "ui.showNestedToolCalls",
-            "Nested tool calls",
-            config.ui.showNestedToolCalls ? "true" : "false",
+            "ui.showAgentToolPreview",
+            "Agent tool preview",
+            config.ui.showAgentToolPreview ? "true" : "false",
             {
-              description: "Show child-agent and actor tool activity in Fabric tool-call previews.",
+              description:
+                "Show spawned agent/actor tool trees — including recursive descendants — in Fabric tool-call previews.",
               values: BOOLEANS,
             },
           ),
           setting(
-            "ui.nestedToolDebounceMs",
-            "Nested tool debounce",
-            formatDebounce(config.ui.nestedToolDebounceMs),
+            "ui.updateDebounceMs",
+            "Update debounce",
+            formatDebounce(config.ui.updateDebounceMs),
             {
-              description: "One global coalescing window for regular nested-tool UI updates.",
+              description: "One global coalescing window for live card updates — nested calls, progress, agent previews.",
               submenu: numericSubmenu(
                 theme,
                 [0, 16, 50, 100, 150, 250, 500, 1000],
                 formatDebounce,
-                "Nested tool debounce",
-                "One global coalescing window for regular nested-tool UI updates. Off emits every update.",
+                "Update debounce",
+                "One global coalescing window for live card updates — nested calls, progress, agent previews. Off emits every update.",
               ),
             },
           ),
