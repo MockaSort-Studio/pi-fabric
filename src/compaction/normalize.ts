@@ -11,6 +11,11 @@ import { clipUtf8, utf8Bytes } from "./bounds.js";
 // typed structure — roles, tool names, JSON arguments, isError flags, bash
 // commands and exit codes. It never inspects prose. See docs/compaction.md
 // principle 2.
+//
+// Assistant thinking parts are deliberate scratchpad, not commitments: they are
+// never normalized into events, so no summary section can leak truncated
+// deliberation that reads like fact. `countErasedThinkingBlocks` keeps that
+// erasure auditable in compaction details. See docs/compaction.md (Transcript).
 
 interface EventBase {
   index: number;
@@ -25,11 +30,6 @@ interface UserEvent extends EventBase {
 
 interface AssistantTextEvent extends EventBase {
   kind: "assistantText";
-  text: string;
-}
-
-interface ThinkingEvent extends EventBase {
-  kind: "thinking";
   text: string;
 }
 
@@ -90,7 +90,6 @@ interface FabricOperationEvent extends EventBase {
 export type CompactionEvent =
   | UserEvent
   | AssistantTextEvent
-  | ThinkingEvent
   | CustomMessageEvent
   | ToolCallEvent
   | ToolResultEvent
@@ -314,8 +313,6 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
         if (!part || typeof part !== "object" || !("type" in part)) continue;
         if (part.type === "text" && typeof part.text === "string") {
           push({ kind: "assistantText", entryId, sourceEntryId: entryId, text: part.text });
-        } else if (part.type === "thinking" && typeof part.thinking === "string") {
-          push({ kind: "thinking", entryId, sourceEntryId: entryId, text: part.thinking });
         } else if (part.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string") {
           const args = (part.arguments ?? {}) as Record<string, unknown>;
           calls.set(part.id, { name: part.name, args });
@@ -420,6 +417,28 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
   }
 
   return events;
+};
+
+// Structural count of assistant thinking parts erased by normalization. The
+// walk mirrors normalizeEntries selection (typed part, string payload) so the
+// details counter cannot disagree with what the summary silently dropped.
+// Entry-level ranges are unnecessary: erased blocks always lie inside the
+// cumulative source range recorded beside the count.
+export const countErasedThinkingBlocks = (entries: SessionEntry[]): number => {
+  let count = 0;
+  for (const entry of entries) {
+    if (!isMessageEntry(entry)) continue;
+    const message = entry.message as { role?: unknown; content?: unknown };
+    if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (!part || typeof part !== "object" || !("type" in part)) continue;
+      if (
+        part.type === "thinking" &&
+        typeof (part as { thinking?: unknown }).thinking === "string"
+      ) count += 1;
+    }
+  }
+  return count;
 };
 
 export { firstLine };

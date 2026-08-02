@@ -20,7 +20,7 @@ import {
   type CompactionInstructionDecodeError,
   type CompactionInstructionPolicy,
 } from "./instructions.js";
-import { isPiCustomMessageEntry, normalizeEntries } from "./normalize.js";
+import { countErasedThinkingBlocks, isPiCustomMessageEntry, normalizeEntries } from "./normalize.js";
 import {
   projectWithMetadata,
   type ProjectionOmittedCounts,
@@ -494,7 +494,7 @@ export interface FabricCompactionDetailsV2 {
     priorFabricV1: number;
     priorFabricV2: number;
   };
-  omittedCounts: ProjectionOmittedCounts & { preserve: number };
+  omittedCounts: ProjectionOmittedCounts & { preserve: number; thinking?: number };
   instructionPolicy: CompactionInstructionPolicy;
   stableAddresses: {
     firstKeptEntryId: string;
@@ -553,6 +553,8 @@ const isFabricV2Details = (value: Record<string, unknown>): boolean => {
       || (typeof value.omittedCounts.activity === "number" && Number.isFinite(value.omittedCounts.activity)))
     && (value.omittedCounts.commits === undefined
       || (typeof value.omittedCounts.commits === "number" && Number.isFinite(value.omittedCounts.commits)))
+    && (value.omittedCounts.thinking === undefined
+      || (typeof value.omittedCounts.thinking === "number" && Number.isFinite(value.omittedCounts.thinking)))
     && typeof value.instructionPolicy.mode === "string"
     && instructionModes.has(value.instructionPolicy.mode)
     && typeof value.instructionPolicy.canonicalized === "boolean"
@@ -594,7 +596,7 @@ export const fabricCompactionVersion = (details: unknown): 1 | 2 | undefined => 
 const cumulativeSource = (
   branchEntries: SessionEntry[],
   firstKeptEntryId: string,
-): { entries: SessionEntry[]; events: ReturnType<typeof normalizeEntries>; range: EntryRange; timestamp: string } => {
+): { entries: SessionEntry[]; prefixEntries: SessionEntry[]; events: ReturnType<typeof normalizeEntries>; range: EntryRange; timestamp: string } => {
   const boundaryIndex = firstKeptEntryId
     ? branchEntries.findIndex((entry) => entry.id === firstKeptEntryId)
     : branchEntries.length;
@@ -604,6 +606,7 @@ const cumulativeSource = (
   const entries = prefix.filter((entry) => contentEntryIds.has(entry.id));
   return {
     entries,
+    prefixEntries: prefix,
     events,
     range: {
       first: entries[0]?.id ?? "",
@@ -708,6 +711,10 @@ export const compileFabricSummary = (
     omittedCounts: {
       ...projected.omittedCounts,
       preserve: instructions.policy.omittedPreserveCount,
+      // Thinking parts never survive normalization into a rendered summary;
+      // the structural count keeps that erasure auditable against the raw
+      // prefix instead of letting deliberation vanish untracked.
+      thinking: countErasedThinkingBlocks(source.prefixEntries),
     },
     instructionPolicy: instructions.policy,
     stableAddresses: {

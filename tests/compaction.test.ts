@@ -17,7 +17,7 @@ import {
   MAX_PRESERVE_ITEMS,
   MAX_TYPED_COMPACTION_SOURCE_BYTES,
 } from "../src/compaction/instructions.js";
-import { normalizeEntries } from "../src/compaction/normalize.js";
+import { countErasedThinkingBlocks, normalizeEntries } from "../src/compaction/normalize.js";
 import { project, projectOutstanding } from "../src/compaction/projections.js";
 import {
   buildSessionContext,
@@ -63,7 +63,9 @@ const toolCallPart = (id: string, name: string, args: Record<string, unknown>): 
   arguments: Record<string, unknown>;
 } => ({ type: "toolCall", id, name, arguments: args });
 
-const assistant = (...parts: ({ type: "text"; text: string } | { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> })[]): SessionMessageEntry => ({
+const thinkingPart = (thinking: string): { type: "thinking"; thinking: string } => ({ type: "thinking", thinking });
+
+const assistant = (...parts: ({ type: "text"; text: string } | { type: "thinking"; thinking: string } | { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> })[]): SessionMessageEntry => ({
   type: "message",
   id: nextId(),
   parentId: null,
@@ -165,6 +167,74 @@ const resetCallIds = (): void => {
 const nextCallId = (): string => callId(++callCounter);
 
 const buildSession = (...entries: SessionEntry[]): SessionEntry[] => entries;
+
+describe("thinking erasure", () => {
+  it("normalizes assistant thinking parts into no events", () => {
+    resetIds();
+    resetClock();
+    const entries = [
+      user("Keep the original goal"),
+      assistant(thinkingPart("**Planning updater patch**\n\na long deliberation"), textPart("done")),
+      assistant(thinkingPart("scratchpad only, no commitments")),
+    ];
+    const events = normalizeEntries(entries);
+    expect(events.some((event) => event.kind === ("thinking" as string))).toBe(false);
+    expect(events.map((event) => event.entryId)).toEqual([entries[0]!.id, entries[1]!.id]);
+  });
+
+  it("counts erased thinking blocks structurally", () => {
+    resetIds();
+    resetClock();
+    const entries = [
+      user("goal"),
+      assistant(thinkingPart("first"), textPart("done")),
+      assistant(thinkingPart("second")),
+      assistant(textPart("plain")),
+    ];
+    expect(countErasedThinkingBlocks(entries)).toBe(2);
+    expect(countErasedThinkingBlocks([])).toBe(0);
+  });
+
+  it("erases thinking from rendered summaries and records the count in details", () => {
+    resetIds();
+    resetClock();
+    const result = compileFabricSummary(
+      buildSession(
+        user("Keep the original goal"),
+        assistant(thinkingPart("**Planning updater patch**\n\ndeliberation detail"), textPart("first step done")),
+        assistant(thinkingPart("scratchpad only")),
+        assistant(textPart("second step done")),
+      ),
+      1000,
+    );
+    if (!("compaction" in result)) throw new Error("expected compaction");
+    expect(result.compaction.summary).not.toContain("thinking:");
+    expect(result.compaction.summary).not.toContain("Planning updater patch");
+    const details = result.compaction.details;
+    if (!details) throw new Error("expected details");
+    expect(details.omittedCounts.thinking).toBe(2);
+    expect(fabricCompactionVersion(details)).toBe(2);
+  });
+
+  it("keeps v2 detail validation compatible before the thinking count existed", () => {
+    resetIds();
+    resetClock();
+    const result = compileFabricSummary(
+      buildSession(user("goal"), assistant(textPart("done"))),
+      1000,
+    );
+    if (!("compaction" in result)) throw new Error("expected compaction");
+    const details = result.compaction.details;
+    if (!details) throw new Error("expected details");
+    expect(details.omittedCounts.thinking).toBe(0);
+    const legacy = {
+      ...details,
+      omittedCounts: { ...details.omittedCounts } as Record<string, unknown>,
+    };
+    delete legacy.omittedCounts.thinking;
+    expect(fabricCompactionVersion(legacy)).toBe(2);
+  });
+});
 
 describe("compaction config", () => {
   it("defaults to the fabric engine and a 65% post-compaction target", () => {

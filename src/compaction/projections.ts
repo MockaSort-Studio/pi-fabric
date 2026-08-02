@@ -27,7 +27,6 @@ const MAX_USER_ONELINER = 120;
 const MAX_EARLIER_USER = 80;
 const MAX_STATUS_LINE = 140;
 const MAX_TRANSCRIPT_LINE = 100;
-const MAX_TRANSCRIPT_THINKING = 80;
 const MAX_TRANSCRIPT_CMD = 80;
 const MAX_LATER_GOALS = 24;
 export const MAX_FILES_PER_KIND = 24;
@@ -572,9 +571,6 @@ const projectTranscript = (events: CompactionEvent[]): ProjectedSection => {
       lines.push(`${ref} user: ${truncate(firstLine(e.text), MAX_TRANSCRIPT_LINE)}`);
     } else if (e.kind === "assistantText") {
       lines.push(`${ref} assistant: ${truncate(firstLine(e.text), MAX_TRANSCRIPT_LINE)}`);
-    } else if (e.kind === "thinking") {
-      const t = truncate(firstLine(e.text), MAX_TRANSCRIPT_THINKING);
-      if (t) lines.push(`${ref} thinking: ${t}`);
     } else if (e.kind === "customMessage") {
       lines.push(`${ref} ${customMessageLine(e, MAX_TRANSCRIPT_LINE)}`);
     } else if (e.kind === "toolCall") {

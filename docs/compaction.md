@@ -55,7 +55,7 @@ active branch entries ─┬─► live window ─► calibrated token budget �
                        └─► raw cumulative prefix ─► normalize ─► project ─► bound/render
 ```
 
-- `normalize.ts` converts raw message and top-level `custom_message` entries to typed events. Custom content is selected only from typed string/text parts; JSON details are depth/node/collection/string/byte bounded and malformed details are omitted without dropping otherwise valid content. Tool calls and results are paired only by `toolCallId`. A `fabric_exec` result contributes nested events only through a valid `details.trace` V1 guard, or through the separate strict legacy `details.audits` adapter when no `trace` field exists.
+- `normalize.ts` converts raw message and top-level `custom_message` entries to typed events. Custom content is selected only from typed string/text parts; JSON details are depth/node/collection/string/byte bounded and malformed details are omitted without dropping otherwise valid content. Assistant thinking parts are deliberation, not commitments: they are never normalized into events, so summaries carry side effects and state rather than truncated scratchpad text that could read as fact. The compactor records how many thinking blocks were erased so the omission stays auditable instead of invisible. Tool calls and results are paired only by `toolCallId`. A `fabric_exec` result contributes nested events only through a valid `details.trace` V1 guard, or through the separate strict legacy `details.audits` adapter when no `trace` field exists.
 - `projections.ts` computes goal, file, operation-state, turn, status, and transcript views.
 - `enrichers.ts` permits deterministic optional annotations. Fabric ships no built-in enrichers.
 - `render.ts` independently bounds every rendered block and enforces the global UTF-8 limit.
@@ -153,7 +153,7 @@ New summaries emit `details.compactor: "fabric"` and `details.version: 2` with:
 - cumulative source and live-cut ranges;
 - branch, source-entry, event, and live-cut counts;
 - prior recognized Fabric v1/v2 marker counts;
-- per-projection omission counts and the typed preserve count (valid v1 requests cannot exceed the preserve limit);
+- per-projection omission counts, the typed preserve count (valid v1 requests cannot exceed the preserve limit), and the structural count of erased assistant thinking blocks;
 - instruction mode, canonicalization, source size, truncation, and preserve counts;
 - stable kept/source entry-id addresses and the source timestamp;
 - when adaptive budgeting is active: advertised window, target ratio/tokens, Pi reserve and recent settings, raw estimate, calibration scale, fixed overhead, retained raw tokens, and Fabric's `projectedTokensAfter`. Pi core independently recomputes its own `estimatedTokensAfter` after persisting the compaction.
