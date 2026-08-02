@@ -21,6 +21,7 @@ interface FabricProjectionOperation {
 
 export interface FabricProjectionTrace {
   source: FabricProjectionSource;
+  outcome?: FabricExecutionOutcomeV1;
   phases: string[];
   operations: FabricProjectionOperation[];
 }
@@ -82,6 +83,7 @@ export const readFabricProjectionTrace = (details: unknown): FabricProjectionTra
     if (!trace) return undefined;
     return {
       source: "trace",
+      outcome: trace.outcome,
       phases: [...trace.phases],
       operations: trace.operations.map((operation) => {
         const lexical = lexicalIdentity(operation.ref);

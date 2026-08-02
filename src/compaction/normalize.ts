@@ -1,7 +1,11 @@
 import type { SessionEntry, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
 import type { FabricExecutionOutcomeV1, FabricTraceJsonValue } from "../audit/trace.js";
 import { readFabricProjectionTrace, type FabricProjectionSource } from "./trace-events.js";
-import { readFabricBranchSummaryDetailsV1 } from "./branch-details.js";
+import {
+  FABRIC_BRANCH_RUN_DESCRIPTION_MAX_BYTES,
+  FABRIC_BRANCH_RUN_NAME_MAX_BYTES,
+  readFabricBranchSummaryDetails,
+} from "./branch-details.js";
 import { clipUtf8, utf8Bytes } from "./bounds.js";
 
 // A purely structural, typed view of one session window. Every event carries
@@ -72,6 +76,17 @@ interface FabricPhaseEvent extends EventBase {
   phase: string;
 }
 
+export interface FabricRunEvent extends EventBase {
+  kind: "fabricRun";
+  toolCallId: string;
+  subordinal: string;
+  address: string;
+  name: string;
+  description?: string;
+  outcome: FabricExecutionOutcomeV1;
+  source: FabricProjectionSource | "result" | "branch";
+}
+
 interface FabricOperationEvent extends EventBase {
   kind: "fabricOperation";
   subordinal: string;
@@ -95,6 +110,7 @@ export type CompactionEvent =
   | ToolResultEvent
   | BashEvent
   | FabricPhaseEvent
+  | FabricRunEvent
   | FabricOperationEvent;
 
 const isMessageEntry = (entry: SessionEntry): entry is Extract<SessionEntry, { type: "message" }> =>
@@ -205,9 +221,29 @@ const firstLine = (text: string): string => {
 };
 
 interface PendingCall {
+  entryId: string;
   name: string;
   args: Record<string, unknown>;
 }
+
+interface FabricRunIntent {
+  name: string;
+  description?: string;
+}
+
+const fabricRunIntent = (call: PendingCall | undefined): FabricRunIntent | undefined => {
+  if (!call || call.name !== "fabric_exec") return undefined;
+  const display = call.args.display;
+  if (!display || typeof display !== "object" || Array.isArray(display)) return undefined;
+  const candidate = display as Record<string, unknown>;
+  if (typeof candidate.name !== "string") return undefined;
+  const name = clipUtf8(candidate.name.trim(), FABRIC_BRANCH_RUN_NAME_MAX_BYTES);
+  if (!name) return undefined;
+  const description = typeof candidate.description === "string"
+    ? clipUtf8(candidate.description.trim(), FABRIC_BRANCH_RUN_DESCRIPTION_MAX_BYTES)
+    : "";
+  return { name, ...(description ? { description } : {}) };
+};
 
 type DistributiveOmit<T, K extends keyof any> = T extends T ? Omit<T, K> : never;
 
@@ -227,7 +263,7 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
   };
 
   const pushBranchFacts = (entry: SessionEntry & { details?: unknown }): void => {
-    const details = readFabricBranchSummaryDetailsV1(entry.details);
+    const details = readFabricBranchSummaryDetails(entry.details);
     if (!details) return;
     for (const fact of details.facts) {
       if (fact.kind === "user") {
@@ -250,6 +286,21 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
           subordinal: fact.subordinal,
           address: fact.address,
           phase: fact.phase,
+        });
+      } else if (fact.kind === "fabricRun") {
+        push({
+          kind: "fabricRun",
+          entryId: fact.entryId,
+          sourceEntryId: entry.id,
+          toolCallId: fact.subordinal.startsWith("call:")
+            ? fact.subordinal.slice("call:".length)
+            : fact.subordinal,
+          subordinal: fact.subordinal,
+          address: fact.address,
+          name: fact.name,
+          ...(fact.description !== undefined ? { description: fact.description } : {}),
+          outcome: fact.outcome,
+          source: "branch",
         });
       } else {
         push({
@@ -315,7 +366,7 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
           push({ kind: "assistantText", entryId, sourceEntryId: entryId, text: part.text });
         } else if (part.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string") {
           const args = (part.arguments ?? {}) as Record<string, unknown>;
-          calls.set(part.id, { name: part.name, args });
+          calls.set(part.id, { entryId, name: part.name, args });
           push({ kind: "toolCall", entryId, sourceEntryId: entryId, toolCallId: part.id, name: part.name, args });
         }
       }
@@ -334,8 +385,8 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
       const toolName = typeof toolResult.toolName === "string" ? toolResult.toolName : "";
       const isError = toolResult.isError === true;
       const text = textOfContent(toolResult.content);
+      const pending = toolCallId ? calls.get(toolCallId) : undefined;
       if (toolName === "bash") {
-        const pending = toolCallId ? calls.get(toolCallId) : undefined;
         const command =
           pending && typeof pending.args.command === "string"
             ? pending.args.command
@@ -355,6 +406,22 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
       }
       if (toolName === "fabric_exec") {
         const nested = readFabricProjectionTrace(toolResult.details);
+        const intent = fabricRunIntent(pending);
+        if (intent && pending) {
+          const subordinal = `call:${toolCallId}`;
+          push({
+            kind: "fabricRun",
+            entryId: pending.entryId,
+            sourceEntryId: entryId,
+            toolCallId,
+            subordinal,
+            address: `${pending.entryId}/${subordinal}`,
+            name: intent.name,
+            ...(intent.description !== undefined ? { description: intent.description } : {}),
+            outcome: nested?.outcome ?? (isError ? "failed" : "succeeded"),
+            source: nested?.source ?? "result",
+          });
+        }
         if (nested) {
           for (let phaseIndex = 0; phaseIndex < nested.phases.length; phaseIndex++) {
             const subordinal = `phase:${phaseIndex}`;

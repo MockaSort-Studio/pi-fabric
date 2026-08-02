@@ -3,12 +3,14 @@ import type { FabricTraceJsonValue } from "../audit/trace.js";
 import { clipUtf8, sampleAddressed } from "./bounds.js";
 import {
   FABRIC_BRANCH_SUMMARY_KIND,
+  FABRIC_BRANCH_RUN_DESCRIPTION_MAX_BYTES,
+  FABRIC_BRANCH_RUN_NAME_MAX_BYTES,
   FABRIC_BRANCH_SUMMARY_MAX_BYTES,
   FABRIC_BRANCH_SUMMARY_MAX_FACTS,
   FABRIC_BRANCH_SUMMARY_VERSION,
-  type FabricBranchFactV1,
+  type FabricBranchFactV2,
   type FabricBranchOperationFactV1,
-  type FabricBranchSummaryDetailsV1,
+  type FabricBranchSummaryDetailsV2,
 } from "./branch-details.js";
 import { NO_BUILTIN_ENRICHERS, runEnrichers, type CompactionEnricher } from "./enrichers.js";
 import { decodeCompactionInstructions } from "./instructions.js";
@@ -59,8 +61,8 @@ const directOperationFact = (
   };
 };
 
-const factsFromEvents = (events: CompactionEvent[]): FabricBranchFactV1[] => {
-  const facts: FabricBranchFactV1[] = [];
+const factsFromEvents = (events: CompactionEvent[]): FabricBranchFactV2[] => {
+  const facts: FabricBranchFactV2[] = [];
   const calls = new Map<string, ToolCallEvent>();
   for (const event of events) {
     if (event.kind === "toolCall") calls.set(event.toolCallId, event);
@@ -92,6 +94,18 @@ const factsFromEvents = (events: CompactionEvent[]): FabricBranchFactV1[] => {
         subordinal: event.subordinal,
         address: event.address,
         phase: event.phase,
+      });
+    } else if (event.kind === "fabricRun") {
+      facts.push({
+        kind: "fabricRun",
+        entryId: event.entryId,
+        subordinal: event.subordinal,
+        address: event.address,
+        name: clipUtf8(event.name, FABRIC_BRANCH_RUN_NAME_MAX_BYTES),
+        ...(event.description !== undefined
+          ? { description: clipUtf8(event.description, FABRIC_BRANCH_RUN_DESCRIPTION_MAX_BYTES) }
+          : {}),
+        outcome: event.outcome,
       });
     } else if (event.kind === "fabricOperation") {
       facts.push({
@@ -142,13 +156,13 @@ const serializedBytes = (value: unknown): number => Buffer.byteLength(JSON.strin
 
 const boundedDetails = (
   sourceEntries: SessionEntry[],
-  facts: FabricBranchFactV1[],
+  facts: FabricBranchFactV2[],
   sections: string[],
   request: { text: string; sourceBytes: number; truncated: boolean },
   oldLeafId: string | null,
-): FabricBranchSummaryDetailsV1 => {
+): FabricBranchSummaryDetailsV2 => {
   const sampled = sampleAddressed(facts, FABRIC_BRANCH_SUMMARY_MAX_FACTS);
-  const details: FabricBranchSummaryDetailsV1 = {
+  const details: FabricBranchSummaryDetailsV2 = {
     kind: FABRIC_BRANCH_SUMMARY_KIND,
     version: FABRIC_BRANCH_SUMMARY_VERSION,
     source: {
@@ -180,7 +194,7 @@ const boundedDetails = (
 
 export interface FabricBranchSummaryCompilation {
   summary: string;
-  details: FabricBranchSummaryDetailsV1;
+  details: FabricBranchSummaryDetailsV2;
 }
 
 export const compileFabricBranchSummary = (

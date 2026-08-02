@@ -102,6 +102,7 @@ export const createFabricExecTool = (
       "For coding tasks, keep an acceptance ledger: turn the request into concrete checks, trace the relevant execution path before editing, implement end to end, then run targeted tests and direct behavioral probes. Mechanically confirm requested public symbols, registrations, and configuration entries. Use the smallest checks that cover the ledger, escalating only for failures or cross-cutting risk; inspect failures and iterate instead of rerunning unchanged passing checks. A build alone is not completion.",
       "Amortize round trips without inflating context: batch only independent, bounded work. Keep search→read and edit→verify sequential when an output determines the next action. Use `settle:true` for tests or probes whose nonzero result is evidence rather than an exceptional stop; for a known long suite, set `pi.bash` `timeout` in seconds once instead of retrying a timed-out call. Filter or summarize noisy command output inside the program and return decisions, failures, and evidence—not raw logs or unused intermediate results.",
       "For multiline edits or writes, pass payloads through top-level `strings` and use `π.key`; prefer `pi.edit`/`pi.write` over shell patching or heredocs.",
+      "Use `display.name` and objective `display.description`; Fabric pairs them with verified outcomes in deterministic compaction.",
     ],
     // The model-facing schema is intentionally flat: one large `code` string
     // plus scalar/optional params. Do not add nested arrays-of-objects with
@@ -139,10 +140,14 @@ export const createFabricExecTool = (
         Type.Object(
           {
             name: Type.Optional(
-              Type.String({ description: "Human-readable name for the Fabric activity panel" }),
+              Type.String({
+                description: "Concise execution milestone used by the Fabric activity UI and deterministic compaction continuity",
+              }),
             ),
             description: Type.Optional(
-              Type.String({ description: "Compact objective shown in the Fabric dashboard" }),
+              Type.String({
+                description: "Compact declared objective or acceptance criterion shown in the dashboard and richer compaction activity",
+              }),
             ),
           },
         ),

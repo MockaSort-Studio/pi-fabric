@@ -321,8 +321,11 @@ keeps `parentEntryId`, `operationAddress`, exact `toolName`, `ref`, `provider`,
 object. Expansion re-reads and re-normalizes source rather than reconstructing
 operations from output prose.
 
-Valid `FabricBranchSummaryDetailsV1` envelopes emit typed child records for
-user, phase, and operation facts. Children preserve the original fact address,
+Valid `FabricBranchSummaryDetailsV1` and V2 envelopes emit typed child records
+for user, phase, operation, and—under V2—named `fabricRun` facts. Run children
+preserve bounded declared name/description, paired aggregate outcome, and the
+original call address; they index as `fabric_exec` and expand by that operation
+address. Other children preserve the original fact address,
 ref/provider/action/tool/outcome/arguments and structurally derived paths, plus
 `carrierEntryId`, `carrierParentId`, and `carrierFromId`. Operation facts expand
 by their original operation address; user and phase facts use that address as

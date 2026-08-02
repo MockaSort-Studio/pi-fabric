@@ -4,9 +4,12 @@ import type {
 } from "../audit/trace.js";
 
 export const FABRIC_BRANCH_SUMMARY_KIND = "pi-fabric.branch-summary" as const;
-export const FABRIC_BRANCH_SUMMARY_VERSION = 1 as const;
+const FABRIC_BRANCH_SUMMARY_VERSION_V1 = 1 as const;
+export const FABRIC_BRANCH_SUMMARY_VERSION = 2 as const;
 export const FABRIC_BRANCH_SUMMARY_MAX_BYTES = 128 * 1024;
 export const FABRIC_BRANCH_SUMMARY_MAX_FACTS = 256;
+export const FABRIC_BRANCH_RUN_NAME_MAX_BYTES = 256;
+export const FABRIC_BRANCH_RUN_DESCRIPTION_MAX_BYTES = 1024;
 
 interface BranchFactBase {
   entryId: string;
@@ -44,31 +47,58 @@ export interface FabricBranchOperationFactV1 extends BranchFactBase {
   result?: FabricTraceJsonValue;
 }
 
-export type FabricBranchFactV1 =
+type FabricBranchFactV1 =
   | FabricBranchUserFactV1
   | FabricBranchCustomMessageFactV1
   | FabricBranchPhaseFactV1
   | FabricBranchOperationFactV1;
 
+interface FabricBranchRunFactV2 extends BranchFactBase {
+  kind: "fabricRun";
+  name: string;
+  description?: string;
+  outcome: FabricExecutionOutcomeV1;
+}
+
+export type FabricBranchFactV2 = FabricBranchFactV1 | FabricBranchRunFactV2;
+
+interface FabricBranchSummarySource {
+  firstEntryId: string;
+  lastEntryId: string;
+  entryCount: number;
+  /** Canonical abandoned-branch provenance. Absent only on older v1 envelopes. */
+  oldLeafId?: string | null;
+}
+
+interface FabricBranchSummaryRequest {
+  text: string;
+  sourceBytes: number;
+  truncated: boolean;
+}
+
 export interface FabricBranchSummaryDetailsV1 {
   kind: typeof FABRIC_BRANCH_SUMMARY_KIND;
-  version: typeof FABRIC_BRANCH_SUMMARY_VERSION;
-  source: {
-    firstEntryId: string;
-    lastEntryId: string;
-    entryCount: number;
-    /** Canonical abandoned-branch provenance. Absent only on older v1 envelopes. */
-    oldLeafId?: string | null;
-  };
+  version: typeof FABRIC_BRANCH_SUMMARY_VERSION_V1;
+  source: FabricBranchSummarySource;
   facts: FabricBranchFactV1[];
   omittedFacts: number;
   sections: string[];
-  request: {
-    text: string;
-    sourceBytes: number;
-    truncated: boolean;
-  };
+  request: FabricBranchSummaryRequest;
 }
+
+export interface FabricBranchSummaryDetailsV2 {
+  kind: typeof FABRIC_BRANCH_SUMMARY_KIND;
+  version: typeof FABRIC_BRANCH_SUMMARY_VERSION;
+  source: FabricBranchSummarySource;
+  facts: FabricBranchFactV2[];
+  omittedFacts: number;
+  sections: string[];
+  request: FabricBranchSummaryRequest;
+}
+
+export type FabricBranchSummaryDetails =
+  | FabricBranchSummaryDetailsV1
+  | FabricBranchSummaryDetailsV2;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -119,7 +149,7 @@ const validBase = (fact: Record<string, unknown>): boolean =>
   && typeof fact.address === "string"
   && fact.address === `${fact.entryId}/${fact.subordinal}`;
 
-const isFact = (value: unknown, jsonState: JsonValidationState): value is FabricBranchFactV1 => {
+const isFactV1 = (value: unknown, jsonState: JsonValidationState): value is FabricBranchFactV1 => {
   if (!isRecord(value) || !validBase(value)) return false;
   if (value.kind === "user") {
     return hasOnlyKeys(value, ["kind", "entryId", "subordinal", "address", "text"])
@@ -154,34 +184,86 @@ const isFact = (value: unknown, jsonState: JsonValidationState): value is Fabric
     && (value.result === undefined || isJsonValue(value.result, jsonState));
 };
 
+const isFactV2 = (value: unknown, jsonState: JsonValidationState): value is FabricBranchFactV2 => {
+  if (isRecord(value) && value.kind === "fabricRun") {
+    return validBase(value)
+      && typeof value.subordinal === "string"
+      && value.subordinal.startsWith("call:")
+      && value.subordinal.length > "call:".length
+      && hasOnlyKeys(value, [
+        "kind", "entryId", "subordinal", "address", "name", "description", "outcome",
+      ])
+      && typeof value.name === "string"
+      && value.name.trim().length > 0
+      && Buffer.byteLength(value.name, "utf8") <= FABRIC_BRANCH_RUN_NAME_MAX_BYTES
+      && (value.description === undefined
+        || (typeof value.description === "string"
+          && Buffer.byteLength(value.description, "utf8") <= FABRIC_BRANCH_RUN_DESCRIPTION_MAX_BYTES))
+      && outcomes.has(value.outcome as FabricExecutionOutcomeV1);
+  }
+  return isFactV1(value, jsonState);
+};
+
 const serializedBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), "utf8");
+
+const validEnvelope = (
+  value: Record<string, unknown>,
+  version: 1 | 2,
+  factValidator: (fact: unknown, state: JsonValidationState) => boolean,
+): boolean => {
+  if (!hasOnlyKeys(value, [
+    "kind", "version", "source", "facts", "omittedFacts", "sections", "request",
+  ])) return false;
+  if (value.kind !== FABRIC_BRANCH_SUMMARY_KIND || value.version !== version) return false;
+  if (!isRecord(value.source)
+    || !hasOnlyKeys(value.source, ["firstEntryId", "lastEntryId", "entryCount", "oldLeafId"])) return false;
+  if (typeof value.source.firstEntryId !== "string" || typeof value.source.lastEntryId !== "string") return false;
+  if (!Number.isSafeInteger(value.source.entryCount) || (value.source.entryCount as number) < 0) return false;
+  if (value.source.oldLeafId !== undefined
+    && value.source.oldLeafId !== null
+    && typeof value.source.oldLeafId !== "string") return false;
+  const jsonState: JsonValidationState = { nodes: 0, ancestors: new Set<object>() };
+  if (!Array.isArray(value.facts)
+    || value.facts.length > FABRIC_BRANCH_SUMMARY_MAX_FACTS
+    || !value.facts.every((fact) => factValidator(fact, jsonState))) return false;
+  if (!Number.isSafeInteger(value.omittedFacts) || (value.omittedFacts as number) < 0) return false;
+  if (!Array.isArray(value.sections)
+    || value.sections.length > 64
+    || !value.sections.every((section) => typeof section === "string")) return false;
+  if (!isRecord(value.request)
+    || !hasOnlyKeys(value.request, ["text", "sourceBytes", "truncated"])) return false;
+  if (typeof value.request.text !== "string" || typeof value.request.truncated !== "boolean") return false;
+  if (!Number.isSafeInteger(value.request.sourceBytes) || (value.request.sourceBytes as number) < 0) return false;
+  return serializedBytes(value) <= FABRIC_BRANCH_SUMMARY_MAX_BYTES;
+};
 
 export const readFabricBranchSummaryDetailsV1 = (
   value: unknown,
 ): FabricBranchSummaryDetailsV1 | undefined => {
   try {
-    if (!isRecord(value) || !hasOnlyKeys(value, [
-      "kind", "version", "source", "facts", "omittedFacts", "sections", "request",
-    ])) return undefined;
-    if (value.kind !== FABRIC_BRANCH_SUMMARY_KIND || value.version !== FABRIC_BRANCH_SUMMARY_VERSION) return undefined;
-    if (!isRecord(value.source) || !hasOnlyKeys(value.source, ["firstEntryId", "lastEntryId", "entryCount", "oldLeafId"])) return undefined;
-    if (typeof value.source.firstEntryId !== "string" || typeof value.source.lastEntryId !== "string") return undefined;
-    if (!Number.isSafeInteger(value.source.entryCount) || (value.source.entryCount as number) < 0) return undefined;
-    if (value.source.oldLeafId !== undefined && value.source.oldLeafId !== null && typeof value.source.oldLeafId !== "string") return undefined;
-    const jsonState: JsonValidationState = { nodes: 0, ancestors: new Set<object>() };
-    if (!Array.isArray(value.facts)
-      || value.facts.length > FABRIC_BRANCH_SUMMARY_MAX_FACTS
-      || !value.facts.every((fact) => isFact(fact, jsonState))) return undefined;
-    if (!Number.isSafeInteger(value.omittedFacts) || (value.omittedFacts as number) < 0) return undefined;
-    if (!Array.isArray(value.sections)
-      || value.sections.length > 64
-      || !value.sections.every((section) => typeof section === "string")) return undefined;
-    if (!isRecord(value.request) || !hasOnlyKeys(value.request, ["text", "sourceBytes", "truncated"])) return undefined;
-    if (typeof value.request.text !== "string" || typeof value.request.truncated !== "boolean") return undefined;
-    if (!Number.isSafeInteger(value.request.sourceBytes) || (value.request.sourceBytes as number) < 0) return undefined;
-    if (serializedBytes(value) > FABRIC_BRANCH_SUMMARY_MAX_BYTES) return undefined;
+    if (!isRecord(value) || !validEnvelope(value, FABRIC_BRANCH_SUMMARY_VERSION_V1, isFactV1)) {
+      return undefined;
+    }
     return value as unknown as FabricBranchSummaryDetailsV1;
   } catch {
     return undefined;
   }
 };
+
+export const readFabricBranchSummaryDetailsV2 = (
+  value: unknown,
+): FabricBranchSummaryDetailsV2 | undefined => {
+  try {
+    if (!isRecord(value) || !validEnvelope(value, FABRIC_BRANCH_SUMMARY_VERSION, isFactV2)) {
+      return undefined;
+    }
+    return value as unknown as FabricBranchSummaryDetailsV2;
+  } catch {
+    return undefined;
+  }
+};
+
+export const readFabricBranchSummaryDetails = (
+  value: unknown,
+): FabricBranchSummaryDetails | undefined =>
+  readFabricBranchSummaryDetailsV2(value) ?? readFabricBranchSummaryDetailsV1(value);

@@ -92,6 +92,14 @@ const buildFixture = (): QaFixture => {
     toolResult("commit", "bash", "[feature abc1234] test reconstruction qa\n 3 files changed"),
     user("Add mutation tests"),
     assistant(...filler),
+    assistant(toolCallPart("qa-fabric", "fabric_exec", {
+      code: "return await pi.bash({ cmd: 'pnpm test' });",
+      display: {
+        name: "Certify reconstruction QA",
+        description: "Run the deterministic mutation and address probes",
+      },
+    })),
+    toolResult("qa-fabric", "fabric_exec", "all reconstruction probes passed"),
     user("Verify the report"),
   ];
   const events = normalizeEntries(entries);
@@ -124,6 +132,14 @@ describe("compaction reconstruction QA", () => {
     expect(probes.some((probe) => probe.class === "content" && probe.answer === "compaction.md")).toBe(true);
     expect(probes.some((probe) => probe.class === "content" && probe.answer === "read src/missing.ts: ENOENT: no such file or directory")).toBe(true);
     expect(probes.some((probe) => probe.id.startsWith("commit:"))).toBe(false);
+    expect(probes).toContainEqual(expect.objectContaining({
+      id: expect.stringMatching(/^last-fabric-run:/),
+      answer: "Certify reconstruction QA → succeeded",
+    }));
+    expect(probes).toContainEqual(expect.objectContaining({
+      id: expect.stringMatching(/^last-fabric-run-address:/),
+      answer: "[entry qa-e14]",
+    }));
     expect(fixture.summary).not.toContain("[Commits]");
     expect(probes.some((probe) => probe.class === "address" && probe.id.startsWith("earlier-turn-address:"))).toBe(true);
     expect(probes.some((probe) => probe.class === "address" && probe.id === "footer-recall")).toBe(true);
@@ -147,6 +163,17 @@ describe("compaction reconstruction QA", () => {
     expect(failure?.probe.id).toMatch(/^modified-file:/);
   });
 
+  it("fails declared run-intent probes when name or stable address is removed", () => {
+    const fixture = buildFixture();
+    const withoutName = fixture.summary.replaceAll("Certify reconstruction QA", "removed run");
+    expect(failedIds(fixture, withoutName)).toContainEqual(expect.stringMatching(/^last-fabric-run:/));
+
+    const withoutAddress = fixture.summary.replaceAll("[entry qa-e14]", "");
+    expect(failedIds(fixture, withoutAddress)).toContainEqual(
+      expect.stringMatching(/^last-fabric-run-address:/),
+    );
+  });
+
   it("fails the recall-address probe when the footer is dropped", () => {
     const fixture = buildFixture();
     const footer = fixture.summary.lastIndexOf("\n\n---\n[compacted ");
@@ -157,7 +184,10 @@ describe("compaction reconstruction QA", () => {
 
   it("fails turn-count and address probes when Earlier Turns is truncated", () => {
     const fixture = buildFixture();
-    const mutated = fixture.summary.replace('"Add mutation tests" [entry qa-e12]\n', "");
+    const mutated = fixture.summary.replace(
+      /\n"Add mutation tests"[^\n]*\[entry qa-e12\]\n/,
+      "\n",
+    );
     const failures = qaReport(fixture.events, fixture.events.length, mutated).failures;
     expect(failures.some(({ probe }) => probe.id.startsWith("earlier-turn-count:") && probe.answer === '"Add mutation tests"')).toBe(true);
     expect(failures.some(({ probe }) => probe.id.startsWith("earlier-turn-address:") && probe.answer === '"Add mutation tests"')).toBe(true);

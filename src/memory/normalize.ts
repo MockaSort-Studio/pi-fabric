@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import type { FabricExecutionOutcomeV1, FabricTraceJsonValue } from "../audit/trace.js";
 import {
-  readFabricBranchSummaryDetailsV1,
-  type FabricBranchFactV1,
+  readFabricBranchSummaryDetails,
+  type FabricBranchFactV2,
 } from "../compaction/branch-details.js";
 import { readFabricProjectionTrace } from "../compaction/trace-events.js";
 import type { SessionLineage } from "./lineage.js";
@@ -80,7 +80,7 @@ interface NormalizedFabricOperation {
 }
 
 interface NormalizedFabricBranchFact {
-  kind: FabricBranchFactV1["kind"];
+  kind: FabricBranchFactV2["kind"];
   address: string;
   entryId: string;
   subordinal: string;
@@ -91,6 +91,8 @@ interface NormalizedFabricBranchFact {
   customType?: string;
   display?: boolean;
   phase?: string;
+  name?: string;
+  description?: string;
   ref?: string;
   provider?: string;
   action?: string;
@@ -262,18 +264,18 @@ const branchDetails = (raw: Record<string, unknown>) => {
   if (type !== "branch_summary" && !(type === "message" && asString(messageRecord?.role) === "branchSummary")) {
     return undefined;
   }
-  return readFabricBranchSummaryDetailsV1(raw.details)
-    ?? readFabricBranchSummaryDetailsV1(messageRecord?.details);
+  return readFabricBranchSummaryDetails(raw.details)
+    ?? readFabricBranchSummaryDetails(messageRecord?.details);
 };
 
-const branchFilesTouched = (fact: Extract<FabricBranchFactV1, { kind: "operation" }>): string[] => {
+const branchFilesTouched = (fact: Extract<FabricBranchFactV2, { kind: "operation" }>): string[] => {
   const paths: string[] = [];
   collectPathArguments(fact.args, null, paths);
   return [...new Set(paths)];
 };
 
 const branchFactChild = (
-  fact: FabricBranchFactV1,
+  fact: FabricBranchFactV2,
   base: Omit<NormalizedEntry, "index">,
   carrierFromId: string | null,
   policy: MemoryIndexPrivacyPolicy,
@@ -309,6 +311,11 @@ const branchFactChild = (
       display: fact.display,
     } : {}),
     ...(fact.kind === "phase" ? { phase: fact.phase } : {}),
+    ...(fact.kind === "fabricRun" ? {
+      name: fact.name,
+      ...(fact.description !== undefined ? { description: fact.description } : {}),
+      outcome: fact.outcome,
+    } : {}),
     ...(fact.kind === "operation" ? {
       ref: fact.ref,
       ...(fact.provider ? { provider: fact.provider } : {}),
@@ -347,6 +354,20 @@ const branchFactChild = (
       toolName: null,
       text: `Fabric phase ${fact.phase}`,
       isError: false,
+      branchFact: normalizedFact,
+    };
+  }
+  if (fact.kind === "fabricRun") {
+    const description = fact.description ? ` — ${fact.description}` : "";
+    return {
+      ...common,
+      role: "fabricRun",
+      toolName: "fabric_exec",
+      text: `Fabric run ${fact.name}${description} → ${fact.outcome}`,
+      isError: fact.outcome !== "succeeded",
+      operationAddress: fact.address,
+      ref: "fabric_exec",
+      outcome: fact.outcome,
       branchFact: normalizedFact,
     };
   }

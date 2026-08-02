@@ -12,7 +12,10 @@ import {
 import {
   FABRIC_BRANCH_SUMMARY_MAX_BYTES,
   FABRIC_BRANCH_SUMMARY_MAX_FACTS,
+  FABRIC_BRANCH_SUMMARY_VERSION,
+  readFabricBranchSummaryDetails,
   readFabricBranchSummaryDetailsV1,
+  readFabricBranchSummaryDetailsV2,
 } from "../src/compaction/branch-details.js";
 import { compileFabricSummary, registerCompactionHook } from "../src/compaction/hook.js";
 import {
@@ -64,10 +67,21 @@ const customMessage = (
   details,
 }) as SessionEntry;
 
-const fabricCall = (id: string, callId: string, code: string, parentId: string | null = null): SessionMessageEntry =>
+const fabricCall = (
+  id: string,
+  callId: string,
+  code: string,
+  parentId: string | null = null,
+  display?: { name?: string; description?: string },
+): SessionMessageEntry =>
   entry(id, {
     role: "assistant",
-    content: [{ type: "toolCall", id: callId, name: "fabric_exec", arguments: { code } }],
+    content: [{
+      type: "toolCall",
+      id: callId,
+      name: "fabric_exec",
+      arguments: { code, ...(display ? { display } : {}) },
+    }],
     api: "anthropic",
     provider: "anthropic",
     model: "test",
@@ -94,7 +108,16 @@ const fabricResult = (
 
 const traceHistory = (): SessionEntry[] => [
   user("e1", "Implement trace consumption"),
-  fabricCall("e2", "fabric-1", "pi.edit({path:'fake.ts'}); throw new Error('fake source error')", "e1"),
+  fabricCall(
+    "e2",
+    "fabric-1",
+    "pi.edit({path:'fake.ts'}); throw new Error('fake source error')",
+    "e1",
+    {
+      name: "Implement trace consumption",
+      description: "Project typed files, failures, and nested Fabric activity",
+    },
+  ),
   fabricResult("e3", "fabric-1", { trace: recordedIntegrationTrace() }, undefined, "e2"),
   user("e4", "Review the result", "e3"),
 ];
@@ -116,6 +139,9 @@ describe("Fabric execution trace compaction", () => {
     expect(sections.outstanding.join("\n")).toContain("exact edit failure");
     expect(sections.outstanding.join("\n")).toContain("typed test failure");
     expect(sections.outstanding.every((line) => line.includes("failure") ? line.includes("[RESOLVED]") : true)).toBe(true);
+    expect(sections.activity.join("\n")).toContain("Implement trace consumption");
+    expect(sections.activity.join("\n")).toContain("Project typed files, failures, and nested Fabric activity");
+    expect(sections.activity.join("\n")).toContain("→ succeeded [entry e2]");
     expect(sections.activity.join("\n")).toContain("Phase: Inspect");
     for (const ref of ["pi.bash", "agents.run", "workflow.agent", "mesh.query", "state.get", "mcp.github.search", "extensions.preview"]) {
       expect(sections.activity.join("\n")).toContain(ref);
@@ -123,6 +149,69 @@ describe("Fabric execution trace compaction", () => {
     expect(sections.files.join("\n")).not.toContain("fake.ts");
     expect(sections.outstanding.join("\n")).not.toContain("fake source error");
     expect(sections.activity.join("\n")).not.toContain("fake.ts");
+  });
+
+  it("pairs declared intent with aggregate outcome and degrades it by summary tier", () => {
+    const events = normalizeEntries(traceHistory());
+    const runs = events.filter((event) => event.kind === "fabricRun");
+    expect(runs).toEqual([expect.objectContaining({
+      entryId: "e2",
+      sourceEntryId: "e3",
+      toolCallId: "fabric-1",
+      address: "e2/call:fabric-1",
+      name: "Implement trace consumption",
+      description: "Project typed files, failures, and nested Fabric activity",
+      outcome: "succeeded",
+      source: "trace",
+    })]);
+
+    const sections = project(events);
+    const activity = sections.activity.join("\n");
+    const earlier = sections.earlierTurns.join("\n");
+    const status = sections.status.join("\n");
+    const transcript = sections.transcript.join("\n");
+    expect(activity).toContain("Implement trace consumption — Project typed files");
+    expect(earlier).toContain('fabric:"Implement trace consumption"→succeeded');
+    expect(status).toContain("Last execution: Implement trace consumption → succeeded");
+    expect(transcript).toContain('fabric_exec "Implement trace consumption" → succeeded [entry e2]');
+    expect(transcript).not.toContain("Project typed files, failures, and nested Fabric activity");
+    expect(transcript).not.toContain("fabric_exec(structured execution)");
+  });
+
+  it("uses a valid trace outcome and requires an exact paired display name", () => {
+    const timedOutTrace = recordedParallelTrace();
+    timedOutTrace.outcome = "timed_out";
+    const paired = normalizeEntries([
+      fabricCall("o1", "outcome-call", "fake", null, { name: "Probe timeout" }),
+      fabricResult("o2", "outcome-call", { trace: timedOutTrace }),
+    ]).filter((event) => event.kind === "fabricRun");
+    expect(paired).toMatchObject([{ name: "Probe timeout", outcome: "timed_out" }]);
+
+    const missingName = normalizeEntries([
+      fabricCall("o3", "description-only", "fake", null, { description: "not enough" }),
+      fabricResult("o4", "description-only", { trace: recordedParallelTrace() }),
+      fabricCall("o5", "mismatched", "fake", null, { name: "Must not pair" }),
+      fabricResult("o6", "different-id", { trace: recordedParallelTrace() }),
+    ]).filter((event) => event.kind === "fabricRun");
+    expect(missingName).toEqual([]);
+  });
+
+  it("keeps multibyte intent bounded without clipping outcome or source address", () => {
+    const events = normalizeEntries([
+      fabricCall("mb1", "multibyte", "fake", null, {
+        name: "界".repeat(500),
+        description: "🚀".repeat(1_000),
+      }),
+      fabricResult("mb2", "multibyte", {}),
+    ]);
+    const run = events.find((event) => event.kind === "fabricRun");
+    if (!run || run.kind !== "fabricRun") throw new Error("expected run");
+    expect(Buffer.byteLength(run.name, "utf8")).toBeLessThanOrEqual(256);
+    expect(Buffer.byteLength(run.description ?? "", "utf8")).toBeLessThanOrEqual(1024);
+
+    const line = project(events).activity.join("\n");
+    expect(Buffer.byteLength(line, "utf8")).toBeLessThanOrEqual(1024);
+    expect(line).toContain("→ succeeded [entry mb1]");
   });
 
   it("preserves parallel issue order independently of completion order", () => {
@@ -184,7 +273,14 @@ describe("deterministic Fabric branch summaries", () => {
     expect(second).toEqual(first);
     expect(first?.summary).toContain("__pi_vcc__ keep this opaque");
     expect(first?.summary).toContain("[Fabric Activity]");
-    expect(readFabricBranchSummaryDetailsV1(first?.details)).toEqual(first?.details);
+    expect(first?.details.version).toBe(FABRIC_BRANCH_SUMMARY_VERSION);
+    expect(readFabricBranchSummaryDetailsV2(first?.details)).toEqual(first?.details);
+    expect(readFabricBranchSummaryDetails(first?.details)).toEqual(first?.details);
+    expect(first?.details.facts).toContainEqual(expect.objectContaining({
+      kind: "fabricRun",
+      name: "Implement trace consumption",
+      outcome: "succeeded",
+    }));
 
     let handler: ((event: SessionBeforeTreeEvent) => unknown) | undefined;
     const pi = { on(name: string, candidate: unknown) {
@@ -206,9 +302,29 @@ describe("deterministic Fabric branch summaries", () => {
       preparation: { ...preparation, userWantsSummary: true },
       signal: new AbortController().signal,
     }) as { summary: { details: unknown } };
-    const details = readFabricBranchSummaryDetailsV1(result.summary.details);
+    const details = readFabricBranchSummaryDetailsV2(result.summary.details);
     expect(details).toBeDefined();
     expect(details?.source.oldLeafId).toBe("e3");
+  });
+
+  it("keeps strict v1 branch envelopes readable without accepting v2 run facts as v1", () => {
+    const compiled = compileFabricBranchSummary(traceHistory().slice(0, 3));
+    if (!compiled) throw new Error("expected branch summary");
+    const legacy = {
+      ...structuredClone(compiled.details),
+      version: 1,
+      facts: compiled.details.facts.filter((fact) => fact.kind !== "fabricRun"),
+    };
+    expect(readFabricBranchSummaryDetailsV1(legacy)).toEqual(legacy);
+    expect(readFabricBranchSummaryDetailsV2(legacy)).toBeUndefined();
+    expect(readFabricBranchSummaryDetails(legacy)).toEqual(legacy);
+    expect(readFabricBranchSummaryDetailsV1(compiled.details)).toBeUndefined();
+
+    const oversized = structuredClone(compiled.details);
+    const run = oversized.facts.find((fact) => fact.kind === "fabricRun");
+    if (!run || run.kind !== "fabricRun") throw new Error("expected run fact");
+    run.name = "n".repeat(257);
+    expect(readFabricBranchSummaryDetailsV2(oversized)).toBeUndefined();
   });
 
   it("defers replaceInstructions tree navigation to Pi without producing Fabric details", () => {
@@ -342,7 +458,7 @@ describe("deterministic Fabric branch summaries", () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
     malformed.facts[0]!.details = cyclic;
-    expect(readFabricBranchSummaryDetailsV1(malformed)).toBeUndefined();
+    expect(readFabricBranchSummaryDetails(malformed)).toBeUndefined();
     const branchEntry = {
       type: "branch_summary",
       id: "m2",
@@ -376,6 +492,8 @@ describe("deterministic Fabric branch summaries", () => {
     if (!("compaction" in result)) throw new Error("expected compaction");
     expect(result.compaction.summary).toContain("write.ts");
     expect(result.compaction.summary).toContain("agents.run");
+    expect(result.compaction.summary).toContain("Implement trace consumption");
+    expect(result.compaction.summary).toContain("[entry e2/call:fabric-1]");
     expect(result.compaction.summary).not.toContain("SIBLING_PROSE_POISON");
 
     const siblingOnly = [root, user("s2", "Sibling branch poison", "b1"), user("s3", "Sibling boundary", "s2")];
@@ -398,6 +516,7 @@ describe("deterministic Fabric branch summaries", () => {
     const forkResult = compileFabricSummary(forkedPath, 1_000);
     if (!("compaction" in forkResult)) throw new Error("expected fork compaction");
     expect(forkResult.compaction.summary).toContain("created.ts");
+    expect(forkResult.compaction.summary).toContain("Implement trace consumption");
   });
 
   it("bounds facts/details and remains deterministic under large traces", () => {
@@ -405,7 +524,13 @@ describe("deterministic Fabric branch summaries", () => {
     for (let index = 0; index < 300; index++) {
       const trace = recordedParallelTrace();
       entries.push(
-        fabricCall(`z${index * 2 + 1}`, `c${index}`, "fake source"),
+        fabricCall(
+          `z${index * 2 + 1}`,
+          `c${index}`,
+          "fake source",
+          null,
+          { name: `Bounded run ${index}`, description: "objective ".repeat(200) },
+        ),
         fabricResult(`z${index * 2 + 2}`, `c${index}`, { trace }, "fake output"),
       );
     }
@@ -414,6 +539,11 @@ describe("deterministic Fabric branch summaries", () => {
     expect(second).toEqual(first);
     expect(first!.details.facts.length).toBeLessThanOrEqual(FABRIC_BRANCH_SUMMARY_MAX_FACTS);
     expect(first!.details.omittedFacts).toBeGreaterThan(0);
+    for (const fact of first!.details.facts) {
+      if (fact.kind !== "fabricRun" || fact.description === undefined) continue;
+      expect(Buffer.byteLength(fact.name, "utf8")).toBeLessThanOrEqual(256);
+      expect(Buffer.byteLength(fact.description, "utf8")).toBeLessThanOrEqual(1024);
+    }
     expect(Buffer.byteLength(JSON.stringify(first!.details), "utf8")).toBeLessThanOrEqual(FABRIC_BRANCH_SUMMARY_MAX_BYTES);
   });
 });

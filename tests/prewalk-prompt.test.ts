@@ -46,7 +46,7 @@ describe("prewalk prompt isolation", () => {
       0,
     );
 
-    expect(visibleGuidelines).toHaveLength(5);
+    expect(visibleGuidelines).toHaveLength(6);
     expect(visibleGuidelineChars).toBeLessThanOrEqual(2_200);
     expect(guidelines).toContain("acceptance ledger");
     expect(guidelines).toContain("direct behavioral probes");
@@ -64,6 +64,9 @@ describe("prewalk prompt isolation", () => {
     expect(guidelines).toContain("not raw logs or unused intermediate results");
     expect(guidelines).toContain("pass payloads through top-level `strings`");
     expect(guidelines).toContain("prefer `pi.edit`/`pi.write`");
+    expect(guidelines).toContain("`display.name` and objective `display.description`");
+    expect(guidelines).toContain("pairs them with verified outcomes");
+    expect(guidelines).toContain("deterministic compaction");
   });
 
   it("runs handoff from finalized outer message_end without aborting nested calls", () => {

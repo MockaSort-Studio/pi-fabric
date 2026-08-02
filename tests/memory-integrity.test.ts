@@ -57,9 +57,9 @@ const config = (indexDir: string, overrides: Partial<FabricMemoryConfig> = {}): 
 const message = (id: string, text: string, offset = 0): FixtureEntry =>
   messageEntry(id, null, timestamp(offset), userMessage(text));
 
-const branchDetails = (facts: Array<Record<string, unknown>>) => ({
+const branchDetails = (facts: Array<Record<string, unknown>>, version: 1 | 2 = 1) => ({
   kind: "pi-fabric.branch-summary",
-  version: 1,
+  version,
   source: { firstEntryId: "source-first", lastEntryId: "source-last", entryCount: 2 },
   facts,
   omittedFacts: 0,
@@ -181,6 +181,15 @@ describe("memory final integrity guarantees", () => {
       outcome: "succeeded",
       result: { bytes: 5 },
     };
+    const run = {
+      kind: "fabricRun",
+      entryId: "abandoned-call",
+      subordinal: "call:fabric-1",
+      address: "abandoned-call/call:fabric-1",
+      name: "Verify abandoned implementation",
+      description: "Run tests before returning to the active branch",
+      outcome: "succeeded",
+    };
     const customMessage = {
       kind: "customMessage",
       entryId: "abandoned-custom",
@@ -198,7 +207,7 @@ describe("memory final integrity guarantees", () => {
       timestamp: timestamp(1),
       fromId: "abandoned-result",
       summary: "prose must not be parsed",
-      details: branchDetails([operation, customMessage]),
+      details: branchDetails([operation, run, customMessage], 2),
     } as FixtureEntry;
     const nested = {
       ...direct,
@@ -215,7 +224,7 @@ describe("memory final integrity guarantees", () => {
     ]);
     const normalized = normalizeSession(file, 20_000);
     const facts = normalized.entries.filter((entry) => entry.type === "fabric_branch_fact");
-    expect(facts).toHaveLength(2);
+    expect(facts).toHaveLength(3);
     expect(facts[0]).toMatchObject({
       entryId: operation.address,
       operationAddress: operation.address,
@@ -229,6 +238,21 @@ describe("memory final integrity guarantees", () => {
       filesTouched: ["src/abandoned.ts"],
     });
     expect(facts[1]).toMatchObject({
+      entryId: run.address,
+      operationAddress: run.address,
+      factAddress: run.address,
+      carrierEntryId: "carrier-original",
+      role: "fabricRun",
+      toolName: "fabric_exec",
+      outcome: "succeeded",
+      text: "Fabric run Verify abandoned implementation — Run tests before returning to the active branch → succeeded",
+      branchFact: expect.objectContaining({
+        kind: "fabricRun",
+        name: "Verify abandoned implementation",
+        description: "Run tests before returning to the active branch",
+      }),
+    });
+    expect(facts[2]).toMatchObject({
       entryId: customMessage.address,
       factAddress: customMessage.address,
       carrierEntryId: "carrier-original",
@@ -244,15 +268,24 @@ describe("memory final integrity guarantees", () => {
     const provider = new MemoryProvider({ agentDir, cwd, config: config(indexDir) });
     const expanded = await provider.invoke(
       "expand",
-      { session: file, operationAddresses: [operation.address] },
+      { session: file, operationAddresses: [operation.address, run.address] },
       invocation(cwd),
     ) as { expanded: Array<Record<string, unknown>> };
-    expect(expanded.expanded).toHaveLength(1);
+    expect(expanded.expanded).toHaveLength(2);
     expect(expanded.expanded[0]).toEqual(expect.objectContaining({
       operationAddress: operation.address,
       carrierEntryId: "carrier-original",
       filesTouched: ["src/abandoned.ts"],
       branchFact: expect.objectContaining({ address: operation.address, tool: "write" }),
+    }));
+    expect(expanded.expanded[1]).toEqual(expect.objectContaining({
+      operationAddress: run.address,
+      carrierEntryId: "carrier-original",
+      outcome: "succeeded",
+      branchFact: expect.objectContaining({
+        address: run.address,
+        name: "Verify abandoned implementation",
+      }),
     }));
   });
 

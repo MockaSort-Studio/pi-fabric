@@ -1,5 +1,10 @@
-import { omissionLine, sampleAddressed, sampleAddressedFrom } from "./bounds.js";
-import { firstLine, type CompactionEvent, type ToolCallEvent } from "./normalize.js";
+import { clipUtf8, omissionLine, sampleAddressed, sampleAddressedFrom } from "./bounds.js";
+import {
+  firstLine,
+  type CompactionEvent,
+  type FabricRunEvent,
+  type ToolCallEvent,
+} from "./normalize.js";
 
 // Section folds: each projection is a pure function of the typed event stream.
 // Together they implement graded decay (principle 4): the oldest turns
@@ -28,6 +33,11 @@ const MAX_EARLIER_USER = 80;
 const MAX_STATUS_LINE = 140;
 const MAX_TRANSCRIPT_LINE = 100;
 const MAX_TRANSCRIPT_CMD = 80;
+const MAX_FABRIC_RUN_NAME = 80;
+const MAX_FABRIC_RUN_DESCRIPTION = 180;
+const MAX_FABRIC_RUN_TRANSCRIPT_NAME = 60;
+const MAX_FABRIC_RUN_EARLIER_NAME = 48;
+const MAX_FABRIC_RUN_STATUS_NAME = 96;
 const MAX_LATER_GOALS = 24;
 export const MAX_FILES_PER_KIND = 24;
 const MAX_OUTSTANDING = 32;
@@ -326,25 +336,39 @@ interface ActivityItem {
   line: string;
 }
 
+const fabricRunPointer = (event: FabricRunEvent): string =>
+  event.source === "branch" ? event.address : event.entryId;
+
 const projectActivity = (events: CompactionEvent[]): ProjectedSection => {
   const items: ActivityItem[] = [];
   for (const event of events) {
-    if (event.kind === "fabricPhase") {
+    if (event.kind === "fabricRun") {
+      const name = clipUtf8(truncate(event.name, MAX_FABRIC_RUN_NAME), 192);
+      const description = event.description
+        ? clipUtf8(truncate(event.description, MAX_FABRIC_RUN_DESCRIPTION), 512)
+        : "";
+      items.push({
+        entryId: fabricRunPointer(event),
+        line: `- ${name}${description ? ` — ${description}` : ""} → ${event.outcome}`,
+      });
+    } else if (event.kind === "fabricPhase") {
       items.push({ entryId: event.address, line: `- Phase: ${truncate(event.phase, MAX_LINE)}` });
+    } else if (event.kind === "fabricOperation") {
+      if (FILE_TOOLS.has(event.tool)
+        && (event.ref === event.tool || event.ref === `pi.${event.tool}`)) continue;
+      const bash = event.tool === "bash"
+        && (event.ref === "bash" || event.ref === "pi.bash");
+      const primary = bash
+        ? event.args.command
+        : event.args.id ?? event.args.name ?? event.args.query ?? event.args.action;
+      const detail = typeof primary === "string" && primary.trim()
+        ? ` (${truncate(firstLine(primary), 72)})`
+        : "";
+      items.push({
+        entryId: event.address,
+        line: `- ${event.ref}${detail} → ${event.outcome}`,
+      });
     }
-  }
-  for (const operation of collectOperations(events)) {
-    if (!operation.nested || isFileOperation(operation)) continue;
-    const primary = isBashOperation(operation)
-      ? operation.args.command
-      : operation.args.id ?? operation.args.name ?? operation.args.query ?? operation.args.action;
-    const detail = typeof primary === "string" && primary.trim()
-      ? ` (${truncate(firstLine(primary), 72)})`
-      : "";
-    items.push({
-      entryId: operation.address,
-      line: `- ${operation.ref}${detail} → ${operation.outcome}`,
-    });
   }
   const sampled = sampleAddressed(items, MAX_ACTIVITY);
   const lines: string[] = [];
@@ -443,6 +467,7 @@ interface EarlierTurnAddress {
   entryId: string;
   contextLine: string;
   tools: string;
+  run: string;
 }
 
 // [Earlier Turns] — sampled one-liners for turns before the latest summarized
@@ -453,6 +478,7 @@ const projectEarlierTurns = (events: CompactionEvent[]): ProjectedSection => {
     let currentContext: Extract<CompactionEvent, { kind: "user" | "customMessage" }> | undefined;
     let counts = new Map<string, number>();
     let order: string[] = [];
+    let lastRun: FabricRunEvent | undefined;
     const completed = (): EarlierTurnAddress | undefined => {
       if (!currentContext) return undefined;
       return {
@@ -461,6 +487,9 @@ const projectEarlierTurns = (events: CompactionEvent[]): ProjectedSection => {
           ? quoted(firstLine(currentContext.text), MAX_EARLIER_USER)
           : customMessageLine(currentContext, MAX_EARLIER_USER),
         tools: order.map((name) => `${name}:${counts.get(name) ?? 0}`).join(" "),
+        run: lastRun
+          ? `fabric:${quoted(clipUtf8(lastRun.name, 128), MAX_FABRIC_RUN_EARLIER_NAME)}→${lastRun.outcome}`
+          : "",
       };
     };
     for (const event of events) {
@@ -470,9 +499,11 @@ const projectEarlierTurns = (events: CompactionEvent[]): ProjectedSection => {
         currentContext = event;
         counts = new Map<string, number>();
         order = [];
+        lastRun = undefined;
         continue;
       }
       if (!currentContext) continue;
+      if (event.kind === "fabricRun") lastRun = event;
       const name = event.kind === "toolCall"
         ? (event.name === "fabric_exec" ? undefined : event.name)
         : event.kind === "bash"
@@ -498,7 +529,8 @@ const projectEarlierTurns = (events: CompactionEvent[]): ProjectedSection => {
       ));
     }
     const turn = sampled.values[index]!;
-    lines.push(`${turn.contextLine}${turn.tools ? ` | ${turn.tools}` : ""} [entry ${turn.entryId}]`);
+    const metadata = [turn.tools, turn.run].filter(Boolean).join(" | ");
+    lines.push(`${turn.contextLine}${metadata ? ` | ${metadata}` : ""} [entry ${turn.entryId}]`);
   }
   return { lines, omitted: sampled.omitted };
 };
@@ -524,6 +556,14 @@ const projectStatus = (events: CompactionEvent[]): string[] => {
   if (lastModify) {
     const path = pathOf(lastModify.args) ?? "";
     lines.push(`Last change: ${lastModify.tool}${path ? ` ${path}` : ""}`);
+  }
+  const lastRun = [...events]
+    .reverse()
+    .find((event): event is FabricRunEvent => event.kind === "fabricRun");
+  if (lastRun) {
+    lines.push(
+      `Last execution: ${clipUtf8(truncate(lastRun.name, MAX_FABRIC_RUN_STATUS_NAME), 256)} → ${lastRun.outcome} [entry ${fabricRunPointer(lastRun)}]`,
+    );
   }
   const lastAssistant = [...events]
     .reverse()
@@ -554,14 +594,28 @@ const summarizeArgs = (name: string, args: Record<string, unknown>): string => {
 // with its stable `(#N)` reference so the agent can point back at a specific
 // event without storing its content (principle 0).
 const projectTranscript = (events: CompactionEvent[]): ProjectedSection => {
-  const window = events.slice(-TRANSCRIPT_WINDOW);
+  const completedFabricCalls = new Set(
+    events
+      .filter((event): event is FabricRunEvent => event.kind === "fabricRun")
+      .map((event) => event.toolCallId),
+  );
+  const transcriptEvents = events.filter((event) => {
+    if (event.kind === "toolCall") {
+      return event.name !== "fabric_exec" || !completedFabricCalls.has(event.toolCallId);
+    }
+    if (event.kind === "toolResult") {
+      return event.toolName !== "fabric_exec" || !completedFabricCalls.has(event.toolCallId);
+    }
+    return true;
+  });
+  const window = transcriptEvents.slice(-TRANSCRIPT_WINDOW);
   const lines: string[] = [];
-  const omitted = events.length - window.length;
+  const omitted = transcriptEvents.length - window.length;
   if (omitted > 0) {
     lines.push(omissionLine(
       omitted,
-      events[0]?.entryId,
-      events[omitted - 1]?.entryId,
+      transcriptEvents[0]?.entryId,
+      transcriptEvents[omitted - 1]?.entryId,
       "transcript events",
     ));
   }
@@ -581,6 +635,10 @@ const projectTranscript = (events: CompactionEvent[]): ProjectedSection => {
     } else if (e.kind === "bash") {
       const status = e.isError ? "error" : "ok";
       lines.push(`${ref} bash(${truncate(firstLine(e.command), MAX_TRANSCRIPT_CMD)}) → ${status}`);
+    } else if (e.kind === "fabricRun") {
+      lines.push(
+        `${ref} fabric_exec ${quoted(clipUtf8(e.name, 160), MAX_FABRIC_RUN_TRANSCRIPT_NAME)} → ${e.outcome} [entry ${fabricRunPointer(e)}]`,
+      );
     } else if (e.kind === "fabricPhase") {
       lines.push(`${ref} phase(${truncate(e.phase, MAX_TRANSCRIPT_CMD)}) [${e.address}]`);
     } else if (e.kind === "fabricOperation") {

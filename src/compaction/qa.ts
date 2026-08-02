@@ -1,4 +1,4 @@
-import { sampleAddressed } from "./bounds.js";
+import { clipUtf8, sampleAddressed } from "./bounds.js";
 import { firstLine, type CompactionEvent, type ToolCallEvent } from "./normalize.js";
 import {
   MAX_EARLIER_TURNS,
@@ -36,6 +36,7 @@ export interface QaReport {
 
 const MAX_EARLIER_USER = 80;
 const MAX_ERROR_SIGNATURE = 140;
+const MAX_FABRIC_RUN_STATUS_NAME = 96;
 const TRANSCRIPT_WINDOW = 40;
 const FILE_TOOLS = new Set(["read", "edit", "write", "grep", "find", "ls"]);
 const MODIFYING_TOOLS = new Set(["edit", "write"]);
@@ -221,6 +222,25 @@ export const generateProbes = (events: CompactionEvent[], cutIndex: number): Pro
       class: "content",
       question: "What path was targeted by the last file-modifying tool call?",
       answer: path,
+    });
+  }
+
+  const lastRun = [...source]
+    .reverse()
+    .find((event): event is Extract<CompactionEvent, { kind: "fabricRun" }> =>
+      event.kind === "fabricRun");
+  if (lastRun) {
+    probes.push({
+      id: `last-fabric-run:${lastRun.index}`,
+      class: "content",
+      question: "What was the latest declared Fabric execution intent and paired outcome?",
+      answer: `${clipUtf8(truncate(lastRun.name, MAX_FABRIC_RUN_STATUS_NAME), 256)} → ${lastRun.outcome}`,
+    });
+    probes.push({
+      id: `last-fabric-run-address:${lastRun.index}`,
+      class: "address",
+      question: "Which stable address expands the latest declared Fabric execution intent?",
+      answer: `[entry ${lastRun.source === "branch" ? lastRun.address : lastRun.entryId}]`,
     });
   }
 
