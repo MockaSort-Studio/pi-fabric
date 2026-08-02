@@ -496,13 +496,15 @@ export class FabricActivityStore {
   }
 
   runs(): FabricActivityRun[] {
-    return [...this.#runs.values()]
-      .sort((left, right) => {
-        if (left.status === "running" && right.status !== "running") return -1;
-        if (right.status === "running" && left.status !== "running") return 1;
-        return right.updatedAt - left.updatedAt;
-      })
-      .map((run) => structuredClone(run));
+    return this.#orderedRuns().map((run) => structuredClone(run));
+  }
+
+  // Ordered, isolated copies with per-call payloads (args/result/preview, item
+  // and event data) stripped. The UI refreshes at up to 10 Hz while a run
+  // streams; copying 1,000 calls with bounded-but-large payloads every tick
+  // stalls input. The dashboard's detail views still use runs().
+  runSummaries(): FabricActivityRun[] {
+    return this.#orderedRuns().map(leanRun);
   }
 
   get(id: string): FabricActivityRun | undefined {
@@ -519,6 +521,14 @@ export class FabricActivityStore {
     const run = this.#runs.get(id);
     if (!run) throw new Error(`Unknown Fabric activity run: ${id}`);
     return run;
+  }
+
+  #orderedRuns(): FabricActivityRun[] {
+    return [...this.#runs.values()].sort((left, right) => {
+      if (left.status === "running" && right.status !== "running") return -1;
+      if (right.status === "running" && left.status !== "running") return 1;
+      return right.updatedAt - left.updatedAt;
+    });
   }
 
   #prune(): void {
@@ -543,3 +553,24 @@ export class FabricActivityStore {
     }
   }
 }
+
+// Payload-free copy: every remaining field is a scalar except metrics, which
+// is shallow-copied so callers can never mutate store state through it.
+const leanRun = (run: FabricActivityRun): FabricActivityRun => ({
+  id: run.id,
+  name: run.name,
+  ...(run.description ? { description: run.description } : {}),
+  status: run.status,
+  phases: run.phases.map((phase) => ({ ...phase })),
+  calls: run.calls.map(({ args: _args, result: _result, preview: _preview, ...call }) => ({
+    ...call,
+    ...(call.metrics ? { metrics: { ...call.metrics } } : {}),
+  })),
+  items: run.items.map(({ data: _data, ...item }) => item),
+  events: run.events.map(({ data: _data, ...event }) => event),
+  ...(run.currentPhaseId ? { currentPhaseId: run.currentPhaseId } : {}),
+  startedAt: run.startedAt,
+  updatedAt: run.updatedAt,
+  ...(run.finishedAt !== undefined ? { finishedAt: run.finishedAt } : {}),
+  ...(run.error ? { error: run.error } : {}),
+});

@@ -291,4 +291,79 @@ describe("FabricUiController dashboard wiring", () => {
       controller.stop();
     }
   });
+
+  it("refreshes streaming activity from payload-free summaries unless the dashboard is open", async () => {
+    vi.useFakeTimers();
+    const state = stubState();
+    state.config.ui.refreshMs = 500;
+    const baseRun = {
+      id: "run-1",
+      status: "running",
+      phases: [],
+      calls: [],
+      items: [],
+      events: [],
+      startedAt: 0,
+      updatedAt: 1,
+    } as Omit<FabricActivityRun, "name">;
+    const activityStubs = state.activity as unknown as Record<string, unknown>;
+    activityStubs.runSummaries = vi.fn(() => [
+      { ...baseRun, name: "summary view" } as FabricActivityRun,
+    ]);
+    let revision = 1;
+    activityStubs.revision = vi.fn(() => revision);
+    const runSummaries = vi.mocked(
+      activityStubs.runSummaries as () => FabricActivityRun[],
+    );
+    let onActivity = (): void => {};
+    vi.mocked(state.activity.subscribe).mockImplementation((listener) => {
+      onActivity = listener;
+      return () => {};
+    });
+    const tui = { requestRender: vi.fn() } as unknown as TUI;
+    const context = {
+      mode: "tui",
+      modelRegistry: { getAvailable: () => [] },
+      ui: {
+        custom: vi.fn(async (factory: (
+          t: TUI,
+          theme: Theme,
+          keybindings: unknown,
+          done: () => void,
+        ) => FabricDashboard) => {
+          factory(tui, theme, {}, () => {});
+        }),
+        notify: vi.fn(),
+        setWidget: vi.fn(),
+      },
+    } as unknown as ExtensionContext;
+    const controller = new FabricUiController(state);
+    try {
+      controller.start(context);
+      expect(runSummaries).toHaveBeenCalledTimes(1);
+      expect(state.activity.runs).not.toHaveBeenCalled();
+      expect(controller.snapshot().runs[0]?.name).toBe("summary view");
+
+      // Streaming updates stay on the cheap path at the 10 Hz cadence.
+      revision = 2;
+      onActivity();
+      await vi.advanceTimersByTimeAsync(110);
+      expect(runSummaries).toHaveBeenCalledTimes(2);
+      expect(state.activity.runs).not.toHaveBeenCalled();
+
+      // Opening the dashboard switches to full detail even at the same
+      // revision; closing returns to summaries and downgrades promptly.
+      await controller.openDashboard(context);
+      expect(state.activity.runs).toHaveBeenCalledTimes(1);
+      expect(runSummaries).toHaveBeenCalledTimes(3);
+
+      // Idle polling does not churn copies at an unchanged revision.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(state.activity.runs).toHaveBeenCalledTimes(1);
+      expect(runSummaries).toHaveBeenCalledTimes(3);
+    } finally {
+      controller.stop();
+      vi.useRealTimers();
+    }
+  });
 });

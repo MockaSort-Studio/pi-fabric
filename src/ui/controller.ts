@@ -62,6 +62,11 @@ export class FabricUiController {
   #lastRefreshAt = 0;
   #dashboardOpen = false;
   #activityRevision: number | undefined;
+  // Tracks whether #activityRuns was last fetched with full payloads. The
+  // dashboard needs args/result/preview to render call detail; the periodic
+  // refresh instead pulls payload-free summaries so streaming runs stop
+  // paying a deep clone of up to 1,000 bounded call payloads per tick.
+  #activityRunsDetailed = true;
   #activityRuns: FabricActivityRun[] = [];
   readonly #transcripts = new AgentTranscriptReader();
 
@@ -111,6 +116,7 @@ export class FabricUiController {
     this.#lastRefreshAt = 0;
     this.#dashboardOpen = false;
     this.#activityRevision = undefined;
+    this.#activityRunsDetailed = true;
     this.#activityRuns = [];
     this.#transcripts.clear();
   }
@@ -125,7 +131,11 @@ export class FabricUiController {
       return;
     }
     if (!this.#context) this.start(context);
-    else this.#refresh();
+    // Set after start(): it calls stop(), which clears this flag. The flag
+    // must be true before this refresh so the first dashboard frame renders
+    // from full activity runs rather than stripped summaries.
+    this.#dashboardOpen = true;
+    this.#refresh();
     const [{ FabricDashboard }, { buildClaudeModelSource, buildModelSource }] =
       await Promise.all([import("./dashboard.js"), import("./model-picker.js")]);
     const modelSource = buildModelSource(context.modelRegistry);
@@ -254,7 +264,6 @@ export class FabricUiController {
         context.ui.notify(error instanceof Error ? error.message : String(error), "error");
       }
     };
-    this.#dashboardOpen = true;
     this.#schedulePoll(true);
     try {
       await context.ui.custom<void>(
@@ -308,6 +317,7 @@ export class FabricUiController {
     } finally {
       this.#dashboardOpen = false;
       this.#dashboardTui = undefined;
+      this.#refresh();
       this.#schedulePoll(true);
     }
   }
@@ -393,9 +403,18 @@ export class FabricUiController {
         typeof this.state.activity.revision === "function"
           ? this.state.activity.revision()
           : undefined;
-      if (revision === undefined || revision !== this.#activityRevision) {
-        this.#activityRuns = this.state.activity.runs();
+      const detailed = this.#dashboardOpen;
+      if (
+        revision === undefined ||
+        revision !== this.#activityRevision ||
+        detailed !== this.#activityRunsDetailed
+      ) {
+        this.#activityRuns =
+          detailed || typeof this.state.activity.runSummaries !== "function"
+            ? this.state.activity.runs()
+            : this.state.activity.runSummaries();
         this.#activityRevision = revision;
+        this.#activityRunsDetailed = detailed;
       }
       this.#snapshot = createDashboardSnapshot(
         this.state,

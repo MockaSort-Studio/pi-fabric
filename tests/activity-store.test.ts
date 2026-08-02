@@ -229,4 +229,67 @@ describe("FabricActivityStore", () => {
     const run = store.get("run-q");
     expect(run?.calls[0]?.label).toBe("extensions.vcc_recall · how do I recall X");
   });
+
+  it("runSummaries strips payloads but keeps linkable metadata in run order", () => {
+    const store = new FabricActivityStore();
+    store.start("run-1", { name: "Loop" });
+    const phase = store.phase("run-1", { name: "Scan", total: 1 });
+    store.beginCall("run-1", {
+      callId: "call-1",
+      ref: "pi.read",
+      args: { path: "src/a.ts", blob: "x".repeat(10_000) },
+    });
+    store.updateCall("run-1", "call-1", { type: "metrics", tokens: 42 });
+    store.finishCall("run-1", "call-1", {
+      success: true,
+      result: { output: "y".repeat(20_000) },
+      preview: { head: "z".repeat(5_000) },
+    });
+    store.upsertItem("run-1", {
+      id: "item-1",
+      label: "Scanned files",
+      status: "running",
+      data: { entries: [1, 2, 3] },
+    });
+    store.event("run-1", { message: "tick", data: { blob: "q".repeat(4_000) } });
+
+    const [summary] = store.runSummaries();
+    expect(summary?.status).toBe("running");
+    expect(summary?.currentPhaseId).toBe(phase.id);
+    const call = summary?.calls[0];
+    expect(call).toBeDefined();
+    expect(call).not.toHaveProperty("args");
+    expect(call).not.toHaveProperty("result");
+    expect(call).not.toHaveProperty("preview");
+    expect(call).toMatchObject({
+      id: "call-1",
+      ref: "pi.read",
+      kind: "tool",
+      status: "completed",
+      metrics: { tokens: 42 },
+    });
+    expect(typeof call?.startedAt).toBe("number");
+    expect(summary?.phases[0]?.name).toBe("Scan");
+    expect(summary?.items[0]?.label).toBe("Scanned files");
+    expect(summary?.items[0]).not.toHaveProperty("data");
+    expect(summary?.events[0]?.message).toBe("tick");
+    expect(summary?.events[0]).not.toHaveProperty("data");
+
+    // Summaries are isolated: mutating them must not leak into the store.
+    if (call?.metrics) call.metrics.tokens = -1;
+    summary?.calls.push({ ...structuredClone(call!), id: "injected" });
+    const again = store.runSummaries()[0];
+    expect(again?.calls).toHaveLength(1);
+    expect(again?.calls[0]?.metrics?.tokens).toBe(42);
+
+    // Ordering parity with runs(): running runs sort first.
+    store.start("run-2", { name: "Settled" });
+    store.finish("run-2", true);
+    expect(store.runSummaries()[0]?.id).toBe("run-1");
+
+    // Full detail remains available through runs().
+    const detailed = store.runs().find((run) => run.id === "run-1");
+    expect(detailed?.calls[0]?.args).toMatchObject({ path: "src/a.ts" });
+    expect(detailed?.items[0]?.data).toMatchObject({ entries: [1, 2, 3] });
+  });
 });
