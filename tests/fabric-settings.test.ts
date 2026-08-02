@@ -168,7 +168,7 @@ describe("FabricSettingsComponent", () => {
     expect(lines).toContain("anthropic/claude-sonnet-4-5");
     expect(lines).toContain("Engine");
     expect(lines).toContain("fabric");
-    expect(lines).toContain("Target occupancy");
+    expect(lines).toContain("Max occupancy");
     expect(lines).toContain("0.65");
     const section = compaction!.submenu!("", () => {}) as any;
     const target = section.settingsList.items.find(

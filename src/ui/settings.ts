@@ -1080,11 +1080,11 @@ export const buildFabricSettingsItems = (
           }),
           setting(
             "compaction.targetContextRatio",
-            "Target occupancy",
+            "Max occupancy",
             String(config.compaction.targetContextRatio),
             {
               description:
-                "Fraction of the advertised model window Fabric targets after compaction.",
+                "Hard post-compaction occupancy ceiling; Fabric normally keeps Pi's bounded recent-token tail instead.",
               values: COMPACTION_TARGET_RATIOS,
             },
           ),

@@ -57,8 +57,14 @@ export interface FabricCompactionBudget {
   keepRecentTokens: number;
 }
 
+type FabricCompactionBindingConstraint =
+  | "continuity"
+  | "occupancy"
+  | "reserve"
+  | "reduction";
+
 export interface FabricCompactionBudgetDetails {
-  strategy: "adaptive";
+  strategy: "adaptive" | "continuity";
   contextWindow: number;
   targetContextRatio: number;
   targetContextTokens: number;
@@ -69,9 +75,15 @@ export interface FabricCompactionBudgetDetails {
   fixedOverheadTokens: number;
   retainedRawTokens: number;
   projectedTokensAfter: number;
+  continuityTargetTokens?: number;
+  occupancyCeilingTokens?: number;
+  safeCeilingTokens?: number;
+  reductionCeilingTokens?: number;
+  rawTailTokenBudget?: number;
+  bindingConstraint?: FabricCompactionBindingConstraint;
 }
 
-interface AdaptiveCutPlan {
+interface ContinuityCutPlan {
   contextWindow: number;
   targetContextRatio: number;
   targetContextTokens: number;
@@ -80,7 +92,12 @@ interface AdaptiveCutPlan {
   rawTokensBefore: number;
   tokenScale: number;
   fixedOverheadTokens: number;
-  recentRawTokenBudget: number;
+  continuityTargetTokens: number;
+  occupancyCeilingTokens: number;
+  safeCeilingTokens: number;
+  reductionCeilingTokens: number;
+  rawTailTokenBudget: number;
+  bindingConstraint: FabricCompactionBindingConstraint;
 }
 
 const SUMMARY_RAW_TOKEN_BUDGET = Math.ceil(MAX_SUMMARY_BYTES / 4);
@@ -317,11 +334,11 @@ const tokenCalibration = (
   return { tokenScale, fixedOverheadTokens };
 };
 
-const adaptiveCutPlan = (
+const continuityCutPlan = (
   branchEntries: SessionEntry[],
   tokensBefore: number,
   budget: FabricCompactionBudget,
-): AdaptiveCutPlan | undefined => {
+): ContinuityCutPlan | undefined => {
   if (!Number.isFinite(budget.contextWindow) || budget.contextWindow <= 0) return undefined;
   const contextWindow = Math.floor(budget.contextWindow);
   const reserveTokens = Math.max(0, Math.floor(budget.reserveTokens));
@@ -333,18 +350,26 @@ const adaptiveCutPlan = (
     tokensBefore,
     rawTokensBefore,
   );
-  const hardCeiling = Math.max(1, contextWindow - reserveTokens);
-  const safeCeiling = Math.max(1, Math.floor(hardCeiling * HARD_CEILING_SAFETY_RATIO));
-  const configuredTarget = Math.floor(contextWindow * targetContextRatio);
-  const keepRecentTarget = Math.ceil(
+  const continuityTargetTokens = Math.max(1, Math.ceil(
     fixedOverheadTokens + (keepRecentTokens + SUMMARY_RAW_TOKEN_BUDGET) * tokenScale,
-  );
-  const reductionCeiling = Math.max(1, Math.floor(tokensBefore * MAX_PRECOMPACTION_RATIO));
-  const targetContextTokens = Math.min(
-    safeCeiling,
-    reductionCeiling,
-    Math.max(configuredTarget, keepRecentTarget),
-  );
+  ));
+  const occupancyCeilingTokens = Math.max(1, Math.floor(contextWindow * targetContextRatio));
+  const hardCeiling = Math.max(1, contextWindow - reserveTokens);
+  const safeCeilingTokens = Math.max(1, Math.floor(hardCeiling * HARD_CEILING_SAFETY_RATIO));
+  const reductionCeilingTokens = Math.max(1, Math.floor(tokensBefore * MAX_PRECOMPACTION_RATIO));
+  const constraints: Array<{
+    binding: FabricCompactionBindingConstraint;
+    tokens: number;
+  }> = [
+    { binding: "continuity", tokens: continuityTargetTokens },
+    { binding: "occupancy", tokens: occupancyCeilingTokens },
+    { binding: "reserve", tokens: safeCeilingTokens },
+    { binding: "reduction", tokens: reductionCeilingTokens },
+  ];
+  const targetContextTokens = Math.min(...constraints.map(({ tokens }) => tokens));
+  const bindingConstraint = constraints.find(
+    ({ tokens }) => tokens === targetContextTokens,
+  )!.binding;
   const rawPostBudget = Math.max(
     0,
     Math.floor((targetContextTokens - fixedOverheadTokens) / tokenScale),
@@ -358,7 +383,12 @@ const adaptiveCutPlan = (
     rawTokensBefore,
     tokenScale,
     fixedOverheadTokens,
-    recentRawTokenBudget: Math.max(0, rawPostBudget - SUMMARY_RAW_TOKEN_BUDGET),
+    continuityTargetTokens,
+    occupancyCeilingTokens,
+    safeCeilingTokens,
+    reductionCeilingTokens,
+    rawTailTokenBudget: Math.max(0, rawPostBudget - SUMMARY_RAW_TOKEN_BUDGET),
+    bindingConstraint,
   };
 };
 
@@ -393,10 +423,10 @@ const boundary = (
   };
 };
 
-const computeAdaptiveCut = (
+const computeContinuityCut = (
   branchEntries: SessionEntry[],
   live: LiveEntry[],
-  plan: AdaptiveCutPlan,
+  plan: ContinuityCutPlan,
 ): CutResult => {
   const suffixTokens = new Array<number>(live.length + 1).fill(0);
   for (let index = live.length - 1; index >= 0; index--) {
@@ -409,14 +439,14 @@ const computeAdaptiveCut = (
   for (let index = 1; index < live.length; index++) {
     const item = live[index]!;
     if (item.branchIndex <= previousCompactionIndex) continue;
-    if (!item.cutPoint || suffixTokens[index]! > plan.recentRawTokenBudget) continue;
+    if (!item.cutPoint || suffixTokens[index]! > plan.rawTailTokenBudget) continue;
     if (!closureSafe(spans, item.branchIndex)) continue;
     cutIndex = index;
     break;
   }
   const retainedRawTokens = suffixTokens[cutIndex] ?? 0;
   const details = {
-    strategy: "adaptive" as const,
+    strategy: "continuity" as const,
     contextWindow: plan.contextWindow,
     targetContextRatio: plan.targetContextRatio,
     targetContextTokens: plan.targetContextTokens,
@@ -426,6 +456,12 @@ const computeAdaptiveCut = (
     tokenScale: plan.tokenScale,
     fixedOverheadTokens: plan.fixedOverheadTokens,
     retainedRawTokens,
+    continuityTargetTokens: plan.continuityTargetTokens,
+    occupancyCeilingTokens: plan.occupancyCeilingTokens,
+    safeCeilingTokens: plan.safeCeilingTokens,
+    reductionCeilingTokens: plan.reductionCeilingTokens,
+    rawTailTokenBudget: plan.rawTailTokenBudget,
+    bindingConstraint: plan.bindingConstraint,
   };
   if (cutIndex >= live.length) {
     return boundary(live.map((item) => item.entry), "", details);
@@ -445,8 +481,8 @@ export const computeCut = (
   if (live.length === 0) return { ok: false, reason: "empty" };
 
   if (options) {
-    const plan = adaptiveCutPlan(branchEntries, options.tokensBefore, options.budget);
-    if (plan) return computeAdaptiveCut(branchEntries, live, plan);
+    const plan = continuityCutPlan(branchEntries, options.tokensBefore, options.budget);
+    if (plan) return computeContinuityCut(branchEntries, live, plan);
   }
 
   const lastBoundary = lastBoundaryIndex(live);
@@ -525,6 +561,40 @@ const isFabricV1Details = (value: Record<string, unknown>): boolean =>
 const hasFiniteNumbers = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   keys.every((key) => typeof value[key] === "number" && Number.isFinite(value[key]));
 
+const isCompactionBudgetDetails = (value: unknown): boolean => {
+  if (!isRecord(value) || (value.strategy !== "adaptive" && value.strategy !== "continuity")) {
+    return false;
+  }
+  if (!hasFiniteNumbers(value, [
+    "contextWindow",
+    "targetContextRatio",
+    "targetContextTokens",
+    "reserveTokens",
+    "keepRecentTokens",
+    "rawTokensBefore",
+    "tokenScale",
+    "fixedOverheadTokens",
+    "retainedRawTokens",
+    "projectedTokensAfter",
+  ])) {
+    return false;
+  }
+  if (value.strategy === "adaptive") return true;
+  return hasFiniteNumbers(value, [
+    "continuityTargetTokens",
+    "occupancyCeilingTokens",
+    "safeCeilingTokens",
+    "reductionCeilingTokens",
+    "rawTailTokenBudget",
+  ])
+    && (
+      value.bindingConstraint === "continuity"
+      || value.bindingConstraint === "occupancy"
+      || value.bindingConstraint === "reserve"
+      || value.bindingConstraint === "reduction"
+    );
+};
+
 const isFabricV2Details = (value: Record<string, unknown>): boolean => {
   if (!isStringArray(value.sections) || !isRecord(value.coverage) || !isRecord(value.counts)) return false;
   if (!isRecord(value.omittedCounts) || !isRecord(value.instructionPolicy) || !isRecord(value.stableAddresses)) {
@@ -567,22 +637,7 @@ const isFabricV2Details = (value: Record<string, unknown>): boolean => {
     && typeof value.stableAddresses.firstKeptEntryId === "string"
     && isEntryRange(value.stableAddresses.cumulativeSourceRange)
     && value.stableAddresses.recall === "session-entry-id-range"
-    && (value.budget === undefined || (
-      isRecord(value.budget)
-      && value.budget.strategy === "adaptive"
-      && hasFiniteNumbers(value.budget, [
-        "contextWindow",
-        "targetContextRatio",
-        "targetContextTokens",
-        "reserveTokens",
-        "keepRecentTokens",
-        "rawTokensBefore",
-        "tokenScale",
-        "fixedOverheadTokens",
-        "retainedRawTokens",
-        "projectedTokensAfter",
-      ])
-    ))
+    && (value.budget === undefined || isCompactionBudgetDetails(value.budget))
     && typeof value.timestamp === "string";
 };
 
@@ -680,7 +735,7 @@ export const compileFabricSummary = (
   if (budgetDetails && budgetDetails.projectedTokensAfter > budgetDetails.targetContextTokens) {
     return {
       cancel: true,
-      reason: "fabric: no deterministic summary fits the adaptive context target",
+      reason: "fabric: no deterministic summary fits the continuity context target",
     };
   }
   const versions = priorFabricVersions(branchEntries);

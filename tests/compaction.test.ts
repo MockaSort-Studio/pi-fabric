@@ -234,15 +234,47 @@ describe("thinking erasure", () => {
     delete legacy.omittedCounts.thinking;
     expect(fabricCompactionVersion(legacy)).toBe(2);
   });
+
+  it("keeps v2 detail validation compatible with legacy adaptive budgets", () => {
+    resetIds();
+    resetClock();
+    const result = compileFabricSummary(
+      buildSession(user("goal"), assistant(textPart("x".repeat(50_000)))),
+      12_510,
+      [],
+      undefined,
+      {
+        contextWindow: 100_000,
+        targetContextRatio: 0.65,
+        reserveTokens: 10_000,
+        keepRecentTokens: 0,
+      },
+    );
+    if (!("compaction" in result) || !result.compaction.details?.budget) {
+      throw new Error("expected budget details");
+    }
+    const legacy = structuredClone(result.compaction.details) as unknown as {
+      budget: Record<string, unknown>;
+    };
+    legacy.budget.strategy = "adaptive";
+    delete legacy.budget.continuityTargetTokens;
+    delete legacy.budget.occupancyCeilingTokens;
+    delete legacy.budget.safeCeilingTokens;
+    delete legacy.budget.reductionCeilingTokens;
+    delete legacy.budget.rawTailTokenBudget;
+    delete legacy.budget.bindingConstraint;
+
+    expect(fabricCompactionVersion(legacy)).toBe(2);
+  });
 });
 
 describe("compaction config", () => {
-  it("defaults to the fabric engine and a 65% post-compaction target", () => {
+  it("defaults to the fabric engine and a 65% post-compaction ceiling", () => {
     expect(DEFAULT_FABRIC_CONFIG.compaction.engine).toBe("fabric");
     expect(DEFAULT_FABRIC_CONFIG.compaction.targetContextRatio).toBe(0.65);
   });
 
-  it("normalizes the engine escape hatch and bounded occupancy target", () => {
+  it("normalizes the engine escape hatch and bounded occupancy ceiling", () => {
     const configured = normalizeFabricConfig({
       compaction: { engine: "pi", targetContextRatio: 0.7 },
     }).compaction;
@@ -1031,7 +1063,7 @@ describe("compaction cut never orphans a tool_result from its tool_call", () => 
   });
 });
 
-describe("adaptive compaction budget", () => {
+describe("continuity-tail compaction budget", () => {
   const longSingleTurn = (): { entries: SessionEntry[]; tokensBefore: number } => {
     const entries: SessionEntry[] = [];
     appendLinked(entries, user("Preserve the original print calibration goal"));
@@ -1057,7 +1089,7 @@ describe("adaptive compaction budget", () => {
     return { entries, tokensBefore: Math.round(6_000 + rawTokens * 1.4) };
   };
 
-  it("splits a huge current turn near the configured target without crossing tool pairs", () => {
+  it("retains a bounded continuity tail without crossing tool pairs", () => {
     resetIds();
     resetClock();
     const { entries, tokensBefore } = longSingleTurn();
@@ -1073,21 +1105,25 @@ describe("adaptive compaction budget", () => {
         keepRecentTokens: 20_000,
       },
     );
-    if (!("compaction" in result)) throw new Error("expected adaptive compaction");
+    if (!("compaction" in result)) throw new Error("expected continuity compaction");
 
     expect(result.compaction.firstKeptEntryId).not.toBe("");
     expect(result.compaction.firstKeptEntryId).not.toBe(entries[0]!.id);
-    const projectedTokensAfter = result.compaction.details?.budget?.projectedTokensAfter;
-    expect(projectedTokensAfter).toBeGreaterThan(50_000);
-    expect(projectedTokensAfter).toBeLessThanOrEqual(65_000);
-    expect(result.compaction.details?.budget).toMatchObject({
-      strategy: "adaptive",
+    const details = result.compaction.details?.budget;
+    expect(details?.projectedTokensAfter).toBeLessThanOrEqual(details!.targetContextTokens);
+    expect(details).toMatchObject({
+      strategy: "continuity",
       contextWindow: 100_000,
       targetContextRatio: 0.65,
-      targetContextTokens: 65_000,
+      targetContextTokens: 45_470,
+      continuityTargetTokens: 45_470,
+      occupancyCeilingTokens: 65_000,
       reserveTokens: 10_000,
       keepRecentTokens: 20_000,
+      rawTailTokenBudget: 20_000,
+      bindingConstraint: "continuity",
     });
+    expect(details!.retainedRawTokens).toBeLessThanOrEqual(details!.rawTailTokenBudget!);
 
     const boundaryIndex = entries.findIndex(
       (entry) => entry.id === result.compaction.firstKeptEntryId,
@@ -1118,7 +1154,7 @@ describe("adaptive compaction budget", () => {
     expect(result.compaction.summary).toContain("Preserve the original print calibration goal");
   });
 
-  it("never expands a compaction that starts below the configured window target", () => {
+  it("uses the bounded continuity tail when manually compacted below the occupancy ceiling", () => {
     resetIds();
     resetClock();
     const { entries, tokensBefore } = longSingleTurn();
@@ -1134,10 +1170,85 @@ describe("adaptive compaction budget", () => {
         keepRecentTokens: 20_000,
       },
     );
-    if (!("compaction" in result)) throw new Error("expected adaptive compaction");
+    if (!("compaction" in result)) throw new Error("expected continuity compaction");
     const budget = result.compaction.details?.budget;
-    expect(budget?.targetContextTokens).toBe(Math.floor(tokensBefore * 0.95));
-    expect(budget?.projectedTokensAfter).toBeLessThanOrEqual(Math.floor(tokensBefore * 0.95));
+    expect(budget?.bindingConstraint).toBe("continuity");
+    expect(budget?.targetContextTokens).toBe(budget?.continuityTargetTokens);
+    expect(budget?.targetContextTokens).toBeLessThan(Math.floor(tokensBefore * 0.95));
+    expect(budget?.projectedTokensAfter).toBeLessThanOrEqual(budget!.targetContextTokens);
+  });
+
+  it("reclaims a fresh window when manually compacted at thirty percent occupancy", () => {
+    resetIds();
+    resetClock();
+    const { entries } = longSingleTurn();
+    for (const entry of entries) {
+      if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+      entry.message.usage.input = 0;
+      entry.message.usage.totalTokens = 0;
+    }
+    const tokensBefore = buildSessionContext(entries).messages.reduce(
+      (total, message) => total + estimateTokens(message),
+      0,
+    );
+    const contextWindow = Math.ceil(tokensBefore / 0.3);
+    const result = compileFabricSummary(entries, tokensBefore, [], undefined, {
+      contextWindow,
+      targetContextRatio: 0.65,
+      reserveTokens: 16_384,
+      keepRecentTokens: 20_000,
+    });
+    if (!("compaction" in result)) throw new Error("expected continuity compaction");
+    const details = result.compaction.details!.budget!;
+
+    expect(tokensBefore / contextWindow).toBeCloseTo(0.3, 4);
+    expect(details.bindingConstraint).toBe("continuity");
+    expect(details.targetContextTokens).toBe(details.continuityTargetTokens);
+    expect(details.rawTailTokenBudget).toBe(20_000);
+    expect(details.retainedRawTokens).toBeLessThanOrEqual(20_000);
+    expect(details.projectedTokensAfter).toBeLessThan(tokensBefore * 0.3);
+  });
+
+  it("selects the largest legal raw suffix within the continuity-tail budget", () => {
+    resetIds();
+    resetClock();
+    const entries: SessionEntry[] = [];
+    appendLinked(
+      entries,
+      user("Preserve this optimizer goal"),
+      ...Array.from({ length: 20 }, (_, index) => assistant(textPart(
+        `stage ${index} ${"x".repeat(4_000)}`,
+      ))),
+    );
+    const tokensBefore = buildSessionContext(entries).messages.reduce(
+      (total, message) => total + estimateTokens(message),
+      0,
+    );
+    const cut = computeCut(entries, {
+      tokensBefore,
+      budget: {
+        contextWindow: 100_000,
+        targetContextRatio: 0.85,
+        reserveTokens: 10_000,
+        keepRecentTokens: 2_500,
+      },
+    });
+    if (!cut.ok || !cut.budget) throw new Error("expected continuity cut");
+    const suffixTokens = entries.map((_, start) => entries.slice(start).reduce(
+      (total, entry) => total + sessionEntryToContextMessages(entry).reduce(
+        (entryTotal, message) => entryTotal + estimateTokens(message),
+        0,
+      ),
+      0,
+    ));
+    const legalSuffixes = suffixTokens.slice(1).filter(
+      (tokens) => tokens <= cut.budget!.rawTailTokenBudget!,
+    );
+
+    expect(cut.budget.strategy).toBe("continuity");
+    expect(cut.budget.bindingConstraint, JSON.stringify(cut.budget)).toBe("continuity");
+    expect(cut.budget.rawTailTokenBudget).toBe(2_500);
+    expect(cut.budget.retainedRawTokens).toBe(Math.max(0, ...legalSuffixes));
   });
 
   it("clamps an overflow recovery cut to the observed failing request size", () => {
@@ -1197,7 +1308,7 @@ describe("adaptive compaction budget", () => {
     );
     expect(result).toMatchObject({
       cancel: true,
-      reason: "fabric: no deterministic summary fits the adaptive context target",
+      reason: "fabric: no deterministic summary fits the continuity context target",
     });
   });
 
@@ -1226,7 +1337,7 @@ describe("adaptive compaction budget", () => {
         keepRecentTokens: 20_000,
       },
     );
-    if (!("compaction" in result)) throw new Error("expected adaptive compaction");
+    if (!("compaction" in result)) throw new Error("expected continuity compaction");
     expect(result.compaction.details?.budget?.fixedOverheadTokens).toBe(40_000);
     expect(result.compaction.details?.budget?.projectedTokensAfter).toBeLessThanOrEqual(65_000);
   });
@@ -1257,7 +1368,7 @@ describe("adaptive compaction budget", () => {
         keepRecentTokens: 2_000,
       },
     });
-    if (!cut.ok) throw new Error("expected adaptive cut");
+    if (!cut.ok) throw new Error("expected continuity cut");
     expect(cut.summarized.some((entry) => entry.id === previous.id)).toBe(false);
     expect(cut.firstKeptEntryId).not.toBe(previous.id);
     const keptIndex = branch.findIndex((entry) => entry.id === cut.firstKeptEntryId);
@@ -1274,11 +1385,11 @@ describe("adaptive compaction budget", () => {
     expect(JSON.stringify(rebuilt)).not.toContain("old rendered summary");
   });
 
-  it("retains one cumulative summary and safe utilization through 20 adaptive cycles", () => {
+  it("retains one cumulative summary and safe utilization through 20 continuity cycles", () => {
     resetIds();
     resetClock();
     const branch: SessionEntry[] = [];
-    appendLinked(branch, user("Long-running adaptive endurance goal"));
+    appendLinked(branch, user("Long-running continuity endurance goal"));
 
     for (let cycle = 0; cycle < 20; cycle++) {
       const previousMarkerIndex = branch.map((entry) => entry.type).lastIndexOf("compaction");
@@ -1344,7 +1455,7 @@ describe("adaptive compaction budget", () => {
       } as CompactionEntry);
       const rebuilt = buildSessionContext(branch).messages;
       expect(rebuilt.filter((message) => message.role === "compactionSummary")).toHaveLength(1);
-      expect(result.compaction.summary).toContain("Long-running adaptive endurance goal");
+      expect(result.compaction.summary).toContain("Long-running continuity endurance goal");
     }
   });
 
@@ -1364,7 +1475,7 @@ describe("adaptive compaction budget", () => {
         keepRecentTokens: 80_000,
       },
     );
-    if (!("compaction" in result)) throw new Error("expected adaptive compaction");
+    if (!("compaction" in result)) throw new Error("expected continuity compaction");
     expect(result.compaction.details?.budget?.targetContextTokens).toBe(63_000);
     expect(result.compaction.details?.budget?.projectedTokensAfter).toBeLessThanOrEqual(63_000);
   });

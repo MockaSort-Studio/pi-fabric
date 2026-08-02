@@ -25,7 +25,7 @@ export interface RenderOptions {
 }
 
 const POINTER_LINE =
-  "For full pre-summary history, search the session log across this entry range (memory.recall).";
+  "For exact pre-summary history, use memory.recall on this range, then memory.expand by stable entry or operation address.";
 
 const sampledLines = (lines: readonly string[], keep: number): string[] => {
   if (lines.length <= keep) return [...lines];

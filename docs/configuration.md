@@ -316,4 +316,4 @@ With project scope, each actor has one lifecycle owner and shared registry updat
 
 ## Compaction
 
-The deterministic, LLM-free compaction engine is default-on. Set `compaction.engine` to `"pi"` to restore pi-core compaction. When pi-vcc is also installed, Fabric takes precedence for automatic compaction, while an explicit `/pi-vcc` command always uses pi-vcc's engine. See [compaction](compaction.md) for invariants, sections, and limits.
+The deterministic, LLM-free compaction engine is default-on. It keeps Pi's bounded `keepRecentTokens` continuity tail; `compaction.targetContextRatio` is a hard occupancy ceiling rather than a fill target. Set `compaction.engine` to `"pi"` to restore pi-core compaction. When pi-vcc is also installed, Fabric takes precedence for automatic compaction, while an explicit `/pi-vcc` command always uses pi-vcc's engine. See [compaction](compaction.md) for invariants, loss guarantees, sections, and limits.
