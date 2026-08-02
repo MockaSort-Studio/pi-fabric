@@ -18,6 +18,12 @@ import type {
   AgentSessionSeed,
   AgentToolResultMessage,
 } from "../agents/types.js";
+import {
+  buildThinkingDigest,
+  THINKING_DIGEST_CUSTOM_TYPE,
+  thinkingTransferPolicy,
+  type ThinkingTransferInput,
+} from "../agents/thinking-transfer.js";
 import type { PrewalkController } from "./controller.js";
 
 const PREWALK_CONTINUE_PROMPT = [
@@ -198,7 +204,58 @@ const runInPlacePrewalk = async (
   const modelKey = String(pending.args.model ?? "");
   context.ui.setStatus("fabric-prewalk", `switching Main → ${modelKey}`);
   const model = modelForKey(modelKey, context);
+  // Snapshot the pre-switch reasoning channel and branch. In-place handoff
+  // cannot rewrite Pi's ground-truth log, so foreign thinking stays
+  // unreplayable for the new model; bridge continuity with the bounded digest.
+  const sourceModel = context.model
+    ? {
+        provider: context.model.provider,
+        modelId: context.model.id,
+        api: context.modelRegistry.find(context.model.provider, context.model.id)?.api,
+      }
+    : undefined;
+  const transfer: ThinkingTransferInput = {
+    ...(sourceModel ? { source: sourceModel } : {}),
+    target: {
+      provider: model.provider,
+      modelId: model.id,
+      api: model.api,
+      reasoning: model.reasoning,
+      ...((model.compat as { requiresThinkingAsText?: boolean } | undefined)
+        ?.requiresThinkingAsText !== undefined
+        ? {
+            requiresThinkingAsText: (model.compat as { requiresThinkingAsText?: boolean })
+              .requiresThinkingAsText,
+          }
+        : {}),
+    },
+  };
+  const branch = context.sessionManager.getBranch();
   const switched = await extension.setModel(model);
+  if (!switched) {
+    throw new Error(`No authentication configured for prewalk model: ${modelKey}`);
+  }
+  const transferPolicy = thinkingTransferPolicy(transfer);
+  if (transferPolicy !== "preserved") {
+    const digest = buildThinkingDigest(branch, transfer);
+    if (digest) {
+      extension.sendMessage(
+        {
+          customType: THINKING_DIGEST_CUSTOM_TYPE,
+          content: digest.content,
+          display: false,
+          details: {
+            mode: "in-place",
+            policy: transferPolicy,
+            citedBlocks: digest.citedBlocks,
+            target: modelKey,
+            trigger: pending.triggerRef,
+          },
+        },
+        { deliverAs: "followUp" },
+      );
+    }
+  }
   if (!switched) {
     throw new Error(`No authentication configured for prewalk model: ${modelKey}`);
   }

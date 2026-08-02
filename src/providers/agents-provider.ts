@@ -47,6 +47,7 @@ import type {
   AgentRunResult,
   AgentSessionSeed,
 } from "../agents/types.js";
+import type { ThinkingTransferInput } from "../agents/thinking-transfer.js";
 import { isFabricThinking } from "../thinking.js";
 import {
   AgentTranscriptReader,
@@ -129,6 +130,48 @@ const idSchema = {
 const lifecycleEventSchema = {
   type: "string",
   enum: [...FABRIC_LIFECYCLE_EVENTS],
+};
+
+// Resolve source and executor reasoning channels for the trajectory handoff
+// boundary. The executor model must be registered to transfer at all; an
+// unresolvable source model simply yields no family comparison, so the
+// transfer falls back to the target-driven policy.
+const resolveThinkingTransfer = (
+  extensionContext: FabricInvocationContext["extensionContext"],
+  targetKey: string,
+  sourceModel?: { provider: string; modelId: string },
+): ThinkingTransferInput | undefined => {
+  const separator = targetKey.indexOf("/");
+  if (separator <= 0 || separator === targetKey.length - 1) return undefined;
+  // Invocation contexts don't always thread the extension host (tests, nested
+  // runners); without a registry no family comparison is possible.
+  const registry = extensionContext?.modelRegistry;
+  if (!registry) return undefined;
+  const target = registry.find(targetKey.slice(0, separator), targetKey.slice(separator + 1));
+  if (!target) return undefined;
+  const source = sourceModel
+    ? {
+        provider: sourceModel.provider,
+        modelId: sourceModel.modelId,
+        api: registry.find(sourceModel.provider, sourceModel.modelId)?.api,
+      }
+    : undefined;
+  return {
+    ...(source ? { source } : {}),
+    target: {
+      provider: target.provider,
+      modelId: target.id,
+      api: target.api,
+      reasoning: target.reasoning,
+      ...((target.compat as { requiresThinkingAsText?: boolean } | undefined)
+        ?.requiresThinkingAsText !== undefined
+        ? {
+            requiresThinkingAsText: (target.compat as { requiresThinkingAsText?: boolean })
+              .requiresThinkingAsText,
+          }
+        : {}),
+    },
+  };
 };
 
 const AGENT_PROGRESS_INTERVAL_MS = 1_000;
@@ -1117,6 +1160,11 @@ export class AgentsProvider implements FabricProvider {
     );
     request.runner = "pi";
     request.sessionSeed = sessionSeed;
+    request.thinkingTransfer = resolveThinkingTransfer(
+      context.extensionContext,
+      model,
+      sessionSeed.sourceModel,
+    );
     const handle = await this.manager.spawn(request, context.signal);
     context.activity?.({
       type: "entity",

@@ -11,6 +11,14 @@ import type {
   AgentSessionSeed,
   AgentToolResultMessage,
 } from "./types.js";
+import {
+  buildThinkingDigest,
+  THINKING_DIGEST_CUSTOM_TYPE,
+  thinkingTransferPolicy,
+  translateThinkingForExecutor,
+  type ThinkingTransferInput,
+  type ThinkingTransferReport,
+} from "./thinking-transfer.js";
 
 interface HandoffSessionSource {
   getBranch(): SessionEntry[];
@@ -159,6 +167,27 @@ const forkBranch = (
   return fork;
 };
 
+// File-backed read of the exact branch prefix, cloned so transfer translation
+// never mutates the source session's live entries. Used instead of
+// forkBranch when the executor's reasoning channel differs: createBranchedSession
+// copies raw lines and cannot rewrite foreign thinking signatures.
+const persistedBranch = (
+  seed: AgentSessionSeed,
+  cwd: string,
+  directory: string,
+): SessionEntry[] => {
+  if (!seed.sourceSessionFile) {
+    throw new Error("Persisted trajectory handoff is missing its source session file");
+  }
+  const source = SessionManager.open(seed.sourceSessionFile, directory, cwd);
+  if (!source.getEntry(seed.sourceBranchLeafId)) {
+    throw new Error(
+      `Trajectory handoff branch point ${seed.sourceBranchLeafId} is missing from the persisted Pi session`,
+    );
+  }
+  return structuredClone(source.getBranch(seed.sourceBranchLeafId));
+};
+
 const synchronizeSourceSettings = (
   session: SessionManager,
   seed: AgentSessionSeed,
@@ -180,14 +209,47 @@ export const writeHandoffSession = (
   seed: AgentSessionSeed,
   cwd: string,
   directory: string,
+  transfer?: ThinkingTransferInput,
 ): string => {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const session = forkBranch(seed, cwd, directory);
+  const policy = transfer ? thinkingTransferPolicy(transfer) : "preserved";
+  let session: SessionManager;
+  let report: ThinkingTransferReport | undefined;
+  let digest: { content: string; citedBlocks: number } | undefined;
+  if (!transfer || policy === "preserved") {
+    session = forkBranch(seed, cwd, directory);
+  } else {
+    const rawBranch = seed.sourceSessionFile
+      ? persistedBranch(seed, cwd, directory)
+      : structuredClone(seed.sourceBranch ?? (() => {
+          throw new Error("Trajectory handoff transfer is missing its source branch");
+        })());
+    if (policy === "stripped") digest = buildThinkingDigest(rawBranch, transfer);
+    const translated = translateThinkingForExecutor(rawBranch, policy);
+    report = translated.report;
+    session = materializeBranch({ ...seed, sourceBranch: translated.entries }, cwd, directory);
+  }
   synchronizeSourceSettings(session, seed);
   session.appendMessage(seed.outerToolResult);
+  if (digest) {
+    session.appendCustomMessageEntry(THINKING_DIGEST_CUSTOM_TYPE, digest.content, false, {
+      policy,
+      citedBlocks: digest.citedBlocks,
+    });
+  }
   session.appendCustomEntry("pi-fabric-handoff", {
     sourceSessionId: seed.sourceSessionId,
     boundary: "fabric_exec_end",
+    ...(transfer && report
+      ? {
+          thinkingTransfer: {
+            policy: report.policy,
+            translated: report.translated,
+            dropped: report.dropped,
+            target: `${transfer.target.provider}/${transfer.target.modelId}`,
+          },
+        }
+      : {}),
   });
   const sessionFile = session.getSessionFile();
   if (!sessionFile) throw new Error("Trajectory handoff did not produce a Pi session file");

@@ -197,4 +197,139 @@ describe("trajectory handoff sessions", () => {
       )
     ).toThrow(/only top-level tool call/);
   });
+
+  it("re-signs foreign thinking for an openai-completions reasoning executor", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-handoff-"));
+    roots.push(root);
+    const source = SessionManager.inMemory(root);
+    source.appendMessage({ role: "user", content: "Implement the guard", timestamp: 1 });
+    const activeEntryId = source.appendMessage(
+      assistant([
+        {
+          type: "thinking",
+          thinking: "**Plan the token guard**\n\nsteps",
+          thinkingSignature: '{"id":"rs_blob","type":"reasoning","encrypted_content":"gAAA"}',
+        },
+        { type: "text", text: "Implementing now." },
+        {
+          type: "toolCall",
+          id: "outer-transfer",
+          name: "fabric_exec",
+          arguments: { code: "await pi.edit(...);" },
+        },
+      ]),
+    );
+
+    const seed = snapshotHandoffSession(
+      source,
+      { provider: "openai-codex", id: "gpt-5.6-sol" },
+      outerResult("outer-transfer"),
+      "outer-transfer",
+    );
+    const sessionFile = writeHandoffSession(seed, root, path.join(root, "child"), {
+      source: { provider: "openai-codex", modelId: "gpt-5.6-sol", api: "openai-responses" },
+      target: {
+        provider: "neuralwatt",
+        modelId: "kimi-k3",
+        api: "openai-completions",
+        reasoning: true,
+      },
+    });
+    const child = SessionManager.open(sessionFile);
+
+    const assistantMessage = child
+      .buildSessionContext()
+      .messages.find((message) => message.role === "assistant");
+    const content = (assistantMessage as unknown as { content: Array<Record<string, unknown>> }).content;
+    expect(content).toContainEqual(
+      expect.objectContaining({ type: "thinking", thinkingSignature: "reasoning_content" }),
+    );
+    expect(child.getEntries().some((entry) => entry.type === "custom_message")).toBe(false);
+    expect(child.getEntries().at(-1)).toMatchObject({
+      type: "custom",
+      customType: "pi-fabric-handoff",
+      data: {
+        thinkingTransfer: {
+          policy: "re-signed",
+          translated: 1,
+          dropped: 0,
+          target: "neuralwatt/kimi-k3",
+        },
+      },
+    });
+    expect(source.getLeafId()).toBe(activeEntryId);
+  });
+
+  it("strips foreign thinking and appends a digest for an incompatible executor", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-handoff-"));
+    roots.push(root);
+    const source = SessionManager.create(root, path.join(root, "source"));
+    source.appendMessage({ role: "user", content: "Implement the guard", timestamp: 1 });
+    const activeEntryId = source.appendMessage(
+      assistant([
+        {
+          type: "thinking",
+          thinking: "**Plan the token guard**\n\nsteps",
+          thinkingSignature: '{"id":"rs_blob","type":"reasoning","encrypted_content":"gAAA"}',
+        },
+        { type: "text", text: "Implementing now." },
+        {
+          type: "toolCall",
+          id: "outer-strip",
+          name: "fabric_exec",
+          arguments: { code: "await pi.edit(...);" },
+        },
+      ]),
+    );
+
+    const seed = snapshotHandoffSession(
+      source,
+      { provider: "openai-codex", id: "gpt-5.6-sol" },
+      outerResult("outer-strip"),
+      "outer-strip",
+    );
+    const sessionFile = writeHandoffSession(seed, root, path.join(root, "child"), {
+      source: { provider: "openai-codex", modelId: "gpt-5.6-sol", api: "openai-responses" },
+      target: {
+        provider: "anthropic",
+        modelId: "executor",
+        api: "anthropic-messages",
+        reasoning: true,
+      },
+    });
+    const child = SessionManager.open(sessionFile);
+
+    const messages = child.buildSessionContext().messages;
+    for (const message of messages) {
+      if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+      expect(
+        message.content.some((part) => (part as { type?: string }).type === "thinking"),
+      ).toBe(false);
+    }
+    const digest = child
+      .getEntries()
+      .find((entry) => entry.type === "custom_message");
+    expect(digest).toMatchObject({
+      customType: "pi-fabric-handoff-thinking",
+      display: false,
+      details: { policy: "stripped", citedBlocks: 1 },
+    });
+    expect(JSON.stringify(digest)).toContain(`[entry ${activeEntryId}]`);
+    expect(JSON.stringify(digest)).toContain("Plan the token guard");
+    expect(child.getEntries().at(-1)).toMatchObject({
+      type: "custom",
+      customType: "pi-fabric-handoff",
+      data: {
+        sourceSessionId: source.getSessionId(),
+        boundary: "fabric_exec_end",
+        thinkingTransfer: {
+          policy: "stripped",
+          translated: 0,
+          dropped: 1,
+          target: "anthropic/executor",
+        },
+      },
+    });
+    expect(child.getHeader()?.parentSession).toBe(source.getSessionFile());
+  });
 });

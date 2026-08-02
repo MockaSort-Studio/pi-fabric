@@ -198,6 +198,114 @@ describe("outer-boundary Prewalk", () => {
     );
   });
 
+  it("sends a bounded thinking digest ahead of the in-place continuation for foreign channels", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "neuralwatt/kimi-k3",
+      sessionId: "session-1",
+      task: "Implement the guard",
+    });
+    const run = execution();
+    const pending = claimFabricHandoff(controller, run, "session-1", "json");
+    expect(pending).toMatchObject({ kind: "prewalk-in-place" });
+
+    const kimiModel = {
+      provider: "neuralwatt",
+      id: "kimi-k3",
+      api: "openai-completions",
+      reasoning: true,
+      compat: { requiresReasoningContentOnAssistantMessages: true },
+    };
+    const codexModel = {
+      provider: "openai-codex",
+      id: "gpt-5.6-sol",
+      api: "openai-responses",
+      reasoning: true,
+    };
+    const source = SessionManager.inMemory();
+    source.appendMessage({ role: "user", content: "Implement everything", timestamp: 1 });
+    const thinkingEntryId = source.appendMessage({
+      role: "assistant",
+      content: [
+        {
+          type: "thinking",
+          thinking: "**Plan the guard**\n\nsteps",
+          thinkingSignature: '{"id":"rs_x","type":"reasoning","encrypted_content":"gAAA"}',
+        },
+        {
+          type: "toolCall",
+          id: "outer",
+          name: "fabric_exec",
+          arguments: { code: "await pi.edit(...); return 'complete outer result';" },
+        },
+      ],
+      api: "openai-responses",
+      provider: "openai-codex",
+      model: "gpt-5.6-sol",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "toolUse",
+      timestamp: 2,
+    });
+    const ctx = {
+      cwd: process.cwd(),
+      signal: undefined,
+      model: { provider: "openai-codex", id: "gpt-5.6-sol" },
+      modelRegistry: {
+        find: (provider: string, id: string) =>
+          provider === "neuralwatt" && id === "kimi-k3"
+            ? kimiModel
+            : provider === "openai-codex" && id === "gpt-5.6-sol"
+              ? codexModel
+              : undefined,
+      },
+      sessionManager: source,
+      ui: { setStatus: vi.fn(), notify: vi.fn() },
+    } as unknown as ExtensionContext;
+    const ext = extension();
+
+    const result = await runFabricHandoffAtBoundary(
+      controller,
+      unusedRunner(),
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx,
+      vi.fn(),
+    );
+
+    expect(ext.setModel).toHaveBeenCalledWith(kimiModel);
+    expect(ext.sendMessage).toHaveBeenCalledTimes(2);
+    const digestCall = ext.sendMessage.mock.calls[0];
+    expect(digestCall?.[0]).toMatchObject({
+      customType: "pi-fabric-handoff-thinking",
+      display: false,
+      details: expect.objectContaining({
+        mode: "in-place",
+        policy: "re-signed",
+        citedBlocks: 1,
+        target: "neuralwatt/kimi-k3",
+      }),
+    });
+    expect(String(digestCall?.[0].content)).toContain(`[entry ${thinkingEntryId}]`);
+    expect(String(digestCall?.[0].content)).toContain("Plan the guard");
+    expect(digestCall?.[1]).toEqual({ deliverAs: "followUp" });
+    expect(ext.sendMessage.mock.calls[1]?.[0]).toMatchObject({
+      customType: "pi-fabric-prewalk-continue",
+    });
+    expect(result).toMatchObject({ mode: "in-place", status: "continued" });
+    // The digest is context-only: Pi's ground-truth log above is untouched.
+    expect(
+      JSON.stringify(source.getBranch()).includes("reasoning_content"),
+    ).toBe(false);
+  });
+
   it("keeps trajectory handoff opt-in and exposes child activity", async () => {
     const controller = new PrewalkController();
     controller.arm({
