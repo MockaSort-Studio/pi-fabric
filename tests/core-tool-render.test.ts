@@ -200,6 +200,33 @@ describe("Fabric core tool parity rendering", () => {
     expect(plainRows.filter((line) => line.startsWith("     ")).length).toBe(4);
   });
 
+  it.each([
+    "[Showing last 50.0KB of line 1 (line is 60.0KB). Full output: /tmp/pi-bash.log]",
+    "[Showing lines 51-100 of 100. Full output: /tmp/pi-bash.log]",
+    "[Showing lines 5-6 of 6 (50.0KB limit). Full output: /tmp/pi-bash.log]",
+  ])("renders bash truncation notices in write diffs as muted metadata", (notice) => {
+    const noticeTheme = {
+      ...theme,
+      fg: (color: string, text: string) =>
+        color === "muted" ? `<muted>${text}</muted>` : text,
+    } as unknown as Theme;
+    const rendered = renderCoreToolBody(
+      audit("write", {
+        args: { path: "result.json", content: `{"ok":true}\n\n${notice}` },
+        preview: {
+          details: { codePreviewBeforeWrite: { kind: "content", content: "" } },
+          writeBeforeCaptured: true,
+        },
+        success: true,
+      }),
+      noticeTheme,
+      options(),
+    );
+
+    const noticeLine = rendered!.lines.find((line) => line.includes("[Showing"));
+    expect(noticeLine).toContain(`<muted>${notice}</muted>`);
+  });
+
   it("groups grep matches by file, distinguishes context, and emphasizes literal matches", () => {
     const rendered = renderCoreToolBody(
       audit("grep", {

@@ -299,6 +299,11 @@ const resolveLanguage = (filePath: string, content?: string): string | undefined
   return undefined;
 };
 
+const BASH_TRUNCATION_NOTICE =
+  /^\[Showing (?:last [^\r\n]+ of line \d+ \(line is [^)]+\)|lines \d+-\d+ of \d+(?: \([^)]+ limit\))?)\. Full output: [^\r\n]+\]$/;
+
+const isBashTruncationNotice = (line: string): boolean => BASH_TRUNCATION_NOTICE.test(line);
+
 const renderContent = (
   content: string,
   filePath: string,
@@ -344,6 +349,16 @@ const renderContent = (
     if (entry.kind === "hidden") {
       flush();
       rendered.push(theme.fg("muted", `      --- ${entry.hidden} lines hidden ---`));
+    } else if (isBashTruncationNotice(entry.line)) {
+      flush();
+      const notice = theme.fg("muted", escapeControlChars(entry.line));
+      if (config.lineNumbers) {
+        const width = String((config.firstLine ?? 1) + selected.total - 1).length;
+        const lineNumber = String((config.firstLine ?? 1) + entry.index).padStart(width, " ");
+        rendered.push(`${theme.fg("dim", `${lineNumber} │ `)}${notice}`);
+      } else {
+        rendered.push(notice);
+      }
     } else {
       chunk.push({ line: entry.line, index: entry.index });
     }
@@ -628,8 +643,11 @@ const renderDiff = (
       }
       return theme.fg("toolDiffContext", safe);
     }
-    let content = highlighted[index] ?? theme.fg("toolOutput", escapeControlChars(expandTabs(line.content)) || " ");
-    const match = emphasis.get(index);
+    const truncationNotice = isBashTruncationNotice(line.content);
+    let content = truncationNotice
+      ? theme.fg("muted", escapeControlChars(line.content))
+      : highlighted[index] ?? theme.fg("toolOutput", escapeControlChars(expandTabs(line.content)) || " ");
+    const match = truncationNotice ? undefined : emphasis.get(index);
     if (match && match.ranges.length > 0) {
       content = injectVisibleRanges(
         content,
