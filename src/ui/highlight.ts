@@ -5,6 +5,7 @@ import { basename, extname } from "node:path";
 import { bundledLanguages } from "shiki/langs";
 import { bundledThemesInfo } from "shiki/themes";
 import type { Highlighter } from "shiki";
+import { resolveShikiTheme, type ShikiThemeVariant } from "./code-preview.js";
 
 const configuredMaxHighlightChars = Number.parseInt(
   process.env.CODE_PREVIEW_MAX_HIGHLIGHT_CHARS ?? "",
@@ -121,10 +122,13 @@ const THEME_TYPE = new Map(bundledThemesInfo.map((theme) => [theme.id, theme.typ
 const LOW_CONTRAST_FALLBACK = "\x1b[38;2;139;148;158m";
 
 let highlighter: Highlighter | undefined;
+let readyTheme: string | undefined;
 let initializingTheme: string | undefined;
 let initVersion = 0;
 let highlighterGeneration = 0;
-let currentTheme = "dark-plus";
+let themePreference = "auto";
+let observedVariant: ShikiThemeVariant = "dark";
+let currentTheme = resolveShikiTheme(themePreference, observedVariant);
 let enabled = true;
 const loadedLanguages = new Set<string>();
 const pendingLanguages = new Set<string>();
@@ -152,6 +156,129 @@ const normalizeLanguage = (language: string): string => {
   return LANGUAGE_ALIASES.get(normalized) ?? normalized;
 };
 
+interface Rgb {
+  r: number;
+  g: number;
+  b: number;
+}
+
+const ANSI_16_RGB: readonly Rgb[] = [
+  { r: 0, g: 0, b: 0 },
+  { r: 205, g: 49, b: 49 },
+  { r: 13, g: 161, b: 13 },
+  { r: 229, g: 165, b: 10 },
+  { r: 36, g: 114, b: 200 },
+  { r: 188, g: 63, b: 188 },
+  { r: 17, g: 168, b: 205 },
+  { r: 229, g: 229, b: 229 },
+  { r: 102, g: 102, b: 102 },
+  { r: 241, g: 76, b: 76 },
+  { r: 35, g: 209, b: 139 },
+  { r: 245, g: 245, b: 67 },
+  { r: 59, g: 142, b: 234 },
+  { r: 214, g: 112, b: 214 },
+  { r: 41, g: 184, b: 219 },
+  { r: 255, g: 255, b: 255 },
+];
+
+export const ansi256ToRgb = (index: number): Rgb => {
+  if (index < 16) return ANSI_16_RGB[Math.max(0, index)] ?? { r: 0, g: 0, b: 0 };
+  if (index < 232) {
+    const cube = index - 16;
+    const channel = (value: number): number => (value === 0 ? 0 : 55 + 40 * value);
+    return {
+      r: channel(Math.floor(cube / 36)),
+      g: channel(Math.floor((cube % 36) / 6)),
+      b: channel(cube % 6),
+    };
+  }
+  const gray = 8 + 10 * (Math.min(index, 255) - 232);
+  return { r: gray, g: gray, b: gray };
+};
+
+const parseAnsiBgColor = (sequence: string): Rgb | undefined => {
+  const truecolor = sequence.match(/\x1b\[4?8;2;(\d+);(\d+);(\d+)m/);
+  if (truecolor) {
+    return { r: Number(truecolor[1]), g: Number(truecolor[2]), b: Number(truecolor[3]) };
+  }
+  const indexed = sequence.match(/\x1b\[4?8;5;(\d+)m/);
+  if (indexed) return ansi256ToRgb(Number(indexed[1]));
+  return undefined;
+};
+
+const relativeLuminance = ({ r, g, b }: Rgb): number =>
+  (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+
+/** Minimal structural view of Pi's active theme, as handed to renderers. */
+export interface PiThemeLike {
+  name?: string;
+  getBgAnsi?(color: "userMessageBg"): string;
+}
+
+/**
+ * Classify Pi's active theme as a light or dark variant. Named built-ins are
+ * matched directly, custom themes fall back to the luminance of Pi's message
+ * background color, and as a last resort COLORFGBG provides a terminal hint.
+ */
+export const classifyPiTheme = (
+  theme: PiThemeLike | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): ShikiThemeVariant | undefined => {
+  const name = theme?.name?.trim().toLowerCase();
+  if (name === "light") return "light";
+  if (name === "dark") return "dark";
+  const background = theme?.getBgAnsi
+    ? parseAnsiBgColor(theme.getBgAnsi("userMessageBg"))
+    : undefined;
+  if (background) return relativeLuminance(background) >= 0.5 ? "light" : "dark";
+  const colorFgBg = env.COLORFGBG;
+  if (colorFgBg) {
+    const index = colorFgBg
+      .split(";")
+      .map((part) => Number.parseInt(part, 10))
+      .filter((part) => Number.isInteger(part) && part >= 0 && part <= 255)
+      .at(-1);
+    if (index !== undefined) {
+      return relativeLuminance(ansi256ToRgb(index)) >= 0.5 ? "light" : "dark";
+    }
+  }
+  return undefined;
+};
+
+const syncEffectiveTheme = (preference: string, variant: ShikiThemeVariant): boolean => {
+  themePreference = preference;
+  observedVariant = variant;
+  const effective = resolveShikiTheme(preference, variant);
+  if (effective === currentTheme) return false;
+  currentTheme = effective;
+  renderCache.clear();
+  renderCacheChars = 0;
+  if (enabled && (highlighter || initializingTheme)) {
+    void initHighlighting(effective, true);
+  }
+  return true;
+};
+
+/**
+ * Adopt the variant of the pi theme instance handed to a renderer. When the
+ * configured preference follows the variant ("auto" or a "light/dark" pair),
+ * the effective shiki theme swaps as Pi auto-switches.
+ */
+export function observePiTheme(theme: PiThemeLike | undefined): void {
+  const variant = classifyPiTheme(theme);
+  if (variant) syncEffectiveTheme(themePreference, variant);
+}
+
+/** The shiki theme currently used for rendering (after variant resolution). */
+export const effectiveShikiTheme = (): string => currentTheme;
+
+/** Whether the effective shiki theme is a light theme. */
+export const effectiveShikiThemeIsLight = (): boolean =>
+  THEME_TYPE.get(currentTheme) === "light";
+
+/** Pi's most recently observed theme variant. */
+export const observedThemeVariant = (): ShikiThemeVariant => observedVariant;
+
 /** Resolve a shiki language id from a file path, or undefined if unsupported. */
 export function languageFromPath(filePath: string | undefined): string | undefined {
   if (!filePath) return undefined;
@@ -170,14 +297,17 @@ export function languageFromPath(filePath: string | undefined): string | undefin
 }
 
 /** Configure highlighting without loading Shiki until the first code preview needs it. */
-export function configureHighlighting(theme: string, syntaxEnabled = true): void {
-  currentTheme = theme;
+export function configureHighlighting(themePreferenceValue: string, syntaxEnabled = true): void {
+  const preference = themePreferenceValue.trim() || "auto";
   enabled = syntaxEnabled;
   if (!enabled) {
+    themePreference = preference;
+    currentTheme = resolveShikiTheme(preference, observedVariant);
     initVersion++;
     initializingTheme = undefined;
     highlighter?.dispose();
     highlighter = undefined;
+    readyTheme = undefined;
     highlighterGeneration++;
     loadedLanguages.clear();
     pendingLanguages.clear();
@@ -187,7 +317,10 @@ export function configureHighlighting(theme: string, syntaxEnabled = true): void
     renderCacheChars = 0;
     return;
   }
-  if (highlighter || initializingTheme) void initHighlighting(theme, syntaxEnabled);
+  const themeChanged = syncEffectiveTheme(preference, observedVariant);
+  if (!themeChanged && (highlighter || initializingTheme)) {
+    void initHighlighting(currentTheme, syntaxEnabled);
+  }
 }
 
 /** Initialize (or reinitialize) the shared shiki highlighter. Fire-and-forget safe. */
@@ -209,6 +342,7 @@ export async function initHighlighting(theme: string, syntaxEnabled = true): Pro
     }
     highlighter?.dispose();
     highlighter = next;
+    readyTheme = theme;
     initializingTheme = undefined;
     highlighterGeneration++;
     loadedLanguages.clear();
@@ -220,6 +354,7 @@ export async function initHighlighting(theme: string, syntaxEnabled = true): Pro
     console.warn("[pi-fabric] Shiki failed to initialize; previews will be plain text.", error);
     highlighter?.dispose();
     highlighter = undefined;
+    readyTheme = undefined;
     highlighterGeneration++;
     loadedLanguages.clear();
     highlighterReadyCallbacks.clear();
@@ -353,7 +488,10 @@ export function highlightCode(
   invalidate?: () => void,
 ): string[] | null {
   if (!enabled || !lang || shouldSkipHighlight(text)) return null;
-  if (!highlighter) {
+  // A variant flip restarts initialization with the new theme; while it is in
+  // flight the old highlighter cannot serve the current theme. Register the
+  // invalidate so the preview repaints once the swap completes.
+  if (!highlighter || readyTheme !== currentTheme) {
     requestInit(invalidate);
     return null;
   }

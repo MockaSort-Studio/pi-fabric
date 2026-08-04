@@ -1,8 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-
 type DiffBackgroundIntensity = "off" | "subtle" | "medium";
 type DiffWordEmphasis = "all" | "smart" | "off";
 type ToolCallBackgroundMode = "on" | "border" | "off";
@@ -10,6 +5,8 @@ type PathIconMode = "unicode" | "nerd" | "off";
 type CodePreviewToolName = "bash" | "read" | "write" | "edit" | "grep" | "find" | "ls";
 
 export interface CodePreviewSettings {
+  // Shiki theme preference: "auto" follows Pi's resolved light/dark variant,
+  // "<light>/<dark>" pins both variants, and any other value is a fixed theme id.
   shikiTheme: string;
   diffIntensity: DiffBackgroundIntensity;
   wordEmphasis: DiffWordEmphasis;
@@ -35,6 +32,49 @@ export interface CodePreviewSettings {
   tools: CodePreviewToolName[];
 }
 
+export type ShikiThemeVariant = "light" | "dark";
+
+const AUTO_SHIKI_THEME = "auto";
+const DEFAULT_LIGHT_SHIKI_THEME = "github-light";
+const DEFAULT_DARK_SHIKI_THEME = "dark-plus";
+
+/**
+ * Parse a shiki theme preference into per-variant theme ids. "auto" resolves to
+ * the built-in pair and tracks Pi's resolved variant at render time; a
+ * "<light>/<dark>" pair fixes both variants explicitly; anything else is a
+ * single variant-independent theme id.
+ */
+export const parseShikiThemePreference = (
+  preference: string,
+): { lightTheme: string; darkTheme: string; followsVariant: boolean } => {
+  const trimmed = preference.trim();
+  if (!trimmed || trimmed === AUTO_SHIKI_THEME) {
+    return {
+      lightTheme: DEFAULT_LIGHT_SHIKI_THEME,
+      darkTheme: DEFAULT_DARK_SHIKI_THEME,
+      followsVariant: true,
+    };
+  }
+  const slash = trimmed.indexOf("/");
+  if (slash > 0) {
+    const lightTheme = trimmed.slice(0, slash).trim();
+    const darkTheme = trimmed.slice(slash + 1).trim();
+    if (lightTheme && darkTheme) {
+      return { lightTheme, darkTheme, followsVariant: true };
+    }
+  }
+  return { lightTheme: trimmed, darkTheme: trimmed, followsVariant: false };
+};
+
+/** Resolve the effective shiki theme id for a preference and variant. */
+export const resolveShikiTheme = (
+  preference: string,
+  variant: ShikiThemeVariant,
+): string => {
+  const parsed = parseShikiThemePreference(preference);
+  return variant === "light" ? parsed.lightTheme : parsed.darkTheme;
+};
+
 const TOOLS: CodePreviewToolName[] = ["bash", "read", "write", "edit", "grep", "find", "ls"];
 const booleanEnv = (name: string, fallback: boolean): boolean => {
   const value = process.env[name]?.toLowerCase();
@@ -51,8 +91,9 @@ const optionEnv = <T extends string>(name: string, options: readonly T[], fallba
   return value && options.includes(value) ? value : fallback;
 };
 
+/** Environment-backed defaults; fabric.json "codePreview" layers override these. */
 export const defaultCodePreviewSettings = (): CodePreviewSettings => ({
-  shikiTheme: process.env.CODE_PREVIEW_THEME || "dark-plus",
+  shikiTheme: process.env.CODE_PREVIEW_THEME || AUTO_SHIKI_THEME,
   diffIntensity: optionEnv("CODE_PREVIEW_DIFF_INTENSITY", ["off", "subtle", "medium"], "subtle"),
   wordEmphasis: optionEnv("CODE_PREVIEW_WORD_EMPHASIS", ["all", "smart", "off"], "all"),
   toolCallBackground: optionEnv("CODE_PREVIEW_TOOL_CALL_BACKGROUND", ["on", "border", "off"], "on"),
@@ -77,84 +118,33 @@ export const defaultCodePreviewSettings = (): CodePreviewSettings => ({
   tools: [...TOOLS],
 });
 
-const settingsKeys = new Set<keyof CodePreviewSettings>([
-  "shikiTheme", "diffIntensity", "wordEmphasis", "toolCallBackground", "toolCallTiming",
-  "readCollapsedLines", "readContentPreview", "writeContentPreview", "writeCollapsedLines",
-  "editDiffPreview", "editCollapsedLines", "grepCollapsedLines", "grepResultPreview",
-  "findResultPreview", "lsResultPreview", "pathListCollapsedLines", "readLineNumbers",
-  "bashResultPreview", "bashWarnings", "syntaxHighlighting", "secretWarnings", "pathIcons", "tools",
-]);
-
-const extractSettings = (value: unknown): Record<string, unknown> => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const object = value as Record<string, unknown>;
-  if (object.codePreview && typeof object.codePreview === "object" && !Array.isArray(object.codePreview)) {
-    return object.codePreview as Record<string, unknown>;
-  }
-  if ([...settingsKeys].some((key) => key in object)) return object;
-  const result: Record<string, unknown> = {};
-  for (const [key, nested] of Object.entries(object)) {
-    if (!key.startsWith("codePreview") || key.length === 11) continue;
-    const suffix = key.slice(11);
-    result[suffix[0]!.toLowerCase() + suffix.slice(1)] = nested;
-  }
-  return result;
-};
-
-const applySettings = (current: CodePreviewSettings, raw: Record<string, unknown>): void => {
-  for (const key of settingsKeys) {
-    const value = raw[key];
-    const fallback = current[key];
-    if (typeof fallback === "boolean" && typeof value === "boolean") {
-      (current as unknown as Record<string, unknown>)[key] = value;
-    } else if (typeof fallback === "number" && typeof value === "number" && Number.isFinite(value) && value > 0) {
-      (current as unknown as Record<string, unknown>)[key] = Math.floor(value);
-    } else if (key === "editCollapsedLines" && value === "all") current.editCollapsedLines = "all";
-    else if (key === "tools" && Array.isArray(value)) current.tools = value.filter((tool): tool is CodePreviewToolName => typeof tool === "string" && TOOLS.includes(tool as CodePreviewToolName));
-    else if (key === "diffIntensity" && ["off", "subtle", "medium"].includes(String(value))) {
-      current.diffIntensity = value as DiffBackgroundIntensity;
-    } else if (key === "wordEmphasis" && ["all", "smart", "off"].includes(String(value))) {
-      current.wordEmphasis = value as DiffWordEmphasis;
-    } else if (key === "toolCallBackground" && ["on", "border", "off"].includes(String(value))) {
-      current.toolCallBackground = value as ToolCallBackgroundMode;
-    } else if (key === "pathIcons" && ["unicode", "nerd", "off"].includes(String(value))) {
-      current.pathIcons = value as PathIconMode;
-    } else if (key === "shikiTheme" && typeof value === "string" && value) {
-      current.shikiTheme = value;
-    }
-  }
-};
-
-const readSettings = async (path: string): Promise<Record<string, unknown> | undefined> => {
-  try {
-    return extractSettings(JSON.parse(await readFile(path, "utf8")));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      console.warn(`[pi-fabric] Failed to load code preview settings from ${path}.`, error);
-    }
-    return undefined;
-  }
-};
-
-export async function loadCodePreviewSettings(
-  projectCwd?: string,
-  projectTrusted = false,
-): Promise<CodePreviewSettings> {
+/**
+ * Validate a fabric.json "codePreview" section on top of the environment-backed
+ * defaults. Unknown or mistyped values are ignored.
+ */
+export const normalizeCodePreviewSettings = (raw: unknown): CodePreviewSettings => {
   const settings = defaultCodePreviewSettings();
-  const agentDir = getAgentDir();
-  const legacyAgentDir = join(homedir(), ".pi", "agent");
-  const dedicatedPath = join(agentDir, "code-previews.json");
-  const paths = [
-    join(homedir(), ".pi", "settings.json"),
-    join(legacyAgentDir, "settings.json"),
-    join(agentDir, "settings.json"),
-    ...(projectTrusted ? [join(projectCwd ?? process.cwd(), ".pi", "settings.json")] : []),
-    join(legacyAgentDir, "code-previews.json"),
-    dedicatedPath,
-  ];
-  const layers = await Promise.all([...new Set(paths)].map(readSettings));
-  for (const loaded of layers) {
-    if (loaded) applySettings(settings, loaded);
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return settings;
+  const source = raw as Record<string, unknown>;
+  for (const [key, fallback] of Object.entries(settings) as [keyof CodePreviewSettings, unknown][]) {
+    const value = source[key];
+    if (typeof fallback === "boolean" && typeof value === "boolean") {
+      (settings as unknown as Record<string, unknown>)[key] = value;
+    } else if (typeof fallback === "number" && typeof value === "number" && Number.isFinite(value) && value > 0) {
+      (settings as unknown as Record<string, unknown>)[key] = Math.floor(value);
+    } else if (key === "editCollapsedLines" && value === "all") settings.editCollapsedLines = "all";
+    else if (key === "tools" && Array.isArray(value)) settings.tools = value.filter((tool): tool is CodePreviewToolName => typeof tool === "string" && TOOLS.includes(tool as CodePreviewToolName));
+    else if (key === "diffIntensity" && ["off", "subtle", "medium"].includes(String(value))) {
+      settings.diffIntensity = value as DiffBackgroundIntensity;
+    } else if (key === "wordEmphasis" && ["all", "smart", "off"].includes(String(value))) {
+      settings.wordEmphasis = value as DiffWordEmphasis;
+    } else if (key === "toolCallBackground" && ["on", "border", "off"].includes(String(value))) {
+      settings.toolCallBackground = value as ToolCallBackgroundMode;
+    } else if (key === "pathIcons" && ["unicode", "nerd", "off"].includes(String(value))) {
+      settings.pathIcons = value as PathIconMode;
+    } else if (key === "shikiTheme" && typeof value === "string" && value) {
+      settings.shikiTheme = value;
+    }
   }
   return { ...settings, tools: [...new Set(settings.tools)] };
-}
+};

@@ -59,6 +59,27 @@ const COMPACTION_TARGET_RATIOS = Array.from(
   (_, index) => String((25 + index * 5) / 100),
 );
 const ACTOR_SCOPES = ["project", "session"] as const;
+const DIFF_INTENSITIES = ["off", "subtle", "medium"] as const;
+const WORD_EMPHASES = ["all", "smart", "off"] as const;
+const TOOL_CALL_BACKGROUNDS = ["on", "border", "off"] as const;
+const PATH_ICON_MODES = ["unicode", "nerd", "off"] as const;
+const CODE_PREVIEW_EDIT_LINES_ID = "codePreview.editCollapsedLines";
+const CODE_PREVIEW_ALL_LINES = "All lines";
+const SHIKI_THEME_PRESETS = [
+  "auto",
+  "github-light/github-dark",
+  "light-plus/dark-plus",
+  "solarized-light/solarized-dark",
+  "catppuccin-latte/catppuccin-mocha",
+  "github-light",
+  "light-plus",
+  "solarized-light",
+  "dark-plus",
+  "github-dark",
+  "solarized-dark",
+  "nord",
+  "one-dark-pro",
+] as const;
 const RISKS = ["read", "write", "execute", "network", "agent"] as const;
 const CORE_RISK_TOOLS = ["read", "grep", "find", "edit", "write", "bash"] as const;
 const CORE_DEFAULT_TOOL_CANDIDATES = ["read", "bash", "edit", "write", "grep", "find", "ls"];
@@ -79,6 +100,7 @@ const ROOT_ITEM_IDS = [
   "compaction",
   "retention",
   "mesh",
+  "codePreview",
 ] as const;
 const RELOAD_SECTIONS = new Set(["mesh", "agents", "mcp", "retention"]);
 
@@ -211,6 +233,13 @@ const coerceValue = (id: string, value: string, config: FabricConfig): unknown =
     if (value === COMPACTION_DEFAULT_THRESHOLD_LABEL) return null;
     return Number(value.replace("%", "")) / 100;
   }
+  if (id === CODE_PREVIEW_EDIT_LINES_ID) {
+    if (value === CODE_PREVIEW_ALL_LINES || value === "all") return "all";
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    const current = getPath(config, id);
+    return typeof current === "number" ? current : 160;
+  }
   const current = getPath(config, id);
   if (typeof current === "boolean") return value === "true";
   if (typeof current === "number") return parseFormattedNumericValue(value);
@@ -272,6 +301,8 @@ const summaryFor = (id: string, config: FabricConfig): string => {
       return `${formatRetention(config.retention.orphanedTempRunMs)} · ${formatRetention(config.retention.oneShotRunMs)} · ${formatRetention(config.retention.actorRunArchiveMs)}`;
     case "mesh":
       return config.mesh.enabled ? "enabled" : "disabled";
+    case "codePreview":
+      return config.codePreview.shikiTheme;
     default:
       return "";
   }
@@ -312,6 +343,30 @@ const numericSubmenu = (
     options,
     selectedValue,
     (value) => done(options.find((option) => option.value === value)?.label ?? value),
+    () => done(),
+  );
+};
+
+const stringOptionsSubmenu = (
+  theme: Theme,
+  values: readonly string[],
+  title: string,
+  description: string,
+): SettingsSubmenu => (currentValue, done) => {
+  const options = values.map((value) => ({ value, label: value }));
+  if (!options.some((option) => option.value === currentValue)) {
+    options.unshift({ value: currentValue, label: currentValue });
+  }
+  const selectedValue =
+    options.find((option) => option.value === currentValue || option.label === currentValue)
+      ?.value ?? currentValue;
+  return new SelectSubmenu(
+    theme,
+    title,
+    description,
+    options,
+    selectedValue,
+    (value) => done(value),
     () => done(),
   );
 };
@@ -1218,6 +1273,123 @@ export const buildFabricSettingsItems = (
         persist,
       ),
     }),
+    setting("codePreview", "Code previews", summaryFor("codePreview", config), {
+      description: "Core tool previews, diffs, and Shiki syntax highlighting.",
+      submenu: sectionSubmenu(
+        theme,
+        "Code previews",
+        "Core tool previews, diffs, and Shiki syntax highlighting. Persisted to fabric.json codePreview.",
+        [
+          setting("codePreview.shikiTheme", "Shiki theme", config.codePreview.shikiTheme, {
+            description:
+              "\"auto\" follows Pi's resolved light/dark variant; \"<light>/<dark>\" pins both; any other value fixes one theme.",
+            submenu: stringOptionsSubmenu(
+              theme,
+              SHIKI_THEME_PRESETS,
+              "Shiki theme",
+              "\"auto\" follows Pi's light/dark switching (github-light/dark-plus); \"<light>/<dark>\" pins both variants.",
+            ),
+          }),
+          setting("codePreview.syntaxHighlighting", "Syntax highlighting", config.codePreview.syntaxHighlighting ? "true" : "false", {
+            description: "Highlight code in previews with Shiki.",
+            values: BOOLEANS,
+          }),
+          setting("codePreview.diffIntensity", "Diff background", config.codePreview.diffIntensity, {
+            description: "Full-row background tint for added and removed diff lines.",
+            values: DIFF_INTENSITIES,
+          }),
+          setting("codePreview.wordEmphasis", "Word emphasis", config.codePreview.wordEmphasis, {
+            description: "Highlight changed words inside added and removed diff lines.",
+            values: WORD_EMPHASES,
+          }),
+          setting("codePreview.toolCallBackground", "Tool call background", config.codePreview.toolCallBackground, {
+            description: "Background treatment for tool call frames.",
+            values: TOOL_CALL_BACKGROUNDS,
+          }),
+          setting("codePreview.toolCallTiming", "Tool call timing", config.codePreview.toolCallTiming ? "true" : "false", {
+            description: "Show per-call duration on tool frames.",
+            values: BOOLEANS,
+          }),
+          setting("codePreview.pathIcons", "Path icons", config.codePreview.pathIcons, {
+            description: "Icon set for path tree previews.",
+            values: PATH_ICON_MODES,
+          }),
+          setting("codePreview.readCollapsedLines", "Read lines", String(config.codePreview.readCollapsedLines), {
+            description: "Collapsed read preview budget.",
+            submenu: numericSubmenu(theme, [3, 5, 10, 15, 20, 30], String, "Read lines", "Collapsed read preview budget."),
+          }),
+          setting("codePreview.writeCollapsedLines", "Write lines", String(config.codePreview.writeCollapsedLines), {
+            description: "Collapsed write preview budget.",
+            submenu: numericSubmenu(theme, [3, 5, 10, 15, 20, 30], String, "Write lines", "Collapsed write preview budget."),
+          }),
+          setting(
+            CODE_PREVIEW_EDIT_LINES_ID,
+            "Edit diff lines",
+            config.codePreview.editCollapsedLines === "all"
+              ? CODE_PREVIEW_ALL_LINES
+              : String(config.codePreview.editCollapsedLines),
+            {
+              description: "Collapsed edit diff budget, or every diff line.",
+              submenu: stringOptionsSubmenu(
+                theme,
+                ["10", "40", "80", "160", "320", CODE_PREVIEW_ALL_LINES],
+                "Edit diff lines",
+                "Collapsed edit diff budget, or every diff line.",
+              ),
+            },
+          ),
+          setting("codePreview.grepCollapsedLines", "Grep lines", String(config.codePreview.grepCollapsedLines), {
+            description: "Collapsed grep result budget.",
+            submenu: numericSubmenu(theme, [5, 10, 15, 25, 40], String, "Grep lines", "Collapsed grep result budget."),
+          }),
+          setting("codePreview.pathListCollapsedLines", "Path list lines", String(config.codePreview.pathListCollapsedLines), {
+            description: "Collapsed find/ls path tree budget.",
+            submenu: numericSubmenu(theme, [10, 20, 40, 80], String, "Path list lines", "Collapsed find/ls path tree budget."),
+          }),
+          setting("codePreview.readContentPreview", "Read preview", config.codePreview.readContentPreview ? "true" : "false", {
+            description: "Show file content previews for read calls.",
+            values: BOOLEANS,
+          }),
+          setting("codePreview.writeContentPreview", "Write preview", config.codePreview.writeContentPreview ? "true" : "false", {
+            description: "Show content previews for write calls.",
+            values: BOOLEANS,
+          }),
+          setting("codePreview.editDiffPreview", "Edit diff preview", config.codePreview.editDiffPreview ? "true" : "false", {
+            description: "Show diffs for edit calls.",
+            values: BOOLEANS,
+          }),
+          setting("codePreview.grepResultPreview", "Grep results", config.codePreview.grepResultPreview ? "true" : "false", {
+            description: "Show grouped grep result previews.",
+            values: BOOLEANS,
+          }),
+          setting("codePreview.findResultPreview", "Find results", config.codePreview.findResultPreview ? "true" : "false", {
+            description: "Show find result path trees.",
+            values: BOOLEANS,
+          }),
+          setting("codePreview.lsResultPreview", "Ls results", config.codePreview.lsResultPreview ? "true" : "false", {
+            description: "Show ls result path trees.",
+            values: BOOLEANS,
+          }),
+          setting("codePreview.readLineNumbers", "Read line numbers", config.codePreview.readLineNumbers ? "true" : "false", {
+            description: "Show line-number gutters in read previews.",
+            values: BOOLEANS,
+          }),
+          setting("codePreview.bashResultPreview", "Bash results", config.codePreview.bashResultPreview ? "true" : "false", {
+            description: "Show bash output previews.",
+            values: BOOLEANS,
+          }),
+          setting("codePreview.bashWarnings", "Bash warnings", config.codePreview.bashWarnings ? "true" : "false", {
+            description: "Annotate risky bash commands.",
+            values: BOOLEANS,
+          }),
+          setting("codePreview.secretWarnings", "Secret warnings", config.codePreview.secretWarnings ? "true" : "false", {
+            description: "Flag suspected secrets in previews.",
+            values: BOOLEANS,
+          }),
+        ],
+        persist,
+      ),
+    }),
   ];
   return markDrillIn(items);
 };
@@ -1226,6 +1398,7 @@ export interface FabricSettingsDeps {
   state: FabricState;
   applyFabricMode: () => void;
   capturedTools: CapturedToolCatalog;
+  onConfigApplied?: () => void;
 }
 
 export async function openFabricSettings(
@@ -1264,6 +1437,7 @@ export async function openFabricSettings(
       return;
     }
     deps.state.reloadConfig(context);
+    deps.onConfigApplied?.();
     dirty = true;
     changedSections.add(id.split(".")[0] ?? id);
     const list = rootList;

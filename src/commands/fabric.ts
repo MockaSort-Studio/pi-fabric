@@ -20,6 +20,7 @@ interface FabricCommandDeps {
   capturedTools: CapturedToolCatalog;
   applyFabricMode: () => void;
   suspendToolCapture: () => void;
+  refreshCodePreviewSettings?: () => void;
 }
 
 const extractContentText = (content: unknown): string => {
@@ -227,7 +228,14 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         return;
       }
       if (command === "settings") {
-        await openFabricSettings(context, { state, applyFabricMode, capturedTools });
+        await openFabricSettings(context, {
+          state,
+          applyFabricMode,
+          capturedTools,
+          ...(deps.refreshCodePreviewSettings
+            ? { onConfigApplied: deps.refreshCodePreviewSettings }
+            : {}),
+        });
         return;
       }
       if (command === "prewalk") {

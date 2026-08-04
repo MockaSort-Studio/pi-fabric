@@ -55,7 +55,7 @@ import {
   isCoreToolAudit,
   renderCoreToolBody,
 } from "./ui/core-tool-render.js";
-import { highlightCode } from "./ui/highlight.js";
+import { highlightCode, observePiTheme } from "./ui/highlight.js";
 import {
   HiddenRowBorrowingComponent,
   observeResultRows,
@@ -154,6 +154,7 @@ export const createFabricExecTool = (
       ),
     }),
     renderCall(params, theme, context) {
+      observePiTheme(theme);
       const code = Array.isArray(params.code) ? params.code.join("\n") : params.code;
       const rendererState = context.state as FabricRendererState;
       const spinner = updateSpinner(
@@ -224,6 +225,7 @@ export const createFabricExecTool = (
       return composite;
     },
     renderResult(result, { expanded, isPartial }, theme, context) {
+      observePiTheme(theme);
       const details = readFabricExecutionRenderDetails(result.details);
       let audits = restoreLegacyBashCommands(
         details.audits as FabricRenderAudit[],

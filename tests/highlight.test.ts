@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   configureHighlighting,
+  effectiveShikiTheme,
   highlightCode,
   initHighlighting,
   languageFromPath,
+  observePiTheme,
 } from "../src/ui/highlight.js";
 
 describe("fabric highlight", () => {
@@ -53,6 +55,26 @@ describe("fabric highlight", () => {
     await initHighlighting("dark-plus", true);
     expect(highlightCode("hello", "totally-not-a-language")).toBeNull();
   });
+
+  it("re-highlights with the new variant after a pi theme flip", async () => {
+    configureHighlighting("auto", true);
+    observePiTheme({ name: "dark" });
+    await initHighlighting("dark-plus", true);
+    const dark = highlightCode("const x = 1;", "typescript");
+    expect(dark).not.toBeNull();
+
+    observePiTheme({ name: "light" });
+    expect(effectiveShikiTheme()).toBe("github-light");
+    const invalidate = vi.fn();
+    // The swap initializes asynchronously; the gate must report not-ready and
+    // register the invalidate instead of throwing on the unloaded theme.
+    expect(highlightCode("const x = 1;", "typescript", invalidate)).toBeNull();
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalled(), { timeout: 15_000 });
+    const light = highlightCode("const x = 1;", "typescript");
+    expect(light).not.toBeNull();
+    expect(light![0]).not.toBe(dark![0]);
+    observePiTheme({ name: "dark" });
+  }, 20_000);
 
   it("returns null when highlighting is disabled", async () => {
     await initHighlighting("dark-plus", false);

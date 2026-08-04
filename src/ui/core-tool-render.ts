@@ -5,9 +5,13 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { CodePreviewSettings } from "./code-preview.js";
 import { diffLines } from "diff";
 import { bundledLanguages } from "shiki/langs";
-import { bundledThemesInfo } from "shiki/themes";
 import type { FabricRenderAudit } from "./fabric-render.js";
-import { highlightCode, languageFromPath } from "./highlight.js";
+import {
+  effectiveShikiThemeIsLight,
+  highlightCode,
+  languageFromPath,
+  observePiTheme,
+} from "./highlight.js";
 import { markDiffLine } from "./diff-background.js";
 import { countContentLines, selectPreviewTextLines } from "./preview-lines.js";
 import {
@@ -55,9 +59,6 @@ export const isCoreToolAudit = (audit: FabricRenderAudit): boolean =>
   audit.tool !== undefined &&
   CORE_TOOLS.has(audit.tool) &&
   (audit.provider === "pi" || audit.ref === `pi.${audit.tool}`);
-const LIGHT_THEMES = new Set(
-  bundledThemesInfo.filter((theme) => theme.type === "light").map((theme) => theme.id),
-);
 
 const positiveEnvInteger = (name: string, fallback: number): number => {
   const parsed = Number.parseInt(process.env[name] ?? "", 10);
@@ -623,7 +624,7 @@ const renderDiff = (
     }
   }
   const emphasis = wordEmphasisFor(parsed, options.settings.wordEmphasis);
-  const emphasisColors = LIGHT_THEMES.has(options.settings.shikiTheme)
+  const emphasisColors = effectiveShikiThemeIsLight()
     ? { add: "\x1b[48;2;194;209;194m", remove: "\x1b[48;2;216;182;182m" }
     : { add: "\x1b[48;2;64;132;82m", remove: "\x1b[48;2;148;62;70m" };
   const lines = shown.map((raw, index) => {
@@ -916,7 +917,12 @@ const renderGrepLine = (
       audit.args?.ignoreCase === true,
     );
     if (ranges.length > 0) {
-      highlighted = injectVisibleRanges(highlighted, ranges, "\x1b[48;2;90;74;28m", "\x1b[49m");
+      highlighted = injectVisibleRanges(
+        highlighted,
+        ranges,
+        effectiveShikiThemeIsLight() ? "\x1b[48;2;234;225;171m" : "\x1b[48;2;90;74;28m",
+        "\x1b[49m",
+      );
     }
   }
   const number = match
@@ -1183,6 +1189,7 @@ export const renderCoreToolBody = (
   theme: Theme,
   options: CoreToolRenderOptions,
 ): RenderedCoreToolBody | null => {
+  observePiTheme(theme);
   if (!coreToolRendererEnabled(audit, options.settings) || !audit.tool) return null;
   switch (audit.tool) {
     case "read":
@@ -1208,6 +1215,7 @@ export const coreToolTitle = (
   theme: Theme,
   options: Pick<CoreToolRenderOptions, "cwd" | "settings" | "invalidate">,
 ): string | null => {
+  observePiTheme(theme);
   if (!coreToolRendererEnabled(audit, options.settings) || !audit.tool) return null;
   const title = theme.fg("toolTitle", theme.bold(audit.tool));
   const durationMs =

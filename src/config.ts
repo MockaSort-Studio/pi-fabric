@@ -8,6 +8,11 @@ import {
 } from "./config-migrations.js";
 import type { FabricRisk } from "./protocol.js";
 import { DEFAULT_FABRIC_THINKING, isFabricThinking, type FabricThinking } from "./thinking.js";
+import {
+  defaultCodePreviewSettings,
+  normalizeCodePreviewSettings,
+  type CodePreviewSettings,
+} from "./ui/code-preview.js";
 
 type FabricApprovalMode = "allow" | "ask" | "auto" | "deny";
 export type FabricAgentTransport =
@@ -177,6 +182,7 @@ export interface FabricConfig {
   mesh: FabricMeshConfig;
   memory: FabricMemoryConfig;
   schema: FabricSchemaConfig;
+  codePreview: CodePreviewSettings;
 }
 
 export const MIN_AGENT_TIMEOUT_MS = 1_000;
@@ -307,6 +313,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     maxBytes: 10 * 1024 * 1024,
     trustedCommands: {},
   },
+  codePreview: defaultCodePreviewSettings(),
 };
 
 interface JsonObjectFile {
@@ -861,6 +868,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       ),
       trustedCommands,
     },
+    codePreview: normalizeCodePreviewSettings(input.codePreview),
   };
 };
 

@@ -1,6 +1,7 @@
 // Adapted from pi-code-previews; see THIRD_PARTY_NOTICES.md.
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { ansi256ToRgb, observedThemeVariant } from "./highlight.js";
 
 export type DiffBackgroundIntensity = "off" | "subtle" | "medium";
 export type DiffLineKind = "add" | "remove";
@@ -59,6 +60,12 @@ const fallbackDiffBg = (
   kind: DiffLineKind,
   intensity: Exclude<DiffBackgroundIntensity, "off">,
 ): string => {
+  if (observedThemeVariant() === "light") {
+    if (kind === "add") {
+      return intensity === "medium" ? "\x1b[48;2;170;222;186m" : "\x1b[48;2;198;230;206m";
+    }
+    return intensity === "medium" ? "\x1b[48;2;236;178;184m" : "\x1b[48;2;242;206;210m";
+  }
   if (kind === "add") {
     return intensity === "medium" ? "\x1b[48;2;22;68;40m" : "\x1b[48;2;10;42;26m";
   }
@@ -79,7 +86,7 @@ const deriveDiffBg = (
   const base =
     parseAnsiRgb(themed?.getBgAnsi?.(kind === "add" ? "toolSuccessBg" : "toolErrorBg") ?? "") ??
     parseAnsiRgb(themed?.getBgAnsi?.("toolSuccessBg") ?? "") ??
-    { r: 0, g: 0, b: 0 };
+    (observedThemeVariant() === "light" ? { r: 255, g: 255, b: 255 } : { r: 0, g: 0, b: 0 });
   return `\x1b[48;2;${Math.round(base.r + (fgRgb.r - base.r) * intensity)};${Math.round(base.g + (fgRgb.g - base.g) * intensity)};${Math.round(base.b + (fgRgb.b - base.b) * intensity)}m`;
 };
 
@@ -203,6 +210,8 @@ const replaceAnsi = (current: string, pattern: RegExp, replacement: string): str
 
 const parseAnsiRgb = (ansi: string): { r: number; g: number; b: number } | undefined => {
   const match = ansi.match(/\x1b\[(?:38|48);2;(\d+);(\d+);(\d+)m/);
-  if (!match) return undefined;
-  return { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]) };
+  if (match) return { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]) };
+  const indexed = ansi.match(/\x1b\[(?:38|48);5;(\d+)m/);
+  if (indexed) return ansi256ToRgb(Number(indexed[1]));
+  return undefined;
 };

@@ -3,7 +3,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { loadCodePreviewSettings } from "./ui/code-preview.js";
+import { defaultCodePreviewSettings } from "./ui/code-preview.js";
 import {
   type FabricToolShellDecorator,
   withCodePreviewShell,
@@ -84,7 +84,7 @@ const registrationFrom = (value: unknown): FabricProviderRegistration | undefine
 };
 
 export default async function piFabric(pi: ExtensionAPI): Promise<void> {
-  const codePreviewSettings = await loadCodePreviewSettings();
+  const codePreviewSettings = defaultCodePreviewSettings();
   const decorateShell: FabricToolShellDecorator = withCodePreviewShell;
   let compatibilityWarningShown = false;
   configureHighlighting(
@@ -125,6 +125,13 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     pendingHandoffs,
     decorateShell,
   );
+  const refreshCodePreviewSettings = (): void => {
+    Object.assign(codePreviewSettings, state.config.codePreview);
+    configureHighlighting(
+      codePreviewSettings.shikiTheme,
+      codePreviewSettings.syntaxHighlighting,
+    );
+  };
   const fabricToolLifecycle = new FabricToolLifecycle(
     () => ownsFabricToolSource(pi.getAllTools(), FABRIC_EXTENSION_ENTRY_PATH),
     () => state.initialized ? state.execution.authorizer : undefined,
@@ -233,17 +240,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         if (context.hasUI) context.ui.notify(warning, "warning");
       }
     }
-    const projectTrusted =
-      typeof context.isProjectTrusted === "function" ? context.isProjectTrusted() : true;
+    await state.initialize(context);
     try {
-      Object.assign(
-        codePreviewSettings,
-        await loadCodePreviewSettings(context.cwd, projectTrusted),
-      );
-      configureHighlighting(
-        codePreviewSettings.shikiTheme,
-        codePreviewSettings.syntaxHighlighting,
-      );
+      refreshCodePreviewSettings();
       Object.assign(
         fabricTool,
         createFabricExecTool(state, codePreviewSettings, pendingHandoffs, decorateShell),
@@ -251,7 +250,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     } catch (error) {
       console.warn("[pi-fabric] Failed to refresh code preview settings.", error);
     }
-    await state.initialize(context);
     applyFabricMode();
     fabricUi.start(context);
     installHaltOnEscape(context);
@@ -502,7 +500,14 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     }
   });
 
-  registerFabricCommand(pi, { state, fabricUi, capturedTools, applyFabricMode, suspendToolCapture });
+  registerFabricCommand(pi, {
+    state,
+    fabricUi,
+    capturedTools,
+    applyFabricMode,
+    suspendToolCapture,
+    refreshCodePreviewSettings,
+  });
 }
 
 export * from "./audit/index.js";
