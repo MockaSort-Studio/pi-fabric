@@ -17,6 +17,7 @@ import { DEFAULT_FABRIC_CONFIG } from "./config.js";
 import type { FabricState } from "./fabric-state.js";
 import { formatFailureProgress } from "./failure-progress.js";
 import { typeErrorRecoveryHint } from "./type-error-guidance.js";
+import { normalizeRunDisplay } from "./run-display.js";
 import type { PendingFabricHandoff } from "./prewalk/handoff.js";
 import type { FabricMediaBlock } from "./protocol.js";
 import {
@@ -112,6 +113,9 @@ export const createFabricExecTool = (
     // schema hard-rejects. Keep this surface string/scalar-heavy; the only
     // nested field (display) ignores unknown keys. See
     // lucumr.pocoo.org/2026/7/4/better-models-worse-tools/ and pi-tool-repair.
+    // display also accepts a bare (or JSON-object) string, silently repaired
+    // to { name } via normalizeRunDisplay: flash-tier models cold-start with
+    // that near-miss, and repairing beats a zero-work rejection round trip.
     parameters: Type.Object({
       code: Type.String({
         description:
@@ -137,20 +141,26 @@ export const createFabricExecTool = (
         }),
       ),
       display: Type.Optional(
-        Type.Object(
-          {
-            name: Type.Optional(
-              Type.String({
-                description: "Concise execution milestone used by the Fabric activity UI and deterministic compaction continuity",
-              }),
-            ),
-            description: Type.Optional(
-              Type.String({
-                description: "Compact declared objective or acceptance criterion shown in the dashboard and richer compaction activity",
-              }),
-            ),
-          },
-        ),
+        Type.Union([
+          Type.Object(
+            {
+              name: Type.Optional(
+                Type.String({
+                  description: "Concise execution milestone used by the Fabric activity UI and deterministic compaction continuity",
+                }),
+              ),
+              description: Type.Optional(
+                Type.String({
+                  description: "Compact declared objective or acceptance criterion shown in the dashboard and richer compaction activity",
+                }),
+              ),
+            },
+          ),
+          Type.String({
+            description:
+              "Objective shorthand normalized to { name } (a JSON-object string is parsed). Prefer the object form when available.",
+          }),
+        ]),
       ),
     }),
     renderCall(params, theme, context) {
@@ -183,7 +193,8 @@ export const createFabricExecTool = (
           );
 
       const lines = safeTerminalText(code).split("\n");
-      const displayName = params.display?.name ? safeTerminalText(params.display.name) : "";
+      const runDisplay = normalizeRunDisplay(params.display);
+      const displayName = runDisplay?.name ? safeTerminalText(runDisplay.name) : "";
       const title = `${theme.fg("toolTitle", theme.bold("fabric"))}${
         displayName ? ` ${theme.fg("accent", displayName)}` : ""
       } ${theme.fg("dim", `TypeScript · ${countLabel(lines.length, "line")}`)}`;
@@ -656,6 +667,7 @@ export const createFabricExecTool = (
       // non-string code param. Strict providers reject an array upstream
       // against the Type.String schema, so this branch is a no-op there.
       const code = Array.isArray(params.code) ? params.code.join("\n") : params.code;
+      const runDisplay = normalizeRunDisplay(params.display);
       const result = await state.execution.execute({
         code,
         ...(params.strings ? { strings: params.strings } : {}),
@@ -664,11 +676,11 @@ export const createFabricExecTool = (
         context,
         ...(params.tokenBudget !== undefined ? { tokenBudget: params.tokenBudget } : {}),
         ...(params.agentBudget !== undefined ? { maxAgentCalls: params.agentBudget } : {}),
-        ...(params.display
+        ...(runDisplay
           ? {
               display: {
-                ...(params.display.name !== undefined && { name: params.display.name }),
-                ...(params.display.description !== undefined && { description: params.display.description }),
+                ...(runDisplay.name !== undefined && { name: runDisplay.name }),
+                ...(runDisplay.description !== undefined && { description: runDisplay.description }),
               },
             }
           : {}),

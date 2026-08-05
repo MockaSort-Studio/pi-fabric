@@ -7,6 +7,7 @@ import {
   readFabricBranchSummaryDetails,
 } from "./branch-details.js";
 import { clipUtf8, utf8Bytes } from "./bounds.js";
+import { normalizeRunDisplay } from "../run-display.js";
 
 // A purely structural, typed view of one session window. Every event carries
 // the 1-based `index` it occupied in the normalized stream (stable, used by the
@@ -233,14 +234,12 @@ interface FabricRunIntent {
 
 const fabricRunIntent = (call: PendingCall | undefined): FabricRunIntent | undefined => {
   if (!call || call.name !== "fabric_exec") return undefined;
-  const display = call.args.display;
-  if (!display || typeof display !== "object" || Array.isArray(display)) return undefined;
-  const candidate = display as Record<string, unknown>;
-  if (typeof candidate.name !== "string") return undefined;
-  const name = clipUtf8(candidate.name.trim(), FABRIC_BRANCH_RUN_NAME_MAX_BYTES);
+  const display = normalizeRunDisplay(call.args.display);
+  if (!display || display.name === undefined) return undefined;
+  const name = clipUtf8(display.name.trim(), FABRIC_BRANCH_RUN_NAME_MAX_BYTES);
   if (!name) return undefined;
-  const description = typeof candidate.description === "string"
-    ? clipUtf8(candidate.description.trim(), FABRIC_BRANCH_RUN_DESCRIPTION_MAX_BYTES)
+  const description = display.description !== undefined
+    ? clipUtf8(display.description.trim(), FABRIC_BRANCH_RUN_DESCRIPTION_MAX_BYTES)
     : "";
   return { name, ...(description ? { description } : {}) };
 };
