@@ -181,6 +181,36 @@ const createRequest = {
 };
 
 describe("AgentsProvider runner support", () => {
+  it("exposes model-programmable residency on spawn and create", async () => {
+    const { provider } = setup();
+    const spawn = await provider.describe("spawn", context);
+    const create = await provider.describe("create", context);
+    const run = await provider.describe("run", context);
+    const spawnProperties = (spawn?.inputSchema as { properties: Record<string, { enum?: string[] }> }).properties;
+    const createProperties = (create?.inputSchema as { properties: Record<string, { enum?: string[] }> }).properties;
+    const runProperties = (run?.inputSchema as { properties: Record<string, unknown> }).properties;
+
+    expect(spawnProperties.residency?.enum).toEqual(["session", "durable"]);
+    expect(createProperties.residency?.enum).toEqual(["session", "durable"]);
+    expect(runProperties).not.toHaveProperty("residency");
+  });
+
+  it("rejects unavailable durable actor residency before creating an actor", async () => {
+    const { provider, actors } = setup();
+
+    await expect(
+      provider.invoke(
+        "create",
+        {
+          name: "resident",
+          instructions: "Remain active.",
+          residency: "durable",
+        },
+        context,
+      ),
+    ).rejects.toThrow("trusted project");
+    expect(actors.list()).toEqual([]);
+  });
   it("lists live peer sessions separately from Main", async () => {
     const peer: FabricPeerInfo = {
       id: "session:peer",

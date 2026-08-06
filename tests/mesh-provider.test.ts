@@ -69,11 +69,23 @@ describe("MeshProvider membership", () => {
       provider.invoke("publish", { topic: "fabric.participant.lifecycle", data: {} }, context),
     ).rejects.toThrow("reserved for host coordination");
     await expect(
+      provider.invoke("publish", { topic: "fabric.actor.host-event", data: {} }, context),
+    ).rejects.toThrow("reserved for host coordination");
+    await expect(
       provider.invoke("put", { key: "topology/hosts/forged", value: {} }, context),
     ).rejects.toThrow("reserved for host coordination");
     await expect(
       provider.invoke("delete", { key: "sessions/peer" }, context),
     ).rejects.toThrow("reserved for host coordination");
+    await expect(
+      provider.invoke("put", { key: "residency/deliveries/forged", value: {} }, context),
+    ).rejects.toThrow("reserved for host coordination");
+    await expect(
+      provider.invoke("get", { key: "residency/deliveries/private" }, context),
+    ).rejects.toThrow("private host state");
+    await expect(
+      provider.invoke("list", { prefix: "residency/" }, context),
+    ).rejects.toThrow("private host state");
   });
 
   it("uses the unified participant source with scope and kind filters", async () => {

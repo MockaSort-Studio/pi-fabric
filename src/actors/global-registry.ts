@@ -150,6 +150,11 @@ export class GlobalActorRegistry {
       responseMode: patch.responseMode ?? existing.responseMode,
       triggerTurn: patch.triggerTurn ?? existing.triggerTurn,
       coalesce: patch.coalesce ?? existing.coalesce,
+      ...(patch.residency !== undefined
+        ? { residency: patch.residency }
+        : existing.residency
+          ? { residency: existing.residency }
+          : {}),
       runner: patch.runner ?? existing.runner,
       ...(patch.model !== undefined ? { model: patch.model } : existing.model ? { model: existing.model } : {}),
       ...(patch.thinking !== undefined ? { thinking: patch.thinking } : existing.thinking ? { thinking: existing.thinking } : {}),
@@ -212,6 +217,7 @@ export class GlobalActorRegistry {
       responseMode: def.responseMode,
       triggerTurn: def.triggerTurn,
       coalesce: def.coalesce,
+      ...(def.residency ? { residency: def.residency } : {}),
       runner: def.runner,
       ...(def.model ? { model: def.model } : {}),
       ...(def.thinking ? { thinking: def.thinking } : {}),
@@ -246,6 +252,10 @@ export class GlobalActorRegistry {
       throw new Error(`Invalid global actor response mode: ${def.responseMode}`);
     }
     const coalesce = def.coalesce ?? true;
+    const residency = def.residency ?? "session";
+    if (residency !== "session" && residency !== "durable") {
+      throw new Error(`Invalid global actor residency: ${String(def.residency)}`);
+    }
     const runner = def.runner ?? "pi";
     if (runner !== "pi" && runner !== "claude") {
       throw new Error(`Invalid global actor runner: ${String(def.runner)}`);
@@ -276,6 +286,7 @@ export class GlobalActorRegistry {
       responseMode,
       triggerTurn: deliveryPolicy.triggerTurn,
       coalesce,
+      residency,
       runner,
       ...(model ? { model } : {}),
       ...(thinking ? { thinking } : {}),
@@ -329,6 +340,7 @@ export class GlobalActorRegistry {
       const triggerTurn =
         (delivery === "steer" || delivery === "followUp") && record.triggerTurn === true;
       const coalesce = record.coalesce !== false;
+      const residency = record.residency === "durable" ? "durable" : "session";
       const runner = record.runner === "claude" ? "claude" : "pi";
       const thinking: FabricThinking | undefined = isFabricThinking(record.thinking)
         ? record.thinking
@@ -355,6 +367,7 @@ export class GlobalActorRegistry {
         responseMode,
         triggerTurn,
         coalesce,
+        residency,
         runner,
         createdAt: record.createdAt,
         updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : record.createdAt,

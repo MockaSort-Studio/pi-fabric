@@ -96,6 +96,12 @@ export function initBudgetLedger(budget: number): BudgetLedgerState {
  * the owning (depth-0) manager on close so a long-lived host process does not
  * leak an active budget into a later, unrelated session.
  */
+export function useBudgetLedger(state: BudgetLedgerState): void {
+  process.env[ENV_BUDGET] = String(state.budget);
+  process.env[ENV_BUDGET_FILE] = state.file;
+  process.env[ENV_BUDGET_ID] = state.id;
+}
+
 export function clearOwnedBudgetEnv(): void {
   delete process.env[ENV_BUDGET];
   delete process.env[ENV_BUDGET_FILE];

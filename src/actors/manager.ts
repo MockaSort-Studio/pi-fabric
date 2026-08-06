@@ -12,6 +12,7 @@ import {
 } from "../config.js";
 import { MeshStore, type MeshEvent, type MeshIdentity } from "../mesh/store.js";
 import type { FabricMainAgentTarget } from "../main-agent.js";
+import type { FabricParticipantResidency } from "../topology/types.js";
 import { AgentManager } from "../agents/manager.js";
 import type { AgentRunRecord, AgentRunRequest, AgentRunResult } from "../agents/types.js";
 import { readJsonlPage } from "../log-tail.js";
@@ -50,6 +51,7 @@ interface ActorQueueItem {
 interface ManagedActor {
   id: string;
   name: string;
+  rootId: string;
   instructions: string;
   status: FabricActorStatus;
   events: FabricActorHostEvent[];
@@ -58,6 +60,7 @@ interface ManagedActor {
   responseMode: FabricActorResponseMode;
   triggerTurn: boolean;
   coalesce: boolean;
+  residency: FabricParticipantResidency;
   runner: FabricAgentRunner;
   runnerSessionId?: string;
   model?: string;
@@ -95,6 +98,7 @@ const MESH_WATCH_RECONCILE_MS = 2_000;
 const ACTOR_REGISTRY_LOCK_TIMEOUT_MS = 5_000;
 const ACTOR_REGISTRY_STALE_LOCK_MS = 30_000;
 const RETENTION_SWEEP_INTERVAL_MS = 15 * 60 * 1_000;
+const RESIDENT_HOST_EVENT_TOPIC = "fabric.actor.host-event";
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -166,8 +170,12 @@ export class ActorManager {
   readonly #persistent: boolean;
   readonly #mainAgent: FabricMainAgentTarget | undefined;
   readonly #canManageActor: ((id: string) => boolean | undefined) | undefined;
+  readonly #claimResidency: FabricParticipantResidency | undefined;
+  readonly #rootId: string;
+  readonly #meshCursorPath: string | undefined;
   readonly #retention: FabricRetentionConfig;
   readonly #locallyCreated = new Set<string>();
+  readonly #ceded = new Set<string>();
   readonly #ownership = new Map<string, boolean>();
   readonly #listeners = new Set<() => void>();
   #pollTimer: NodeJS.Timeout | undefined;
@@ -200,6 +208,9 @@ export class ActorManager {
       persistent?: boolean;
       mainAgent?: FabricMainAgentTarget;
       canManageActor?: (id: string) => boolean | undefined;
+      claimResidency?: FabricParticipantResidency;
+      rootId?: string;
+      meshCursorPath?: string;
       retention?: FabricRetentionConfig;
     } = {},
   ) {
@@ -208,6 +219,9 @@ export class ActorManager {
     this.#persistent = options.persistent ?? false;
     this.#mainAgent = options.mainAgent;
     this.#canManageActor = options.canManageActor;
+    this.#claimResidency = options.claimResidency;
+    this.#rootId = options.rootId ?? identity.id;
+    this.#meshCursorPath = options.meshCursorPath;
     this.#registryPath = path.join(this.#actorRoot, "actors.json");
     if (this.#persistent && meshConfig.enabled) this.#loadActors();
     this.#registryFingerprint = this.#currentRegistryFingerprint();
@@ -218,7 +232,7 @@ export class ActorManager {
     this.#sweepRetainedRuns();
     this.#retentionTimer = setInterval(() => this.#sweepRetainedRuns(), RETENTION_SWEEP_INTERVAL_MS);
     this.#retentionTimer.unref();
-    this.#meshOffset = mesh.latestOffset();
+    this.#meshOffset = this.#readMeshCursor() ?? mesh.latestOffset();
     this.#startMeshMonitor();
   }
 
@@ -256,6 +270,10 @@ export class ActorManager {
       if (!TOPIC_PATTERN.test(topic)) throw new Error(`Invalid Fabric actor topic: ${topic}`);
     }
     const deliveryPolicy = resolveActorDeliveryPolicy(request.delivery, request.triggerTurn);
+    const residency = request.residency ?? "session";
+    if (residency !== "session" && residency !== "durable") {
+      throw new Error(`Invalid Fabric actor residency: ${String(request.residency)}`);
+    }
     await validateActorValidWhile(request.validWhile);
     const runner = request.runner ?? this.agents.config.runner;
     if (runner !== "pi" && runner !== "claude") {
@@ -267,6 +285,7 @@ export class ActorManager {
     const actor: ManagedActor = {
       id,
       name,
+      rootId: this.#rootId,
       instructions: request.instructions,
       status: "idle",
       events,
@@ -275,6 +294,7 @@ export class ActorManager {
       responseMode: request.responseMode ?? "text",
       triggerTurn: deliveryPolicy.triggerTurn,
       coalesce: request.coalesce ?? true,
+      residency,
       runner,
       ...(request.model ? { model: request.model } : {}),
       ...(request.thinking ? { thinking: request.thinking } : {}),
@@ -309,6 +329,37 @@ export class ActorManager {
   list(): FabricActorInfo[] {
     this.#syncActorsFromRegistry();
     return [...this.#actors.values()].map((actor) => this.#publicInfo(actor));
+  }
+
+  listOwned(): FabricActorInfo[] {
+    this.#syncActorsFromRegistry();
+    this.#refreshOwnership();
+    return [...this.#actors.values()]
+      .filter((actor) => this.#canManageCached(actor.id))
+      .map((actor) => this.#publicInfo(actor));
+  }
+
+  async cede(id: string): Promise<FabricActorInfo> {
+    const actor = this.#requireActor(id);
+    this.#ceded.add(actor.id);
+    this.#ownership.set(actor.id, false);
+    actor.abortController?.abort();
+    for (const item of actor.queue.splice(0)) {
+      item.reject?.(new Error("Fabric actor residency transferred to another host"));
+    }
+    if (actor.status !== "stopped") actor.status = "idle";
+    actor.updatedAt = Date.now();
+    this.#emitChange();
+    return this.#publicInfo(actor);
+  }
+
+  reclaim(id: string): FabricActorInfo {
+    const actor = this.#requireActor(id);
+    this.#ceded.delete(actor.id);
+    this.#locallyCreated.add(actor.id);
+    this.#ownership.set(actor.id, true);
+    this.#emitChange();
+    return this.#publicInfo(actor);
   }
 
   status(id: string): FabricActorInfo {
@@ -570,6 +621,7 @@ export class ActorManager {
       responseMode: actor.responseMode,
       triggerTurn: actor.triggerTurn,
       coalesce: actor.coalesce,
+      ...(actor.residency === "durable" ? { residency: "durable" as const } : {}),
       runner: actor.runner,
       ...(actor.model ? { model: actor.model } : {}),
       ...(actor.thinking ? { thinking: actor.thinking } : {}),
@@ -635,10 +687,7 @@ export class ActorManager {
   observeHostEvent(event: FabricActorHostEvent, idle = false): boolean {
     if (!this.#beginHostEvent(event, idle)) return false;
     return [...this.#actors.values()].some(
-      (actor) =>
-        this.#canManageCached(actor.id) &&
-        actor.status !== "stopped" &&
-        actor.events.includes(event),
+      (actor) => this.#observesHostEvent(actor, event),
     );
   }
 
@@ -662,11 +711,10 @@ export class ActorManager {
   ): number {
     let delivered = 0;
     for (const actor of this.#actors.values()) {
-      if (
-        !this.#canManageCached(actor.id) ||
-        actor.status === "stopped" ||
-        !actor.events.includes(event)
-      ) {
+      if (!this.#observesHostEvent(actor, event)) continue;
+      if (!this.#canManageCached(actor.id)) {
+        this.#relayHostEvent(actor, event, payload, images);
+        delivered++;
         continue;
       }
       try {
@@ -688,6 +736,108 @@ export class ActorManager {
     return delivered;
   }
 
+  #observesHostEvent(actor: ManagedActor, event: FabricActorHostEvent): boolean {
+    if (
+      actor.status === "stopped" ||
+      !actor.events.includes(event) ||
+      actor.rootId !== this.#rootId
+    ) {
+      return false;
+    }
+    return this.#canManageCached(actor.id) || actor.residency === "durable";
+  }
+
+  #relayHostEvent(
+    actor: ManagedActor,
+    event: FabricActorHostEvent,
+    payload: unknown,
+    images: readonly ImageContent[],
+  ): void {
+    const publish = (includeImages: boolean): Promise<unknown> =>
+      this.mesh.publish({
+        topic: RESIDENT_HOST_EVENT_TOPIC,
+        kind: event,
+        from: this.identity,
+        to: actor.id,
+        data: {
+          version: 1,
+          actorId: actor.id,
+          event,
+          payload,
+          mainRevision: this.#mainRevision,
+          taskRevision: this.#taskRevision,
+          idle: this.#mainIdle,
+          ...(includeImages && images.length > 0
+            ? { images: images.map((image) => ({ ...image })) }
+            : {}),
+        },
+      });
+    void publish(images.length > 0).catch(() =>
+      images.length > 0 ? publish(false).catch(() => undefined) : undefined,
+    );
+  }
+
+  #acceptRelayedHostEvent(actor: ManagedActor, event: MeshEvent): void {
+    if (event.from.id !== actor.rootId) return;
+    if (typeof event.data !== "object" || event.data === null || Array.isArray(event.data)) return;
+    const data = event.data as Record<string, unknown>;
+    if (
+      data.version !== 1 ||
+      data.actorId !== actor.id ||
+      !HOST_EVENTS.has(data.event as FabricActorHostEvent) ||
+      typeof data.mainRevision !== "number" ||
+      typeof data.taskRevision !== "number" ||
+      typeof data.idle !== "boolean"
+    ) {
+      return;
+    }
+    const hostEvent = data.event as FabricActorHostEvent;
+    if (!actor.events.includes(hostEvent)) return;
+    this.#mainRevision = Math.max(this.#mainRevision, Math.floor(data.mainRevision));
+    this.#taskRevision = Math.max(this.#taskRevision, Math.floor(data.taskRevision));
+    this.#mainIdle = data.idle;
+    const images = Array.isArray(data.images)
+      ? data.images.filter(
+          (image): image is ImageContent =>
+            typeof image === "object" &&
+            image !== null &&
+            !Array.isArray(image) &&
+            (image as { type?: unknown }).type === "image" &&
+            typeof (image as { data?: unknown }).data === "string" &&
+            typeof (image as { mimeType?: unknown }).mimeType === "string",
+        )
+      : [];
+    this.#enqueue(actor, `host:${hostEvent}`, data.payload, {
+      ...(actor.coalesce ? { coalesceKey: `host:${hostEvent}` } : {}),
+      ...(images.length > 0 ? { images } : {}),
+      ownershipChecked: true,
+    });
+  }
+
+  #readMeshCursor(): number | undefined {
+    if (!this.#meshCursorPath) return undefined;
+    try {
+      const value = JSON.parse(fs.readFileSync(this.#meshCursorPath, "utf8")) as {
+        format?: unknown;
+        cursor?: unknown;
+      };
+      return value.format === 1 && typeof value.cursor === "number" && value.cursor >= 0
+        ? value.cursor
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  #writeMeshCursor(): void {
+    if (!this.#meshCursorPath) return;
+    try {
+      atomicWrite(this.#meshCursorPath, { format: 1, cursor: this.#meshOffset });
+    } catch {
+      // Cursor persistence is best-effort; replay resumes from the latest safe cursor.
+    }
+  }
+
   #beginHostEvent(event: FabricActorHostEvent, idle: boolean): boolean {
     if (this.#closing || !this.meshConfig.enabled) return false;
     // Streaming/message/provider hooks are frequent. The actor registry watcher
@@ -696,12 +846,7 @@ export class ActorManager {
     // unless an active actor actually subscribes to them.
     if (
       !MAIN_REVISION_EVENTS.has(event) &&
-      ![...this.#actors.values()].some(
-        (actor) =>
-          this.#canManageCached(actor.id) &&
-          actor.status !== "stopped" &&
-          actor.events.includes(event),
-      )
+      ![...this.#actors.values()].some((actor) => this.#observesHostEvent(actor, event))
     ) return false;
     this.#syncActorsFromRegistry();
     this.#refreshOwnership();
@@ -1319,6 +1464,7 @@ export class ActorManager {
         if (event.topic === "fabric.steer") this.#relaySteer(event);
         else if (!event.topic.startsWith("fabric.control.")) this.#dispatchMeshEvent(event);
       }
+      this.#writeMeshCursor();
     } finally {
       this.#polling = false;
     }
@@ -1375,7 +1521,11 @@ export class ActorManager {
       if (!addressed && !subscribed) continue;
       if (event.from.id === actor.id && !addressed) continue;
       try {
-        this.#enqueue(actor, `mesh:${event.topic}`, event);
+        if (event.topic === RESIDENT_HOST_EVENT_TOPIC && addressed) {
+          this.#acceptRelayedHostEvent(actor, event);
+        } else {
+          this.#enqueue(actor, `mesh:${event.topic}`, event);
+        }
       } catch { /* skip event for a full or stopped actor */ }
     }
   }
@@ -1483,6 +1633,7 @@ export class ActorManager {
     return {
       id: actor.id,
       name: actor.name,
+      rootId: actor.rootId,
       instructions: actor.instructions,
       status: actor.status,
       events: actor.events,
@@ -1491,6 +1642,7 @@ export class ActorManager {
       responseMode: actor.responseMode,
       triggerTurn: actor.triggerTurn,
       coalesce: actor.coalesce,
+      residency: actor.residency,
       runner: actor.runner,
       ...(actor.runnerSessionId ? { runnerSessionId: actor.runnerSessionId } : {}),
       ...(actor.model ? { model: actor.model } : {}),
@@ -1628,8 +1780,18 @@ export class ActorManager {
     }
     const known = new Set(this.#actors.keys());
     this.#loadActors(true);
+    const persisted = new Set(this.#registryRecords().map((record) => record.id));
     for (const actor of this.#actors.values()) {
-      if (!known.has(actor.id)) this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
+      if (!known.has(actor.id)) {
+        this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
+        continue;
+      }
+      if (!persisted.has(actor.id) && !this.#canManageCached(actor.id)) {
+        this.#actors.delete(actor.id);
+        this.#ownership.delete(actor.id);
+        this.#locallyCreated.delete(actor.id);
+        this.#ceded.delete(actor.id);
+      }
     }
   }
 
@@ -1672,6 +1834,7 @@ export class ActorManager {
       const actor: ManagedActor = {
         id: record.id,
         name: record.name,
+        rootId: typeof record.rootId === "string" ? record.rootId : this.#rootId,
         instructions: record.instructions,
         status,
         events: Array.isArray(record.events)
@@ -1686,6 +1849,7 @@ export class ActorManager {
         responseMode: record.responseMode === "directive" ? "directive" : "text",
         triggerTurn,
         coalesce: record.coalesce !== false,
+        residency: record.residency === "durable" ? "durable" : "session",
         runner: record.runner === "claude" ? "claude" : "pi",
         ...(typeof record.runnerSessionId === "string" && record.runnerSessionId.trim()
           ? { runnerSessionId: record.runnerSessionId }
@@ -1742,6 +1906,7 @@ export class ActorManager {
     return {
       id: actor.id,
       name: actor.name,
+      rootId: actor.rootId,
       status: actor.status,
       runner: actor.runner,
       events: [...actor.events],
@@ -1750,6 +1915,7 @@ export class ActorManager {
       responseMode: actor.responseMode,
       triggerTurn: actor.triggerTurn,
       coalesce: actor.coalesce,
+      residency: actor.residency,
       ...(actor.model ? { model: actor.model } : {}),
       ...(actor.thinking ? { thinking: actor.thinking } : {}),
       ...(actor.tools ? { tools: [...actor.tools] } : {}),
@@ -1775,9 +1941,16 @@ export class ActorManager {
   }
 
   #ownershipDecision(id: string): boolean {
-    if (!this.#canManageActor) return true;
-    const decision = this.#canManageActor(id);
-    return decision ?? this.#locallyCreated.has(id);
+    if (this.#ceded.has(id)) return false;
+    const actor = this.#actors.get(id);
+    if (actor && this.#claimResidency && actor.rootId !== this.#rootId) return false;
+    const decision = this.#canManageActor?.(id);
+    if (decision !== undefined) return decision;
+    if (this.#locallyCreated.has(id)) return true;
+    if (actor && this.#claimResidency !== undefined) {
+      return actor.residency === this.#claimResidency;
+    }
+    return this.#canManageActor === undefined;
   }
 
   #refreshOwnership(): void {

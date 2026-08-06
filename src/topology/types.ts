@@ -3,6 +3,7 @@ import type { MeshIdentity } from "../mesh/store.js";
 import type { AgentUsage } from "../agents/types.js";
 
 export type FabricParticipantKind = "root" | "agent" | "actor";
+export type FabricParticipantResidency = "session" | "durable";
 export type FabricParticipantScope = "local" | "lineage" | "project";
 export type FabricParticipantCapability =
   | "steer"
@@ -21,6 +22,7 @@ export interface FabricParticipantRecord {
   parentId?: string;
   name: string;
   status: string;
+  residency?: FabricParticipantResidency;
   runner: FabricAgentRunner;
   transport: FabricAgentTransport | "host";
   capabilities: FabricParticipantCapability[];

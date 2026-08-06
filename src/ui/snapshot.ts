@@ -202,6 +202,7 @@ export const createDashboardSnapshot = (
             local: participant.local,
             stale: participant.stale,
             participantKind: participant.kind,
+            ...(participant.residency ? { residency: participant.residency } : {}),
             capabilities: [...participant.capabilities],
           }
         : agent;
@@ -231,6 +232,7 @@ export const createDashboardSnapshot = (
       local: participant.local,
       stale: participant.stale,
       participantKind: participant.kind,
+      ...(participant.residency ? { residency: participant.residency } : {}),
       capabilities: [...participant.capabilities],
     }));
   const agents = [...localAgents, ...remoteAgents];

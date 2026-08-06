@@ -27,7 +27,7 @@ You keep talking to Pi the way you always do. Fabric gives the model **one progr
 | :-: | ---------- | --------------- |
 | ⚡ | **Code mode** | One flat tool schema; branching, loops, fan-out, and data flow live in checked TypeScript. |
 | 🧰 | **Capability routing** | Call Pi core tools, MCP servers, captured extension tools, or Fabric providers through one runtime. |
-| 🧑‍🤝‍🧑 | **Agent runtime** | One-shot workers, persistent event-driven actors, councils, and bounded recursive queries. |
+| 🧑‍🤝‍🧑 | **Agent runtime** | One-shot workers, durable resident agents, persistent event-driven actors, councils, and bounded recursive queries. |
 | 🕸️ | **Workflows + mesh** | Phased progress plus durable topics, shared tasks, and compare-and-swap state. |
 | 🛡️ | **Guardrails** | Approvals, isolation, timeouts, concurrency, recursion depth, and shared cost budgets. |
 | 🎛️ | **Native TUI** | Live activity, an interactive dashboard, and settings without leaving Pi. |

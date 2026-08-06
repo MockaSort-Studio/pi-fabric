@@ -6,6 +6,7 @@ import type {
 import type { FabricAgentRunner, FabricAgentTransport } from "../config.js";
 import type { ThinkingTransferInput } from "./thinking-transfer.js";
 import type { FabricThinking } from "../thinking.js";
+import type { FabricParticipantResidency } from "../topology/types.js";
 
 export type AgentRunStatus =
   | "queued"
@@ -44,6 +45,7 @@ export interface AgentRunRequest {
   extensions?: boolean;
   recursive?: boolean;
   worktree?: boolean;
+  residency?: FabricParticipantResidency;
   schema?: Record<string, unknown>;
   systemPrompt?: string;
   sessionFile?: string;
@@ -97,6 +99,7 @@ export interface AgentRunRecord {
   actorId?: string;
   actorName?: string;
   recursive?: boolean;
+  residency?: FabricParticipantResidency;
   startedAt: number;
   updatedAt: number;
   finishedAt?: number;
@@ -137,6 +140,7 @@ export interface AgentHandleInfo {
   actorId?: string;
   actorName?: string;
   recursive?: boolean;
+  residency?: FabricParticipantResidency;
   sessionId?: string;
   runnerSessionId?: string;
   attachCommand?: string;

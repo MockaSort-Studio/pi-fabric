@@ -49,6 +49,7 @@ import type {
 } from "../agents/types.js";
 import type { ThinkingTransferInput } from "../agents/thinking-transfer.js";
 import { isFabricThinking } from "../thinking.js";
+import { ResidencyClient } from "../residency/client.js";
 import {
   AgentTranscriptReader,
   recentTranscriptTools,
@@ -94,6 +95,17 @@ const runSchema = {
   properties: runProperties,
   required: ["task"],
   additionalProperties: false,
+};
+
+const residencySchema = {
+  type: "string",
+  enum: ["session", "durable"],
+  description: "session stops with the current Pi host; durable transfers execution to Fabric's hidden resident host.",
+};
+
+const spawnSchema = {
+  ...runSchema,
+  properties: { ...runProperties, residency: residencySchema },
 };
 
 const handoffSchema = {
@@ -203,7 +215,7 @@ const descriptors: FabricActionDescriptor[] = [
     name: "spawn",
     description:
       "Start a child agent through Pi or Claude Code and return a handle immediately. Detached runs send Main a follow-up on terminal completion when agents.notifyOnComplete is enabled; use wait when this Fabric program needs the result and status only for progress inspection.",
-    inputSchema: runSchema,
+    inputSchema: spawnSchema,
     risk: "agent",
   },
   {
@@ -357,6 +369,7 @@ const descriptors: FabricActionDescriptor[] = [
         responseMode: { type: "string", enum: ["text", "directive"] },
         triggerTurn: { type: "boolean" },
         coalesce: { type: "boolean" },
+        residency: residencySchema,
         runner: runProperties.runner,
         model: runProperties.model,
         thinking: runProperties.thinking,
@@ -746,6 +759,9 @@ const runRequest = (
     ...(typeof args.extensions === "boolean" ? { extensions: args.extensions } : {}),
     ...(typeof args.recursive === "boolean" ? { recursive: args.recursive } : {}),
     ...(typeof args.worktree === "boolean" ? { worktree: args.worktree } : {}),
+    ...(args.residency === "session" || args.residency === "durable"
+      ? { residency: args.residency }
+      : {}),
     ...(typeof args.schema === "object" && args.schema !== null && !Array.isArray(args.schema)
       ? { schema: args.schema as Record<string, unknown> }
       : {}),
@@ -827,6 +843,9 @@ const actorRequest = (
       : {}),
     ...(typeof args.triggerTurn === "boolean" ? { triggerTurn: args.triggerTurn } : {}),
     ...(typeof args.coalesce === "boolean" ? { coalesce: args.coalesce } : {}),
+    ...(args.residency === "session" || args.residency === "durable"
+      ? { residency: args.residency }
+      : {}),
     ...(typeof args.model === "string"
       ? { model: args.model }
       : inheritedModel
@@ -1102,6 +1121,7 @@ export class AgentsProvider implements FabricProvider {
     readonly control: FabricControlPlane | undefined,
     readonly lifecycle: LifecycleBroker,
     readonly agentToolPreviewEnabled: () => boolean = () => true,
+    readonly residency?: ResidencyClient,
   ) {}
 
   async list(
@@ -1222,11 +1242,11 @@ export class AgentsProvider implements FabricProvider {
       case "handoff":
         return this.handoff(args, context);
       case "spawn": {
-        const handle = await this.manager.spawn(
-          runRequest(args, context, this.manager),
-          context.signal,
-        );
-        this.manager.detachSignal(handle.id);
+        const request = runRequest(args, context, this.manager);
+        const handle = request.residency === "durable"
+          ? await this.#resident().spawnAgent(request, context.signal)
+          : await this.manager.spawn(request, context.signal);
+        if (request.residency !== "durable") this.manager.detachSignal(handle.id);
         this.participants.scheduleRefresh();
         context.activity?.({
           type: "entity",
@@ -1241,6 +1261,12 @@ export class AgentsProvider implements FabricProvider {
       }
       case "wait": {
         const id = String(args.id);
+        if (this.residency?.hasAgent(id)) {
+          const status = this.residency.statusAgent(id);
+          context.activity?.({ type: "entity", id, kind: "agent", name: status.name });
+          context.update(`Waiting for durable agent ${status.name}`);
+          return this.residency.waitAgent(id, context.signal);
+        }
         const status = this.manager.status(id);
         context.activity?.({ type: "entity", id, kind: "agent", name: status.name });
         return waitWithProgress(
@@ -1264,6 +1290,7 @@ export class AgentsProvider implements FabricProvider {
         } catch (error) {
           if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) throw error;
         }
+        if (this.residency?.hasAgent(id)) return this.residency.statusAgent(id);
         const known = this.participants.get(id);
         if (known && !known.local) return known;
         try {
@@ -1362,19 +1389,29 @@ export class AgentsProvider implements FabricProvider {
       }
       case "stop":
         return this.stopParticipant(String(args.id));
-      case "cleanup":
-        return this.manager.cleanup(String(args.id), args.deleteBranch === true);
+      case "cleanup": {
+        const id = String(args.id);
+        return this.residency?.hasAgent(id)
+          ? this.residency.cleanupAgent(id, args.deleteBranch === true)
+          : this.manager.cleanup(id, args.deleteBranch === true);
+      }
       case "create": {
         if (args.scope === "global") {
           return this.globalActors.create(actorRequest(args, context, this.manager, false));
         }
-        const actor = await this.actorManager.create(actorRequest(args, context, this.manager));
+        const request = actorRequest(args, context, this.manager);
+        if (request.residency === "durable") await this.#resident().ensureHost();
+        const actor = await this.actorManager.create(request);
+        if (actor.residency === "durable") await this.#activateDurableActor(actor);
         this.participants.scheduleRefresh();
         context.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
         return actor;
       }
       case "ask": {
         const actor = this.actorManager.status(String(args.id));
+        if (!this.actorManager.owns(actor.id)) {
+          throw new Error("agents.ask requires a session-owned actor; use agents.tell or agents.followUp for a durable actor");
+        }
         context.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
         return waitWithActorProgress(
           this.manager,
@@ -1386,11 +1423,14 @@ export class AgentsProvider implements FabricProvider {
           this.agentToolPreviewEnabled,
         );
       }
-      case "tell": {
-        const actor = this.actorManager.status(String(args.id));
-        context.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
-        return this.actorManager.tell(actor.id, String(args.message), args.data);
-      }
+      case "tell":
+        return this.routeMessage(
+          String(args.id),
+          String(args.message),
+          args.data,
+          "followUp",
+          context,
+        );
       case "steer":
         return this.routeMessage(
           String(args.id),
@@ -1476,10 +1516,14 @@ export class AgentsProvider implements FabricProvider {
       }
       case "clearMessages":
         return this.actorManager.clearMessages(String(args.id));
-      case "remove":
-        return args.scope === "global"
-          ? this.globalActors.remove(String(args.id))
-          : this.actorManager.remove(String(args.id));
+      case "remove": {
+        if (args.scope === "global") return this.globalActors.remove(String(args.id));
+        const id = String(args.id);
+        const actor = this.actorManager.status(id);
+        return actor.residency === "durable" && !this.actorManager.owns(actor.id)
+          ? this.#resident().removeActor(actor.id)
+          : this.actorManager.remove(actor.id);
+      }
       case "setInstructions": {
         const id = String(args.id);
         const instructions = String(args.instructions);
@@ -1500,7 +1544,10 @@ export class AgentsProvider implements FabricProvider {
         if (!def) throw new Error(`Unknown global actor: ${key}`);
         const as =
           typeof args.as === "string" && args.as.trim() ? args.as.trim() : undefined;
-        const actor = await this.actorManager.create(this.globalActors.toRequest(def, as));
+        const request = this.globalActors.toRequest(def, as);
+        if (request.residency === "durable") await this.#resident().ensureHost();
+        const actor = await this.actorManager.create(request);
+        if (actor.residency === "durable") await this.#activateDurableActor(actor);
         context.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
         return actor;
       }
@@ -1527,6 +1574,12 @@ export class AgentsProvider implements FabricProvider {
         } catch (error) {
           if (!(error instanceof Error && /Unknown Fabric actor/.test(error.message))) throw error;
           /* not an actor — fall through to agent */
+        }
+        if (this.residency?.hasAgent(id)) {
+          return this.residency.readAgentLog(id, {
+            lines,
+            ...(before !== undefined ? { before } : {}),
+          });
         }
         return this.manager.readLog(id, { lines, ...(before !== undefined ? { before } : {}) });
       }
@@ -1573,7 +1626,13 @@ export class AgentsProvider implements FabricProvider {
         participant.ownerHostId,
         participant.id,
         kind,
-        { message, data },
+        {
+          message,
+          data,
+          ...(typeof options.triggerTurn === "boolean"
+            ? { triggerTurn: options.triggerTurn }
+            : {}),
+        },
         participant.ownerIdentityId,
       );
     }
@@ -1617,7 +1676,13 @@ export class AgentsProvider implements FabricProvider {
       participant.ownerHostId,
       participant.id,
       kind,
-      { message, data },
+      {
+        message,
+        data,
+        ...(typeof options.triggerTurn === "boolean"
+          ? { triggerTurn: options.triggerTurn }
+          : {}),
+      },
       participant.ownerIdentityId,
     );
   }
@@ -1681,6 +1746,9 @@ export class AgentsProvider implements FabricProvider {
         from,
         message,
         delivery: command.operation,
+        ...(typeof command.triggerTurn === "boolean"
+          ? { triggerTurn: command.triggerTurn }
+          : {}),
         ...(command.data === undefined ? {} : { data: command.data }),
       });
       return { accepted: true, messageId: result.messageId };
@@ -1713,6 +1781,32 @@ export class AgentsProvider implements FabricProvider {
     return { accepted: false, error: `Owner does not control Fabric participant ${command.targetId}` };
   }
 
+  #resident(): ResidencyClient {
+    if (!this.residency) {
+      throw new Error(
+        "Durable residency requires a trusted project with Fabric mesh persistence enabled",
+      );
+    }
+    return this.residency;
+  }
+
+  async #activateDurableActor(actor: FabricActorInfo): Promise<void> {
+    const residency = this.#resident();
+    await this.actorManager.cede(actor.id);
+    await this.participants.refresh();
+    try {
+      await residency.ensureActor(actor.id);
+    } catch (error) {
+      try {
+        await residency.removeActor(actor.id);
+      } catch {
+        this.actorManager.reclaim(actor.id);
+      }
+      await this.participants.refresh().catch(() => undefined);
+      throw error;
+    }
+  }
+
   #actorIsLocal(id: string): boolean {
     const participant = this.participants.get(id);
     return this.actorManager.owns(id) && participant?.local !== false;
@@ -1738,9 +1832,15 @@ export class AgentsProvider implements FabricProvider {
       }
     };
     for (const record of this.manager.list()) append(record);
-    return this.participants
+    for (const record of this.residency?.listAgents() ?? []) append(record);
+    const listed = this.participants
       .list({ scope, kinds: ["agent"] })
       .map((participant) => local.get(participant.id) ?? participant);
+    const seen = new Set(listed.map((record) => record.id));
+    for (const record of this.residency?.listAgents() ?? []) {
+      if (!seen.has(record.id)) listed.push(record);
+    }
+    return listed;
   }
 
   #participantAlias(value: string): string {

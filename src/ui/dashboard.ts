@@ -2432,6 +2432,7 @@ export class FabricDashboard implements Component, Focusable {
       const agent = entity.value;
       field("ID", agent.id);
       field("Runner", agent.runner);
+      field("Residency", agent.residency ?? "session");
       field("Model", agent.model);
       field("Thinking", agent.thinking);
       field("Transport", agent.transport);
@@ -2449,6 +2450,7 @@ export class FabricDashboard implements Component, Focusable {
       const actor = entity.value;
       field("ID", actor.id);
       field("Runner", actor.runner);
+      field("Residency", actor.residency ?? "session");
       field("Model override", actor.model ?? "inherit");
       field("Active worker model", actor.worker?.model);
       field("Thinking override", actor.thinking ?? "inherit");
@@ -2508,6 +2510,7 @@ export class FabricDashboard implements Component, Focusable {
       field("Scope", "global template");
       field("ID", def.id);
       field("Runner", def.runner);
+      field("Residency", def.residency ?? "session");
       field("Delivery", `${def.delivery} · ${def.responseMode}`);
       field("Model", def.model ?? "inherit");
       field("Thinking", def.thinking ?? "inherit");
@@ -2527,6 +2530,7 @@ export class FabricDashboard implements Component, Focusable {
       field("Parent", canonical?.parentId);
       field("Owner host", canonical?.ownerHostId);
       field("Owner identity", canonical?.ownerIdentityId);
+      field("Residency", canonical?.residency ?? "session");
       field("Runner", canonical?.runner);
       field("Transport", canonical?.transport);
       field("Capabilities", canonical?.capabilities.join(", "));

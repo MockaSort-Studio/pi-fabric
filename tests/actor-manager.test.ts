@@ -96,6 +96,39 @@ describe("ActorManager", () => {
     expect(actors.tell(actor.id, "run after takeover")).toMatchObject({ queued: true });
   });
 
+  it("does not claim a durable actor from another root", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({
+      name: "root-bound",
+      instructions: "Remain with the creating root.",
+      residency: "durable",
+    });
+    const otherIdentity: MeshIdentity = {
+      id: "session:other-root",
+      name: "main",
+      kind: "main",
+      sessionId: "other-root",
+    };
+    const other = new ActorManager(
+      "other-root",
+      otherIdentity,
+      state.mesh,
+      state.meshConfig,
+      state.agents,
+      () => {},
+      {
+        actorRoot: path.join(state.root, "actors"),
+        persistent: true,
+        claimResidency: "durable",
+        rootId: otherIdentity.id,
+      },
+    );
+    actorManagers.push(other);
+
+    expect(other.status(actor.id).rootId).toBe(state.identity.id);
+    expect(other.owns(actor.id)).toBe(false);
+  });
+
   it("preserves current remote actor records when saving a locally owned actor", async () => {
     let localId: string | undefined;
     const state = setup(true, (id) => localId === undefined || id === localId);

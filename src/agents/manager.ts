@@ -105,6 +105,7 @@ interface ManagedAgent {
   task: string;
   runner: FabricAgentRunner;
   recursive: boolean;
+  residency: "session" | "durable";
   cwd: string;
   statusFile: string;
   lifecycleFile: string;
@@ -287,6 +288,7 @@ const failedRecord = (
     runner: managed.runner,
     transport: managed.transport.kind,
     cwd: managed.cwd,
+    ...(managed.residency === "durable" ? { residency: "durable" as const } : {}),
     startedAt: now,
     updatedAt: now,
     finishedAt: now,
@@ -448,6 +450,10 @@ export class AgentManager {
       throw new Error(`Fabric agent depth limit reached (${this.config.maxDepth})`);
     }
     if (!request.task.trim()) throw new Error("Agent task must not be empty");
+    const residency = request.residency ?? "session";
+    if (residency !== "session" && residency !== "durable") {
+      throw new Error(`Invalid Fabric agent residency: ${String(request.residency)}`);
+    }
     const runner = request.runner ?? this.config.runner;
     if (runner !== "pi" && runner !== "claude") {
       throw new Error(`Unsupported Fabric agent runner: ${String(runner)}`);
@@ -625,6 +631,7 @@ export class AgentManager {
         task: request.task,
         runner,
         recursive,
+        residency,
         cwd: agentCwd,
         statusFile,
         lifecycleFile,
@@ -684,6 +691,10 @@ export class AgentManager {
       throw new Error(`Agent ${id} settled without a result`);
     }
     return this.#withTransportMetadata(record, managed) as AgentRunResult;
+  }
+
+  markForeground(id: string): void {
+    this.#requireRun(id).background = false;
   }
 
   detachSignal(id: string): void {
@@ -1313,6 +1324,7 @@ export class AgentManager {
       runner: managed.runner,
       transport: managed.transport.kind,
       cwd: managed.cwd,
+      ...(managed.residency === "durable" ? { residency: "durable" as const } : {}),
       ...(managed.model ? { model: managed.model } : {}),
       ...(managed.thinking ? { thinking: managed.thinking } : {}),
       ...(managed.actorId ? { actorId: managed.actorId } : {}),
@@ -1363,6 +1375,7 @@ export class AgentManager {
     return {
       ...safeRecord,
       runner: managed.runner,
+      ...(managed.residency === "durable" ? { residency: "durable" as const } : {}),
       logFile: path.join(managed.runDirectory, "events.jsonl"),
       ...(nestedAgents.length > 0 ? { nestedAgents } : {}),
       ...(budget ? { budget } : {}),

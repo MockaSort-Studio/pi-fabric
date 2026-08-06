@@ -45,6 +45,37 @@ const handle = await agents.spawn({
 return await agents.wait({ id: handle.id });
 ```
 
+### Durable participant residency
+
+`agents.spawn()` and `agents.create()` accept `residency: "session" | "durable"`. The default, `session`, preserves the ordinary lifecycle: the participant is owned by the current Pi host and stops or suspends when that host shuts down. `durable` is a model-authored execution decision, not a user setting:
+
+```ts
+const audit = await agents.spawn({
+  name: "integration-audit",
+  task: "Run the integration audit and report concrete failures.",
+  residency: "durable",
+  tools: ["read", "grep", "find", "ls", "bash"],
+});
+
+const supervisor = await agents.create({
+  name: "migration-supervisor",
+  residency: "durable",
+  instructions: "Process migration messages until verification succeeds.",
+  topics: ["team.migration"],
+  delivery: "followUp",
+  triggerTurn: true,
+});
+
+await agents.tell({ id: supervisor.id, message: "Own the remaining migration." });
+return { audit, supervisor };
+```
+
+The first durable request lazily starts one hidden resident host for the current root. Fabric transfers actor ownership or launches the one-shot run there, publishes that owner in the ordinary participant directory, and routes `steer`, `followUp`, `tell`, and `stop` through the acknowledged mesh control plane. The process uses the same captured agent, mesh, timeout, recursion, and cost-ceiling configuration plus the explicit runner/model/tool capabilities authorized by the originating call. There is no daemon profile or workflow policy for the user to configure.
+
+The original TUI may shut down after the transfer. Durable agents continue to terminal status; a resumed copy of the same root can use `agents.status`, `agents.wait`, `agents.log`, and `agents.cleanup`. Terminal notifications and active actor deliveries are stored in the mesh until Main resumes. Durable actors retain their registry definition, mailbox history, runner session, mesh subscriptions, and a replay cursor. Session-bound host events are relayed by Main while it is present; oversized raw image blocks may be omitted from the cross-process relay while their redacted media descriptors remain.
+
+Owner-private actor operations remain owner-private. Use `agents.members({ kinds: ["actor"] })` or `agents.status()` for a durable actor's bounded status, and use `tell`, `steer`, `followUp`, or `stop` across the mesh. Blocking `agents.ask`, mailbox/history reads, logs, definition export, and live setting mutations require a session-owned actor. The hidden host exits after a short idle grace once it owns no live durable actor or running durable agent. Durable residency requires a trusted project with `mesh.enabled` and is unavailable in Schema enforce mode.
+
 ### Trajectory-preserving handoff
 
 A handoff is a blocking Pi-to-Pi delegation over a real fork of the caller's active session branch, rather than a fresh worker that receives only a task string. One complete `fabric_exec` invocation is the atomic frontier unit. An explicit `agents.handoff()` call records a deferred request inside the guest; it does not spawn a child or stop the program at that line. Sequential and parallel calls after the request continue normally.
@@ -419,4 +450,4 @@ const claimed = await mesh.put({
 return { event, claimed };
 ```
 
-Topics provide durable channel and direct-message semantics with sequence cursors. `mesh.members({ scope?, kinds? })` returns the same unified root/agent/actor directory as `agents.members()`. Versioned `get`/`put`/`delete` operations provide compare-and-swap state for task claims, leases, reservations, and decisions. Together with persistent actors, these are sufficient to express messenger-style swarms in Fabric code without a daemon or fixed planner/worker roles. See [`/skill:fabric-swarm`](../skills/fabric-swarm/SKILL.md) for the pattern and [`references/mesh.md`](../skills/fabric-exec/references/mesh.md) for the full API.
+Topics provide durable channel and direct-message semantics with sequence cursors. `mesh.members({ scope?, kinds? })` returns the same unified root/agent/actor directory as `agents.members()`. Versioned `get`/`put`/`delete` operations provide compare-and-swap state for task claims, leases, reservations, and decisions. Together with persistent actors, these are sufficient to express messenger-style swarms in Fabric code without fixed planner/worker roles or a user-managed daemon. When guest code requests durable residency, Fabric starts the hidden resident host described above. See [`/skill:fabric-swarm`](../skills/fabric-swarm/SKILL.md) for the pattern and [`references/mesh.md`](../skills/fabric-exec/references/mesh.md) for the full API.

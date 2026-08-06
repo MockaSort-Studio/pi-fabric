@@ -1,13 +1,14 @@
 import { getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { FabricActivityStore } from "./activity/store.js";
 import { ActorManager } from "./actors/manager.js";
 import { GlobalActorRegistry } from "./actors/global-registry.js";
 import { buildActorContext } from "./actors/context.js";
 import { actorDeliveryNotice } from "./actors/delivery-policy.js";
 import { prepareFabricActorHostPayload } from "./actors/host-event-payload.js";
-import type { FabricActorHostEvent, FabricActorInfo } from "./actors/types.js";
+import type { FabricActorHostEvent } from "./actors/types.js";
 import { CapturedToolCatalog } from "./capture/catalog.js";
 import {
   loadFabricConfig,
@@ -27,20 +28,16 @@ import { ParticipantDirectory } from "./topology/participant-directory.js";
 import type {
   FabricParticipantInfo,
   FabricParticipantListOptions,
-  FabricParticipantRecord,
   FabricPeerInfo,
 } from "./topology/types.js";
+import { actorParticipantRecord, agentParticipantRecords } from "./topology/records.js";
 import { PrewalkController } from "./prewalk/controller.js";
 import {
   claimFabricHandoff,
   runFabricHandoffAtBoundary,
   type PendingFabricHandoff,
 } from "./prewalk/handoff.js";
-import type {
-  AgentHandleInfo,
-  AgentRunRecord,
-  AgentToolResultMessage,
-} from "./agents/types.js";
+import type { AgentToolResultMessage } from "./agents/types.js";
 import {
   MainAgentController,
   resolveFabricIdentity,
@@ -65,99 +62,14 @@ import {
   type FabricProviderDiscovery,
 } from "./protocol.js";
 import { AgentManager } from "./agents/manager.js";
+import { ResidencyClient } from "./residency/client.js";
+import { RESIDENT_HOST_FORMAT, residentRoot } from "./residency/protocol.js";
 
 const BACKGROUND_COMPLETION_MAX_CHARS = 8_000;
 
 const escapeXmlText = (value: string): string =>
   value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
-const isAgentRunRecord = (
-  record: AgentRunRecord | AgentHandleInfo,
-): record is AgentRunRecord => "startedAt" in record;
-
-const agentParticipantRecords = (
-  records: Array<AgentRunRecord | AgentHandleInfo>,
-  rootId: string,
-  ownerHostId: string,
-  ownerIdentityId: string,
-  parentId: string,
-  firstSeen: Map<string, number>,
-): FabricParticipantRecord[] => {
-  const participants: FabricParticipantRecord[] = [];
-  const append = (
-    record: AgentRunRecord | AgentHandleInfo,
-    semanticParentId: string,
-  ): void => {
-    const observedAt = firstSeen.get(record.id) ?? Date.now();
-    firstSeen.set(record.id, observedAt);
-    const run = isAgentRunRecord(record) ? record : undefined;
-    const parent = record.actorId ?? semanticParentId;
-    if (!record.actorId) {
-      const active = record.status === "queued" || record.status === "running";
-      participants.push({
-        format: 1,
-        id: record.id,
-        kind: "agent",
-        rootId,
-        ownerHostId,
-        ownerIdentityId,
-        parentId: parent,
-        name: record.name,
-        status: record.status,
-        runner: record.runner,
-        transport: record.transport,
-        capabilities: [
-          ...(active ? (["steer", "followUp", "stop"] as const) : []),
-          ...(record.attachCommand ? (["attach"] as const) : []),
-          ...(record.recursive ? (["fabric"] as const) : []),
-        ],
-        cwd: record.cwd,
-        ...(record.sessionId ? { sessionId: record.sessionId } : {}),
-        ...(record.model ? { model: record.model } : {}),
-        ...(record.thinking ? { thinking: record.thinking } : {}),
-        startedAt: run?.startedAt ?? observedAt,
-        updatedAt: run?.updatedAt ?? observedAt,
-        ...(run?.finishedAt !== undefined ? { finishedAt: run.finishedAt } : {}),
-        ...(run?.currentTool ? { currentTool: run.currentTool } : {}),
-        ...(run ? { turns: run.turns, toolCalls: run.toolCalls, usage: { ...run.usage } } : {}),
-        controlProtocol: "v1",
-      });
-    }
-  };
-  for (const record of records) append(record, parentId);
-  return participants;
-};
-
-const actorParticipantRecord = (
-  actor: FabricActorInfo,
-  rootId: string,
-  ownerHostId: string,
-  ownerIdentityId: string,
-  parentId: string,
-): FabricParticipantRecord => ({
-  format: 1,
-  id: actor.id,
-  kind: "actor",
-  rootId,
-  ownerHostId,
-  ownerIdentityId,
-  parentId,
-  name: actor.name,
-  status: actor.status,
-  runner: actor.runner,
-  transport: "host",
-  capabilities: [
-    ...(actor.status === "stopped" ? [] : (["steer", "followUp", "stop"] as const)),
-    ...(actor.runner === "pi" && actor.extensions !== false ? (["fabric"] as const) : []),
-  ],
-  ...(actor.model ? { model: actor.model } : {}),
-  ...(actor.thinking ? { thinking: actor.thinking } : {}),
-  startedAt: actor.createdAt,
-  updatedAt: actor.updatedAt,
-  actorQueued: actor.queued,
-  actorMessages: actor.messages,
-  controlProtocol: "v1",
-});
 
 export class FabricState {
   #registry: ActionRegistry | undefined;
@@ -172,6 +84,7 @@ export class FabricState {
   #participants: ParticipantDirectory | undefined;
   #control: FabricControlPlane | undefined;
   #lifecycle: LifecycleBroker | undefined;
+  #residency: ResidencyClient | undefined;
   #agentsProvider: AgentsProvider | undefined;
   #compact: CompactController | undefined;
   #schema: SchemaController | undefined;
@@ -423,6 +336,10 @@ export class FabricState {
       const participant = this.#participants?.get(actorId);
       return participant ? participant.ownerHostId === hostId : undefined;
     };
+    const persistentActorRoot =
+      this.#config.mesh.actorScope === "session"
+        ? path.join(meshRoot, "actors", sessionId)
+        : path.join(meshRoot, "actors");
     this.#actors = new ActorManager(
       sessionId,
       identity,
@@ -454,16 +371,22 @@ export class FabricState {
       },
       ownsPersistentActorRegistry
         ? {
-            actorRoot:
-              this.#config.mesh.actorScope === "session"
-                ? path.join(meshRoot, "actors", sessionId)
-                : path.join(meshRoot, "actors"),
+            actorRoot: persistentActorRoot,
             persistent: true,
             mainAgent,
             canManageActor,
+            claimResidency: "session",
+            rootId: mainAgentId,
             retention: this.#config.retention,
           }
-        : { persistent: false, mainAgent, canManageActor, retention: this.#config.retention },
+        : {
+            persistent: false,
+            mainAgent,
+            canManageActor,
+            claimResidency: "session",
+            rootId: mainAgentId,
+            retention: this.#config.retention,
+          },
     );
     this.#lifecycle = new LifecycleBroker(
       this.#mesh,
@@ -480,6 +403,32 @@ export class FabricState {
       },
     );
     this.#globalActors = new GlobalActorRegistry(getAgentDir(), this.#config.mesh.maxEventBytes);
+    this.#residency = ownsPersistentActorRegistry
+      ? new ResidencyClient({
+          config: {
+            format: RESIDENT_HOST_FORMAT,
+            rootId: mainAgentId,
+            sessionId,
+            cwd: context.cwd,
+            projectRoot,
+            meshRoot,
+            actorRoot: persistentActorRoot,
+            residencyRoot: residentRoot(meshRoot, mainAgentId),
+            fullCodeMode: this.#config.fullCodeMode,
+            agents: structuredClone(this.#config.agents),
+            mesh: structuredClone(this.#config.mesh),
+            retention: structuredClone(this.#config.retention),
+            workerPath: fileURLToPath(new URL("./worker.js", import.meta.url)),
+            fabricExtensionPath: fileURLToPath(new URL("./index.js", import.meta.url)),
+            piBinary: process.env.PI_FABRIC_PI_BINARY ?? "pi",
+            claudeBinary:
+              process.env.PI_FABRIC_CLAUDE_BINARY ?? this.#config.agents.claude.binary,
+          },
+          mesh: this.#mesh,
+          participants: this.#participants,
+          mainAgent,
+        })
+      : undefined;
     const firstSeenAgents = new Map<string, number>();
     if (mainAgent.local) {
       this.#participants.registerSource(() => [
@@ -497,7 +446,7 @@ export class FabricState {
       ),
     );
     this.#participants.registerSource(() =>
-      this.#actors!.list().map((actor) =>
+      this.#actors!.listOwned().map((actor) =>
         actorParticipantRecord(actor, mainAgentId, hostId, identity.id, identity.id),
       ),
     );
@@ -512,6 +461,7 @@ export class FabricState {
       this.#control,
       this.#lifecycle,
       () => this.#config?.ui.showAgentToolPreview ?? true,
+      this.#residency,
     );
     this.#control.start((command, from) => this.#agentsProvider!.acceptControl(command, from));
     try {
@@ -529,6 +479,7 @@ export class FabricState {
       }
     }
     this.#lifecycle.start();
+    this.#residency?.start();
     this.#registry.register(this.#agentsProvider);
     if (this.#config.memory.enabled) {
       const sessionFile = context.sessionManager.getSessionFile();
@@ -733,6 +684,7 @@ export class FabricState {
     await this.#participants?.quiesce().catch(() => undefined);
     await this.#lifecycle?.close();
     await this.#control?.close();
+    await this.#residency?.close();
     try {
       await this.#registry?.close();
     } finally {
@@ -750,6 +702,7 @@ export class FabricState {
     this.#participants = undefined;
     this.#control = undefined;
     this.#lifecycle = undefined;
+    this.#residency = undefined;
     this.#agentsProvider = undefined;
     this.#compact = undefined;
     this.#schema = undefined;
@@ -783,6 +736,7 @@ export class FabricState {
     await this.#participants?.quiesce().catch(() => undefined);
     await this.#lifecycle?.close();
     await this.#control?.close();
+    await this.#residency?.close();
     const externalNames = new Set(this.#externalProviders.keys());
     try {
       await this.#registry.close(externalNames);
@@ -799,6 +753,7 @@ export class FabricState {
     this.#participants = undefined;
     this.#control = undefined;
     this.#lifecycle = undefined;
+    this.#residency = undefined;
     this.#agentsProvider = undefined;
     this.#compact = undefined;
     this.#schema = undefined;

@@ -2,6 +2,7 @@ import type { ExtensionEvent } from "@earendil-works/pi-coding-agent";
 import type { FabricAgentRunner, FabricAgentTransport } from "../config.js";
 import type { FabricThinking } from "../thinking.js";
 import type { FabricLogLine, AgentRunRecord, AgentUsage } from "../agents/types.js";
+import type { FabricParticipantResidency } from "../topology/types.js";
 
 export type FabricActorPiHostEvent = Exclude<ExtensionEvent["type"], "project_trust">;
 
@@ -123,6 +124,8 @@ export interface FabricActorRequest {
   /** Required for steer/followUp; must be false or omitted for mailbox/nextTurn. */
   triggerTurn?: boolean;
   coalesce?: boolean;
+  /** session actors stop with their Pi host; durable actors transfer to a resident host. */
+  residency?: FabricParticipantResidency;
   runner?: FabricAgentRunner;
   model?: string;
   thinking?: FabricThinking;
@@ -146,6 +149,7 @@ export interface FabricActorRequest {
 export interface FabricActorInfo {
   id: string;
   name: string;
+  rootId?: string;
   status: FabricActorStatus;
   runner: FabricAgentRunner;
   events: FabricActorHostEvent[];
@@ -154,6 +158,7 @@ export interface FabricActorInfo {
   responseMode: FabricActorResponseMode;
   triggerTurn: boolean;
   coalesce: boolean;
+  residency?: FabricParticipantResidency;
   model?: string;
   thinking?: FabricThinking;
   tools?: string[];
@@ -240,5 +245,6 @@ export interface GlobalActorDefinition extends FabricActorRequest {
   responseMode: FabricActorResponseMode;
   triggerTurn: boolean;
   coalesce: boolean;
+  residency?: FabricParticipantResidency;
   runner: FabricAgentRunner;
 }

@@ -57,7 +57,10 @@ describe("FabricControlPlane", () => {
     bystander.start(observe);
 
     await expect(
-      sender.request("host:receiver", "agent:target", "steer", { message: "focus" }),
+      sender.request("host:receiver", "agent:target", "steer", {
+        message: "focus",
+        triggerTurn: false,
+      }),
     ).resolves.toMatchObject({
       queued: true,
       routed: "mesh",
@@ -69,6 +72,7 @@ describe("FabricControlPlane", () => {
         targetId: "agent:target",
         operation: "steer",
         message: "focus",
+        triggerTurn: false,
         replyTo: "host:sender",
       }),
       expect.objectContaining({ id: "host:sender" }),

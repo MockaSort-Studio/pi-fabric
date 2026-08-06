@@ -9,12 +9,20 @@ import type { FabricParticipantSource } from "../topology/types.js";
 import { FABRIC_PARTICIPANT_LIFECYCLE_TOPIC } from "../lifecycle/types.js";
 
 const emptySchema = { type: "object", properties: {}, additionalProperties: false };
-const INTERNAL_STATE_PREFIXES = ["topology/", "sessions/", "actors/"];
+const INTERNAL_STATE_PREFIXES = ["topology/", "sessions/", "actors/", "residency/"];
+const PRIVATE_STATE_PREFIXES = ["residency/"];
 const INTERNAL_CONTROL_PREFIX = "fabric.control.";
+const INTERNAL_HOST_EVENT_TOPIC = "fabric.actor.host-event";
 
 const assertPublicStateKey = (key: string): void => {
   if (INTERNAL_STATE_PREFIXES.some((prefix) => key.startsWith(prefix))) {
     throw new Error(`Fabric mesh key is reserved for host coordination: ${key}`);
+  }
+};
+
+const assertReadableStateKey = (key: string): void => {
+  if (PRIVATE_STATE_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+    throw new Error(`Fabric mesh key is private host state: ${key}`);
   }
 };
 
@@ -180,6 +188,7 @@ export class MeshProvider implements FabricProvider {
         const topic = String(args.topic);
         if (
           topic.startsWith(INTERNAL_CONTROL_PREFIX) ||
+          topic === INTERNAL_HOST_EVENT_TOPIC ||
           topic === FABRIC_PARTICIPANT_LIFECYCLE_TOPIC
         ) {
           throw new Error(`Fabric mesh topic is reserved for host coordination: ${topic}`);
@@ -220,13 +229,31 @@ export class MeshProvider implements FabricProvider {
           })
           .slice(0, limit);
       }
-      case "get":
-        return this.store.get(String(args.key)) ?? null;
-      case "list":
-        return this.store.list(
-          typeof args.prefix === "string" ? args.prefix : "",
-          typeof args.limit === "number" ? args.limit : 100,
+      case "get": {
+        const key = String(args.key);
+        assertReadableStateKey(key);
+        return this.store.get(key) ?? null;
+      }
+      case "list": {
+        const prefix = typeof args.prefix === "string" ? args.prefix : "";
+        assertReadableStateKey(prefix);
+        const limit = Math.max(
+          1,
+          Math.min(
+            Math.floor(typeof args.limit === "number" ? args.limit : 100),
+            this.store.maxReadEvents,
+          ),
         );
+        return this.store
+          .listAll(prefix)
+          .filter(
+            (entry) =>
+              !PRIVATE_STATE_PREFIXES.some((privatePrefix) =>
+                entry.key.startsWith(privatePrefix),
+              ),
+          )
+          .slice(0, limit);
+      }
       case "put": {
         const key = String(args.key);
         assertPublicStateKey(key);

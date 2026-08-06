@@ -17,6 +17,7 @@ export interface FabricControlCommand {
   replyTo: string;
   message?: string;
   data?: unknown;
+  triggerTurn?: boolean;
   requestedAt: number;
 }
 
@@ -135,7 +136,7 @@ export class FabricControlPlane {
     ownerHostId: string,
     targetId: string,
     operation: FabricControlOperation,
-    input: { message?: string; data?: unknown } = {},
+    input: { message?: string; data?: unknown; triggerTurn?: boolean } = {},
     ownerIdentityId = ownerHostId,
   ): Promise<FabricControlResult> {
     if (!this.options.enabled) throw new Error("Fabric mesh is disabled; cannot control a remote participant");
@@ -163,6 +164,7 @@ export class FabricControlPlane {
           replyTo: this.options.hostId,
           ...(input.message !== undefined ? { message: input.message } : {}),
           ...(input.data !== undefined ? { data: input.data } : {}),
+          ...(input.triggerTurn !== undefined ? { triggerTurn: input.triggerTurn } : {}),
           requestedAt: Date.now(),
         } satisfies FabricControlCommand,
       });

@@ -6,6 +6,7 @@ import type {
   FabricParticipantCapability,
   FabricParticipantInfo,
   FabricParticipantKind,
+  FabricParticipantResidency,
   FabricPeerInfo,
 } from "../topology/types.js";
 import type { AgentUsage } from "../agents/types.js";
@@ -18,6 +19,7 @@ export interface FabricUiAgent {
   name: string;
   status: string;
   runner?: "pi" | "claude";
+  residency?: FabricParticipantResidency;
   transport: string;
   cwd: string;
   task?: string;
