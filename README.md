@@ -136,6 +136,10 @@ pnpm build
 
 The test suite covers configuration, schema validation, provider dispatch, registered-tool interception and execution, QuickJS isolation, Pi built-in invocation, agents, fake Claude stream-JSON and model discovery, workflows, durable mesh state, actor mailboxes and subscriptions, and Pi/Claude actor restoration. Claude fixtures never make a billable request.
 
+## Acknowledgments
+
+- Thanks to [@hazrid93](https://github.com/hazrid93), who originally requested a better LLM advisor pattern that saved on tokens — the idea that became Fabric's advisor.
+
 ## License
 
 MIT
