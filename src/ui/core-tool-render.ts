@@ -17,7 +17,7 @@ import { countContentLines, selectPreviewTextLines } from "./preview-lines.js";
 import {
   shouldSkipWriteDiffBytes,
   shouldSkipWriteDiffComplexity,
-} from "../providers/write-preview.js";
+} from "../providers/write-diff-limits.js";
 import { changedLineEmphasis } from "./word-diff/line-emphasis.js";
 import {
   diffLineNumberWidth,

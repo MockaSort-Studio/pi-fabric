@@ -1,4 +1,4 @@
-import { type Theme } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Container, type Focusable, getKeybindings, Spacer, Text } from "@earendil-works/pi-tui";
 import { FABRIC_ACTOR_HOST_EVENTS } from "../actors/types.js";
 import type { FabricActorHostEvent } from "../actors/types.js";

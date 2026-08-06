@@ -25,10 +25,8 @@ import type {
 } from "../protocol.js";
 import { countContentLines } from "../ui/preview-lines.js";
 import { CapturedToolsProvider } from "./captured-tools-provider.js";
-import {
-  createPreviewWriteToolDefinition,
-  writeContentForPreview,
-} from "./write-preview.js";
+import { writeContentForPreview } from "./write-diff-limits.js";
+import { createPreviewWriteToolDefinition } from "./write-preview.js";
 
 const MAX_RENDERER_ARGUMENT_CHARS = 200_000;
 const MAX_REPLACE_ALL_FILE_CHARS = 2_000_000;

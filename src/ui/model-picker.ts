@@ -1,4 +1,3 @@
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -24,12 +23,18 @@ export interface ModelSource {
 
 /**
  * Read pi-model-sort's last-used timestamps from
- * ~/.pi/agent/extensions/pi-model-sort.json (best-effort). Returns {} when the
- * file is absent or unreadable so the picker degrades to alphabetical order.
+ * <agentDir>/extensions/pi-model-sort.json (best-effort). Returns {} when the
+ * agent dir is unknown or the file is absent/unreadable so the picker degrades
+ * to alphabetical order.
+ *
+ * The agent dir is injected by the caller because this module loads through a
+ * native dynamic import (lazy dashboard) that cannot resolve pi's
+ * extension-loader alias for "@earendil-works/pi-coding-agent" (#13).
  */
-export function readModelSortLastUsed(): Record<string, number> {
+export function readModelSortLastUsed(agentDir?: string): Record<string, number> {
+  if (!agentDir) return {};
   try {
-    const configPath = join(getAgentDir(), "extensions", "pi-model-sort.json");
+    const configPath = join(agentDir, "extensions", "pi-model-sort.json");
     if (!existsSync(configPath)) return {};
     const parsed = JSON.parse(readFileSync(configPath, "utf-8")) as {
       lastUsed?: Record<string, number>;
@@ -70,14 +75,14 @@ export function sortByLastUsed<T extends ModelLike>(
 }
 
 /** Build a ModelSource from the registry, degrading to an empty list on failure. */
-export function buildModelSource(registry: ModelRegistryLike): ModelSource {
+export function buildModelSource(registry: ModelRegistryLike, agentDir?: string): ModelSource {
   let models: ModelLike[];
   try {
     models = registry.getAvailable();
   } catch {
     models = [];
   }
-  return { models, lastUsed: readModelSortLastUsed() };
+  return { models, lastUsed: readModelSortLastUsed(agentDir) };
 }
 
 export function buildClaudeModelSource(models: readonly ClaudeModelLike[]): ModelSource {

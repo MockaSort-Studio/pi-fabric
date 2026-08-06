@@ -1,4 +1,4 @@
-import { type Theme } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Container, type Focusable, getKeybindings, Spacer, Text } from "@earendil-works/pi-tui";
 
 const ACTOR_TOOL_ORDER = ["read", "grep", "find", "ls", "bash", "edit", "write"] as const;

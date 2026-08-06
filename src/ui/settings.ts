@@ -1504,7 +1504,7 @@ export async function openFabricSettings(
     "fabric_exec",
     ...deps.capturedTools.list().map((tool) => tool.name),
   ]);
-  const modelSource = buildModelSource(context.modelRegistry);
+  const modelSource = buildModelSource(context.modelRegistry, getAgentDir());
   const configuredClaudeModel = deps.state.config.agents.claude.model;
   const claudeModelSource: ModelSource = {
     models: configuredClaudeModel

@@ -1,6 +1,6 @@
 {
   "name": "pi-fabric",
-  "version": "0.37.5",
+  "version": "0.37.6",
   "description": "A programmable tool and agent runtime for Pi",
   "type": "module",
   "main": "./dist/index.js",
@@ -31,7 +31,8 @@
     "benchmark:real-resume": "pnpm run build && node scripts/benchmark-real-resume.mjs",
     "benchmark:memory-heads": "pnpm run build && node scripts/benchmark-memory-heads.mjs",
     "lint:dead": "knip --no-gitignore",
-    "check": "pnpm run typecheck && pnpm run build && pnpm run test && pnpm run lint:dead",
+    "check": "pnpm run typecheck && pnpm run build && pnpm run assert:lazy-graph && pnpm run test && pnpm run lint:dead",
+    "assert:lazy-graph": "node scripts/assert-lazy-graph-host-free.mjs",
     "prepack": "pnpm run check"
   },
   "keywords": [

@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildClaudeModelSource,
   buildModelSource,
@@ -92,6 +95,25 @@ describe("model-picker buildModelSource", () => {
   it("readModelSortLastUsed never throws and returns a record", () => {
     expect(() => readModelSortLastUsed()).not.toThrow();
     expect(typeof readModelSortLastUsed()).toBe("object");
+  });
+
+  it("readModelSortLastUsed returns {} without an agent dir (managed-install guard)", () => {
+    expect(readModelSortLastUsed(undefined)).toEqual({});
+  });
+
+  it("readModelSortLastUsed reads pi-model-sort data from the injected agent dir", () => {
+    const dir = mkdtempSync(join(tmpdir(), "fabric-agent-dir-"));
+    try {
+      mkdirSync(join(dir, "extensions"), { recursive: true });
+      writeFileSync(
+        join(dir, "extensions", "pi-model-sort.json"),
+        JSON.stringify({ lastUsed: { "openai/gpt-5": 123 } }),
+        "utf-8",
+      );
+      expect(readModelSortLastUsed(dir)).toEqual({ "openai/gpt-5": 123 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
