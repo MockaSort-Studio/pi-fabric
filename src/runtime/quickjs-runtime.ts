@@ -75,7 +75,10 @@ const __toolsBase = {
   providers: () => __call("fabric.$providers", {}),
   catalog: (args = {}) => __call("fabric.$catalog", args),
   list: (args = {}) => __call("fabric.$list", args),
-  search: (args) => __call("fabric.$search", args),
+  search: (args) => __call(
+    "fabric.$search",
+    typeof args === "string" ? { query: args } : args,
+  ),
   describe: (args) => __call("fabric.$describe", args),
   call: (args) => __call("fabric.$call", args),
   progress: (args) => __call("fabric.$progress", args),

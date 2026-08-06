@@ -46,7 +46,11 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
       "ls": "read",
       "edit": "write",
       "write": "write",
-      "bash": "execute"
+      "bash": "execute",
+      "fovea_sketch": "read",
+      "fovea_focus": "read",
+      "fovea_dwell": "read",
+      "fovea_impact": "read"
     }
   },
   "mcp": {
@@ -224,7 +228,7 @@ Extension overrides of core tools are captured and hidden with their built-in co
 
 Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`; approval policy values are `allow`, `ask`, `auto`, or `deny`. Policies apply both to actions invoked inside `fabric_exec` and to top-level model-requested tools left on Pi's native path. Native calls keep Pi's original implementation, result shape, and renderer; only the supported pre-execution interception hook is added.
 
-- Captured and directly registered tools default to the conservative `execute` risk because Pi tool definitions do not declare effects. Add exact tool-name overrides under `capture.risks`.
+- Captured and directly registered tools default to the conservative `execute` risk because Pi tool definitions do not declare effects. Add exact tool-name overrides under `capture.risks`. Fovea's verified graph-navigation tools (`fovea_sketch`, `fovea_focus`, `fovea_dwell`, and `fovea_impact`) are read-only exceptions and default to `read`.
 - Set `capture.hideFromModel` to `false` to index non-core extension tools without hiding them.
 - `capture.keepVisible` names stay in both Fabric and Pi's direct registry, except that Pi core names are always Fabric-owned in full code mode.
 - An `ask` policy emits a warning notification and opens an explicit **Allow once** / **Allow for this session** / **Deny** permission prompt, matching Claude-style approval scopes. **Allow once** authorizes only the requested action. **Allow for this session** authorizes that risk class until the current Pi session ends. The TUI uses an inline wizard; RPC clients receive the equivalent `select` dialog.

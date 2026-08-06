@@ -296,6 +296,7 @@ interface FabricToolsApi {
   providers(): Promise<Array<{ name: string; description: string }>>;
   catalog(args?: { provider?: string; limit?: number }): Promise<FabricCapabilityCatalog>;
   list(args?: { provider?: string; namespace?: string; query?: string; limit?: number }): Promise<FabricAction[]>;
+  search(query: string): Promise<FabricAction[]>;
   search(args: { query: string; limit?: number }): Promise<FabricAction[]>;
   describe(args: { ref: string }): Promise<FabricAction>;
   call(args: { ref: string; args?: Record<string, unknown> }): Promise<unknown>;

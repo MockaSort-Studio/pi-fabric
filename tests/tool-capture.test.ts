@@ -76,6 +76,36 @@ describe("registered extension tool capture", () => {
     expect(catalog.size).toBe(0);
   });
 
+  it("classifies Fovea's graph-navigation tools as read-only", () => {
+    const definitions = [
+      "fovea_sketch",
+      "fovea_focus",
+      "fovea_dwell",
+      "fovea_impact",
+    ].map((name) => tool(name));
+    const entries = definitions.map((definition) =>
+      registered(definition, "/extensions/pi-fovea/src/index.ts"),
+    );
+    const runner = runnerWith(...entries);
+    const catalog = new CapturedToolCatalog();
+
+    catalog.replace(
+      entries,
+      runner,
+      DEFAULT_FABRIC_CONFIG.capture,
+      "/extensions/pi-fabric/index.ts",
+    );
+
+    expect(
+      Object.fromEntries(catalog.list().map((entry) => [entry.name, entry.risk])),
+    ).toEqual({
+      fovea_dwell: "read",
+      fovea_focus: "read",
+      fovea_impact: "read",
+      fovea_sketch: "read",
+    });
+  });
+
   it("does not attach to an unrelated tool with the Fabric tool name", async () => {
     const fabricTool = tool("fabric_exec");
     const collidingTool = tool("fabric_exec");

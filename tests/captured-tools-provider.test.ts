@@ -156,6 +156,59 @@ describe("CapturedToolsProvider", () => {
     );
   });
 
+  it("discovers and routes a captured Fovea grep override", async () => {
+    const definition = defineTool({
+      name: "grep",
+      label: "grep (Fovea)",
+      description: "Navigate the pi-fovea code graph through grep's familiar shape",
+      parameters: Type.Object({
+        pattern: Type.String(),
+        path: Type.Optional(Type.String()),
+        glob: Type.Optional(Type.String()),
+        ignoreCase: Type.Optional(Type.Boolean()),
+        literal: Type.Optional(Type.Boolean()),
+        context: Type.Optional(Type.Number()),
+        limit: Type.Optional(Type.Number()),
+      }),
+      async execute(_id, params) {
+        return {
+          content: [{ type: "text" as const, text: `fovea grep ${params.pattern}` }],
+          details: { backend: "fovea" },
+        };
+      },
+    });
+    const runner = {
+      createContext: () => ({ cwd: process.cwd() }),
+      getActiveTools: () => [],
+      emit: vi.fn(async () => {}),
+      emitToolCall: vi.fn(async () => undefined),
+      emitToolResult: vi.fn(async () => undefined),
+    } as unknown as ExtensionRunner;
+    const catalog = new CapturedToolCatalog();
+    catalog.replace(
+      [{
+        definition,
+        sourceInfo: createSyntheticSourceInfo("/extensions/pi-fovea/src/index.ts", {
+          source: "test",
+        }),
+      }],
+      runner,
+      DEFAULT_FABRIC_CONFIG.capture,
+      "/extensions/pi-fabric/index.ts",
+    );
+    const capturedProvider = new CapturedToolsProvider(catalog);
+    const registry = new ActionRegistry();
+    registry.register(capturedProvider);
+    registry.register(new PiToolsProvider(process.cwd(), catalog, capturedProvider));
+
+    const refs = (await registry.search("fovea", context)).map((action) => action.ref);
+    expect(refs).toContain("extensions.grep");
+    expect(refs).toContain("pi.grep");
+    await expect(registry.invoke("pi.grep", { pattern: "CreateUser" }, context)).resolves.toBe(
+      "fovea grep CreateUser",
+    );
+  });
+
   it("releases scheduler barriers after an aborted non-cooperative tool", async () => {
     const hangingExecute = vi.fn(async () => new Promise<never>(() => undefined));
     const hanging = defineTool({

@@ -168,6 +168,20 @@ return {
     expect(result.value).toMatchObject({ text: "deployed", isError: false });
   });
 
+  it("normalizes the string shorthand for tools.search", async () => {
+    const result = await new QuickJsRuntime().execute(
+      'return tools.search("fovea");',
+      async (ref, args) => {
+        expect(ref).toBe("fabric.$search");
+        expect(args).toEqual({ query: "fovea" });
+        return [{ ref: "extensions.fovea_focus" }];
+      },
+      options,
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.value).toEqual([{ ref: "extensions.fovea_focus" }]);
+  });
+
   it("routes stable Fabric providers through first-class proxies", async () => {
     const calls: Array<{ ref: string; args: Record<string, unknown> }> = [];
     const result = await new QuickJsRuntime().execute(

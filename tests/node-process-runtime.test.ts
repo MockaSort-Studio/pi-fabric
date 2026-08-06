@@ -27,6 +27,21 @@ return { models, process: typeof process, require: typeof require };
     });
   });
 
+  it("normalizes the string shorthand for tools.search", async () => {
+    const result = await new NodeProcessRuntime().execute(
+      'return tools.search("fovea");',
+      async (ref, args) => {
+        expect(ref).toBe("fabric.$search");
+        expect(args).toEqual({ query: "fovea" });
+        return [{ ref: "extensions.fovea_focus" }];
+      },
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.value).toEqual([{ ref: "extensions.fovea_focus" }]);
+  });
+
   it("extends the active deadline for a long host call", async () => {
     const result = await new NodeProcessRuntime().execute(
       'await tools.call({ ref: "pi.bash", args: { timeout: 1 } }); return "ok";',

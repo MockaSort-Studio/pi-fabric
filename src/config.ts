@@ -256,6 +256,10 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
       edit: "write",
       write: "write",
       bash: "execute",
+      fovea_sketch: "read",
+      fovea_focus: "read",
+      fovea_dwell: "read",
+      fovea_impact: "read",
     },
   },
   ui: {
