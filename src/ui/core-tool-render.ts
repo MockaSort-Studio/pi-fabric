@@ -12,6 +12,7 @@ import {
   languageFromPath,
   observePiTheme,
 } from "./highlight.js";
+import { arcItem, pushArcItem } from "./arc-group.js";
 import { markDiffLine } from "./diff-background.js";
 import { countContentLines, selectPreviewTextLines } from "./preview-lines.js";
 import {
@@ -365,7 +366,7 @@ const renderContent = (
     }
   }
   flush();
-  if (skipHighlight) rendered.push(theme.fg("muted", `╰─ ${config.skipLabel}`));
+  if (skipHighlight) pushArcItem(rendered, arcItem(theme, config.skipLabel));
   return { lines: rendered, hidden: selected.hidden };
 };
 
@@ -667,7 +668,7 @@ const renderDiff = (
     return `\x1b[2m${theme.fg("toolDiffContext", ` ${lineNumber} │ `)}${content}\x1b[22m`;
   });
   if (skipHighlight) {
-    lines.push(theme.fg("muted", "╰─ Syntax highlighting skipped for large diff"));
+    pushArcItem(lines, arcItem(theme, "Syntax highlighting skipped for large diff"));
   }
   return { lines, hidden };
 };
@@ -695,8 +696,8 @@ const renderRead = (
     emptyLabel: "Empty file",
     skipLabel: "Syntax highlighting skipped for large file",
   });
-  if (notice) rendered.lines.push(theme.fg("muted", `╰─ ${notice}`));
-  else if (truncated) rendered.lines.push(theme.fg("muted", "╰─ Output truncated by read"));
+  if (notice) pushArcItem(rendered.lines, arcItem(theme, notice));
+  else if (truncated) pushArcItem(rendered.lines, arcItem(theme, "Output truncated by read"));
   return rendered;
 };
 
@@ -855,7 +856,7 @@ const renderEdit = (
     operations.length > 1 ? theme.fg("muted", ` · ${operations.length} edit blocks`) : ""
   }`;
   if (operations.length > maxOperations) {
-    sections.push(theme.fg("muted", `╰─ Showing ${maxOperations} of ${operations.length} edit blocks`));
+    pushArcItem(sections, arcItem(theme, `Showing ${maxOperations} of ${operations.length} edit blocks`));
   }
   return { lines: [header, ...sections], hidden };
 };
@@ -971,7 +972,7 @@ const renderGrep = (
     }
   }
   if (skipHighlight) {
-    lines.push(theme.fg("muted", "╰─ Syntax highlighting skipped for large grep output"));
+    pushArcItem(lines, arcItem(theme, "Syntax highlighting skipped for large grep output"));
   }
   return { lines, hidden: selected.hidden };
 };
@@ -1137,9 +1138,9 @@ const renderBash = (
     const text = theme.fg(audit.success === false ? "error" : "muted", escapeControlChars(entry.line) || " ");
     lines.push(text);
   }
-  if (nativeTruncated(audit)) lines.push(theme.fg("muted", "╰─ Output truncated by bash"));
+  if (nativeTruncated(audit)) pushArcItem(lines, arcItem(theme, "Output truncated by bash"));
   const fullOutputPath = stringOf(resultDetails(audit)?.fullOutputPath);
-  if (fullOutputPath) lines.push(theme.fg("muted", `╰─ Full output: ${escapeControlChars(fullOutputPath)}`));
+  if (fullOutputPath) pushArcItem(lines, arcItem(theme, `Full output: ${escapeControlChars(fullOutputPath)}`));
   return { lines, hidden: selected.hidden };
 };
 

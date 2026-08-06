@@ -3,6 +3,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
+import { arcItemStyled } from "./ui/arc-group.js";
 import type { CodePreviewSettings } from "./ui/code-preview.js";
 import {
   type FabricToolShellDecorator,
@@ -377,7 +378,7 @@ export const createFabricExecTool = (
               !expanded &&
               !coreToolPreviewEnabled(audit, codePreviewSettings)
             ) {
-              text += nl + theme.fg("muted", "╰─ ") + expandHint(theme);
+              text += nl + arcItemStyled(theme, expandHint(theme));
             } else if (progressLine) {
               text += nl + theme.fg("dim", progressLine);
             }
@@ -524,7 +525,7 @@ export const createFabricExecTool = (
           !expanded &&
           !coreToolPreviewEnabled(audit, codePreviewSettings)
         ) {
-          text += nl + theme.fg("muted", "╰─ ") + expandHint(theme);
+          text += nl + arcItemStyled(theme, expandHint(theme));
         } else if (previewLines.length === 0 && output && !isCoreToolAudit(audit)) {
           const lines = safeTerminalText(output).split(nl);
           const outLimit = expanded ? Math.min(lines.length, 200) : 12;

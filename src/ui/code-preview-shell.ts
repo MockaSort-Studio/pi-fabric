@@ -7,6 +7,7 @@ import {
   visibleWidth,
   type Component,
 } from "@earendil-works/pi-tui";
+import { continueArcGroup } from "./arc-group.js";
 
 type ToolCallBackgroundMode = "on" | "border" | "off";
 type AnyTool = ToolDefinition<any, any, any>;
@@ -146,7 +147,10 @@ class TimingFooter implements Component {
     private readonly state: TimingState,
   ) {}
   render(width: number): string[] {
-    return [...this.component.render(width), truncateToWidth(this.footer, width, "")];
+    return [
+      ...continueArcGroup(this.component.render(width)),
+      truncateToWidth(this.footer, width, ""),
+    ];
   }
   invalidate(): void {
     if (!isTimingOnlyRender(this.state)) this.component.invalidate?.();

@@ -319,6 +319,8 @@ describe("Fabric core tool parity rendering", () => {
     expect(rendered!.lines.join("\n")).toContain("echo complete");
     expect(rendered!.lines.join("\n")).toContain("Output truncated by bash");
     expect(rendered!.lines.join("\n")).toContain("Full output: /tmp/bash.log");
+    expect(rendered!.lines).toContain("├─ Output truncated by bash");
+    expect(rendered!.lines).toContain("╰─ Full output: /tmp/bash.log");
   });
 
   it("honors collapsed preview visibility while allowing expanded output", () => {
