@@ -406,3 +406,77 @@ describe("PiToolsProvider lifecycle", () => {
     expect(audits[0]?.mediaNote).toBe("Read image file [image/png]");
   }, 15_000);
 });
+
+describe("extension hijack contract for nested core tools", () => {
+  // Generalized pi-vision-handoff pattern: any extension that expresses a
+  // core-tool hijack as tool_call/tool_result handlers sees its behavior
+  // inside fabric_exec pi.* calls, because the provider replays pi's
+  // lifecycle event pipeline for nested executions.
+  it("co-exists native grep lines with an extension-appended block via tool_result", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-grep-append-"));
+    fs.writeFileSync(path.join(dir, "users.ts"), "export function GetUserHandler() {}\n");
+    try {
+      const runner = makeRunner({
+        emitToolResult: vi.fn(
+          async (event: { toolName: string; content: Array<{ type: string; text?: string }> }) =>
+            event.toolName === "grep"
+              ? {
+                  content: [
+                    ...event.content,
+                    { type: "text", text: 'fovea graph "GetUserHandler" \u00b7 anchor context' },
+                  ],
+                }
+              : undefined,
+        ),
+      });
+      const registry = registerWithRunner(runner);
+
+      const result = await registry.invoke(
+        "pi.grep",
+        { pattern: "GetUserHandler", path: dir },
+        baseContext,
+      );
+
+      // Both surfaces co-exist: exact-match lines from core grep, plus the
+      // extension's appended context block.
+      expect(String(result)).toContain("GetUserHandler");
+      expect(String(result)).toContain("fovea graph");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reroutes nested grep arguments mutated by a tool_call handler", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-grep-mutate-"));
+    fs.writeFileSync(path.join(dir, "users.ts"), "export function GetUserHandler() {}\n");
+    try {
+      const runner = makeRunner({
+        emitToolCall: vi.fn(async (event: { input: Record<string, unknown> }) => {
+          event.input.pattern = "zzz-no-such-symbol";
+        }),
+      });
+      const registry = registerWithRunner(runner);
+
+      const result = await registry.invoke(
+        "pi.grep",
+        { pattern: "GetUserHandler", path: dir },
+        baseContext,
+      );
+
+      expect(String(result)).not.toContain("users.ts");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks a nested core tool through the tool_call preflight", async () => {
+    const runner = makeRunner({
+      emitToolCall: vi.fn(async () => ({ block: true, reason: "grep requires an audit note" })),
+    });
+    const registry = registerWithRunner(runner);
+
+    await expect(
+      registry.invoke("pi.grep", { pattern: "anything" }, baseContext),
+    ).rejects.toThrow("grep requires an audit note");
+  });
+});
