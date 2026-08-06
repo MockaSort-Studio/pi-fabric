@@ -27,6 +27,7 @@ export type FabricUiWidgetMode = "auto" | "always" | "hidden";
 export type FabricResultFormat = "auto" | "yaml" | "json" | "text";
 export type FabricPrewalkMode = "in-place" | "trajectory";
 export type FabricExecutorRuntime = "quickjs" | "node-process";
+export type FabricConfigScope = "global" | "project";
 type FabricCompactionEngine = "pi" | "fabric";
 type FabricActorScope = "project" | "session";
 
@@ -1002,10 +1003,19 @@ export const loadFabricConfig = (options: {
 };
 
 export const saveFabricConfig = (
-  options: { cwd: string; agentDir: string; projectTrusted: boolean },
+  options: {
+    cwd: string;
+    agentDir: string;
+    projectTrusted: boolean;
+    scope?: FabricConfigScope;
+  },
   partial: Record<string, unknown>,
-): { scope: "global" | "project"; path: string } => {
-  const targetPath = options.projectTrusted
+): { scope: FabricConfigScope; path: string } => {
+  const scope = options.scope ?? (options.projectTrusted ? "project" : "global");
+  if (scope === "project" && !options.projectTrusted) {
+    throw new Error("Cannot save project Fabric configuration for an untrusted project");
+  }
+  const targetPath = scope === "project"
     ? path.join(options.cwd, ".pi", "fabric.json")
     : path.join(options.agentDir, "fabric.json");
   if (Object.hasOwn(partial, "configVersion") || Object.hasOwn(partial, "subagents")) {
@@ -1016,5 +1026,5 @@ export const saveFabricConfig = (
   const merged = mergeObjects(existing, partial) as Record<string, unknown>;
   merged.configVersion = CURRENT_FABRIC_CONFIG_VERSION;
   writeJsonAtomic(targetPath, merged, input?.source);
-  return { scope: options.projectTrusted ? "project" : "global", path: targetPath };
+  return { scope, path: targetPath };
 };

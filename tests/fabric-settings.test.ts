@@ -93,6 +93,51 @@ describe("FabricSettingsComponent", () => {
     expect(lines.some((line) => line.includes("Type to search"))).toBe(true);
     expect(lines.some((line) => line.includes("Full code mode"))).toBe(true);
     expect(lines.some((line) => line.includes("Executor"))).toBe(true);
+    expect(lines.some((line) => line.includes("Save scope: Project (.pi/fabric.json)"))).toBe(true);
+  });
+
+  it("toggles save scope with Ctrl+G from the root and active submenus", () => {
+    const scopes: string[] = [];
+    const component = new FabricSettingsComponent(theme, buildItems(), () => {}, () => {}, {
+      initialSaveScope: "project",
+      projectScopeAvailable: true,
+      onSaveScopeChange: (scope) => scopes.push(scope),
+    });
+
+    component.handleInput("\x07");
+    expect(component.render(100).join("\n")).toContain(
+      "Save scope: Global (~/.pi/agent/fabric.json)",
+    );
+
+    const list = component.settingsList as any;
+    list.selectedIndex = list.items.findIndex((item: { id: string }) => item.id === "executor");
+    list.activateItem();
+    component.handleInput("\x07");
+
+    expect(list.submenuComponent).not.toBeNull();
+    expect(component.render(100).join("\n")).toContain(
+      "Save scope: Project (.pi/fabric.json)",
+    );
+    expect(scopes).toEqual(["global", "project"]);
+  });
+
+  it("keeps untrusted settings global-only", () => {
+    const onSaveScopeChange = vi.fn();
+    const component = new FabricSettingsComponent(theme, buildItems(), () => {}, () => {}, {
+      initialSaveScope: "global",
+      projectScopeAvailable: false,
+      onSaveScopeChange,
+    });
+
+    component.handleInput("\x07");
+
+    expect(component.render(100).join("\n")).toContain(
+      "Save scope: Global (~/.pi/agent/fabric.json)",
+    );
+    expect(component.render(100).join("\n")).toContain(
+      "project scope unavailable for untrusted projects",
+    );
+    expect(onSaveScopeChange).not.toHaveBeenCalled();
   });
 
   it("renders every section", () => {
@@ -572,6 +617,61 @@ describe("FabricSettingsComponent", () => {
     const lines = agents.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Token limit");
     expect(lines).toContain("500k");
+  });
+
+  it("persists trusted-project changes globally after Ctrl+G", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-settings-global-"));
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    const inheritedAgentDir = process.env.PI_CODING_AGENT_DIR;
+    fs.mkdirSync(cwd, { recursive: true });
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+      const applyFabricMode = vi.fn();
+      const requestRender = vi.fn();
+      const state = {
+        config,
+        ensure: vi.fn().mockResolvedValue(undefined),
+        reloadConfig: vi.fn(),
+        agents: { claudeModels: vi.fn().mockResolvedValue([]) },
+      } as unknown as FabricState;
+      const context = {
+        mode: "tui",
+        cwd,
+        isProjectTrusted: () => true,
+        modelRegistry: { getAvailable: () => fakeModelSource.models },
+        ui: {
+          notify: vi.fn(),
+          custom: vi.fn(async (factory) => {
+            const component = factory({ requestRender }, theme, {}, () => {}) as FabricSettingsComponent;
+            component.handleInput("\x07");
+            const list = component.settingsList as any;
+            list.selectedIndex = list.items.findIndex(
+              (item: { id: string }) => item.id === "fullCodeMode",
+            );
+            list.activateItem();
+          }),
+        },
+      } as unknown as ExtensionContext;
+
+      await openFabricSettings(context, {
+        state,
+        applyFabricMode,
+        capturedTools: { list: () => [] } as unknown as CapturedToolCatalog,
+      });
+
+      expect(requestRender).toHaveBeenCalledOnce();
+      expect(
+        JSON.parse(fs.readFileSync(path.join(agentDir, "fabric.json"), "utf8")),
+      ).toMatchObject({ fullCodeMode: false });
+      expect(fs.existsSync(path.join(cwd, ".pi", "fabric.json"))).toBe(false);
+      expect(applyFabricMode).toHaveBeenCalledOnce();
+    } finally {
+      if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = inheritedAgentDir;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("persists a picked Prewalk thinking level through the real settings dialog flow", async () => {

@@ -454,6 +454,28 @@ describe("Fabric configuration", () => {
     expect(config.fullCodeMode).toBe(false);
   });
 
+  it("saves explicit global overrides from a trusted project", () => {
+    const root = temporaryDirectory();
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+    fs.mkdirSync(agentDir, { recursive: true });
+    const projectPath = path.join(cwd, ".pi", "fabric.json");
+    fs.writeFileSync(projectPath, JSON.stringify({ fullCodeMode: false }));
+
+    const result = saveFabricConfig(
+      { cwd, agentDir, projectTrusted: true, scope: "global" },
+      { executor: { timeoutMs: 45_000 } },
+    );
+
+    expect(result).toEqual({ scope: "global", path: path.join(agentDir, "fabric.json") });
+    expect(JSON.parse(fs.readFileSync(path.join(agentDir, "fabric.json"), "utf8"))).toEqual({
+      configVersion: 3,
+      executor: { timeoutMs: 45_000 },
+    });
+    expect(JSON.parse(fs.readFileSync(projectPath, "utf8"))).toEqual({ fullCodeMode: false });
+  });
+
   it("saves into the global fabric.json when the project is untrusted", () => {
     const root = temporaryDirectory();
     const cwd = path.join(root, "project");
@@ -470,6 +492,20 @@ describe("Fabric configuration", () => {
     expect(fs.existsSync(path.join(cwd, ".pi", "fabric.json"))).toBe(false);
     const saved = JSON.parse(fs.readFileSync(path.join(agentDir, "fabric.json"), "utf8"));
     expect(saved).toEqual({ configVersion: 3, executor: { timeoutMs: 30_000 } });
+  });
+
+  it("rejects explicit project saves for untrusted projects", () => {
+    const root = temporaryDirectory();
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+
+    expect(() =>
+      saveFabricConfig(
+        { cwd, agentDir, projectTrusted: false, scope: "project" },
+        { fullCodeMode: false },
+      )
+    ).toThrow("Cannot save project Fabric configuration for an untrusted project");
+    expect(fs.existsSync(path.join(cwd, ".pi", "fabric.json"))).toBe(false);
   });
 
   it("persists and clears the dedicated prewalk model", () => {
