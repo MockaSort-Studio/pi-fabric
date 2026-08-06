@@ -125,11 +125,11 @@ const __piArgAliases = {
   edit: { file: "path", old: "oldText", new: "newText", replacement: "newText" },
   write: { file: "path", contents: "content", body: "content", text: "content", data: "content" },
 };
-// Multi-arg positional order, used only when a call passes >= 2 args. The
-// one-field tools (read/bash/ls) are intentionally absent: their bare-string
-// form already covers the 1-arg case, and a 2-arg call should hit the
-// type-checker's wrong-arity (2554) and be corrected to an options object
-// rather than silently dropping the second argument.
+// Multi-arg positional order, used only when a call passes >= 2 args and the
+// (primary, options) merge in __positionalToArgs does not apply. One-field
+// tools (read/bash/ls) stay absent: their two-arg form is a bare string plus
+// an options object, repaired by the merge instead of a wrong-arity (2554)
+// type error; only a non-object second arg still fails 2554.
 const __piPositionalFields = {
   grep: ["pattern", "path", "limit"],
   find: ["pattern", "path", "limit"],
@@ -147,9 +147,29 @@ const __piNumericFields = {
   ls: ["limit"],
   bash: ["timeout"],
 };
+// (primary, options) two-arg merge for the string-primary tools:
+// pi.read("index.ts", { limit: 120 }) becomes { path: "index.ts", limit: 120 }.
+// A plain-object second arg is never a valid positional value for these tools
+// (grep/find take (pattern, path, limit) strings/numbers), so merging is
+// unambiguous; the positional string wins the primary field on conflict. The
+// merged object flows through the same alias, unit, and numeric normalization
+// in __normalizePiArgs as any other options object.
 const __positionalToArgs = (name, rest) => {
+  const first = rest[0];
+  const second = rest[1];
+  const primaryField = __piStringFields[name];
+  if (
+    rest.length === 2 &&
+    typeof first === "string" &&
+    primaryField !== undefined &&
+    second !== null && typeof second === "object" && !Array.isArray(second)
+  ) {
+    const merged = Object.assign({}, second);
+    merged[primaryField] = first;
+    return merged;
+  }
   const order = __piPositionalFields[name];
-  if (!order) return rest.length > 0 ? rest[0] : {};
+  if (!order) return rest.length > 0 ? first : {};
   const out = {};
   for (let i = 0; i < rest.length && i < order.length; i++) {
     const v = rest[i];
@@ -267,8 +287,9 @@ const __piEnvelopeGuard = (name, value) => {
     },
   });
 };
-// The pi proxy accepts: a bare string (primary field), an options object, or
-// a positional spread mapped by __piPositionalFields. 0/1 args preserve the
+// The pi proxy accepts: a bare string (primary field), an options object, a
+// (primary, options) two-arg merge for the string-primary tools, or a
+// positional spread mapped by __piPositionalFields. 0/1 args preserve the
 // legacy (args = {}) default so existing programs are unchanged.
 globalThis.pi = new Proxy({}, {
   get(_target, property) {

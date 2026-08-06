@@ -202,10 +202,77 @@ describe("pi positional args", () => {
     expect(result.value).toEqual({ a: "g", b: "f", c: "w", d: "e" });
   });
 
-  it("type-check-rejects 2-arg calls to one-field tools so the extra arg is not silently dropped", () => {
+  it("type-check-rejects 2-arg calls with a non-object second arg so it is not silently dropped", () => {
     const result = typeCheckFabricCode('await pi.read("/x", 10); return "never";', GUEST_TYPE_DECLARATIONS);
     expect(result.errors.length).toBeGreaterThan(0);
-    expect(result.errors.some((e) => /argument/i.test(e.message))).toBe(true);
+    expect(result.errors.some((e) => /properties in common|argument/i.test(e.message))).toBe(true);
+  });
+
+  it("type-checks two-arg (primary, options) calls for string-primary tools", () => {
+    const result = typeCheckFabricCode(
+      'const a = await pi.read("index.ts", { limit: 120 });' +
+        'const b = await pi.bash("ls dist", { timeout: 30 });' +
+        'const c = await pi.bash("pwd", { timeoutMs: 5000, settle: true });' +
+        'const d = await pi.ls("src", { limit: 20 });' +
+        'const e = await pi.grep("TODO", { path: "src", ignoreCase: true, ctx: 2 });' +
+        'const f = await pi.find("*.ts", { path: "src", limit: 5 });' +
+        'return { a, b: b.ok, c: c.ok, d, e, f };',
+      GUEST_TYPE_DECLARATIONS,
+    );
+    expect(result.errors).toEqual([]);
+  });
+
+  it("merges two-arg (primary, options) calls into canonical object form at runtime", async () => {
+    const hostCall = vi.fn(async (ref: string, args: Record<string, unknown>) => {
+      if (ref === "pi.bash") return { ok: true, output: "b", details: null };
+      if (ref === "pi.read") return "r";
+      if (ref === "pi.ls") return "l";
+      if (ref === "pi.grep") return "g";
+      if (ref === "pi.find") return "f";
+      throw new Error("Unexpected call: " + ref);
+    });
+    const result = await new QuickJsRuntime().execute(
+      'const a = await pi.read("index.ts", { limit: 120 });' +
+        'const b = await pi.bash("ls", { timeoutMs: 2000 });' +
+        'const c = await pi.ls("src", { max: 10 });' +
+        'const d = await pi.grep("TODO", { path: "src", ctx: 2 });' +
+        'const e = await pi.find("*.ts", { path: "src", limit: "5" });' +
+        'const f = await pi.read("positional.ts", { path: "object.ts", limit: 1 });' +
+        'return [a, b.output, c, d, e, f];',
+      hostCall,
+      options,
+    );
+    expect(result.error).toBeUndefined();
+    expect(hostCall.mock.calls[0]?.[1]).toEqual({ path: "index.ts", limit: 120 });
+    // timeoutMs unit conversion applies to the merged object.
+    expect(hostCall.mock.calls[1]?.[1]).toEqual({ command: "ls", timeout: 2 });
+    expect(hostCall.mock.calls[2]?.[1]).toEqual({ path: "src", limit: 10 });
+    expect(hostCall.mock.calls[3]?.[1]).toEqual({ pattern: "TODO", path: "src", context: 2 });
+    // Numeric strings still coerce to numbers after the merge.
+    expect(hostCall.mock.calls[4]?.[1]).toEqual({ pattern: "*.ts", path: "src", limit: 5 });
+    // The positional string wins the primary field on conflict.
+    expect(hostCall.mock.calls[5]?.[1]).toEqual({ path: "positional.ts", limit: 1 });
+    expect(result.value).toEqual(["r", "b", "l", "g", "f", "r"]);
+  });
+
+  it("settles a two-arg bash call when the merged options carry settle:true", async () => {
+    const hostCall = vi.fn(async (_ref: string, _args: Record<string, unknown>): Promise<never> => {
+      throw new Error("oops\n\n\nCommand exited with code 7");
+    });
+    const result = await new QuickJsRuntime().execute(
+      'return await pi.bash("exit 7", { settle: true });',
+      hostCall,
+      options,
+    );
+    expect(result.error).toBeUndefined();
+    expect(hostCall.mock.calls[0]?.[1]).toEqual({ command: "exit 7" });
+    expect(result.value).toEqual({
+      ok: false,
+      output: "oops\n",
+      details: null,
+      exitCode: 7,
+      error: "oops\n\n\nCommand exited with code 7",
+    });
   });
 });
 

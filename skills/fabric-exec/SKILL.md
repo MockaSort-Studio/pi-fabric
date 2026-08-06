@@ -12,15 +12,15 @@ description: >-
 One type-checked TS program in a fresh executor (isolated QuickJS by default). Only the `return` value reaches the model; `print()`/`console.log` go to the activity panel. `π` is not a tool.
 
 ## `pi` core tools (full code mode only)
-`pi.<tool>(arg)` — single arg: bare string (primary field) or options object. Multi-arg positional calls are accepted for `grep`/`find` (`pattern, path, limit`), `write` (`path, content`), and `edit` (`path, oldText, newText`); one-field tools (`read`/`bash`/`ls`) stay single-arg — a 2-arg call on those is a type error so the extra arg isn't silently dropped.
+`pi.<tool>(arg)` — single arg: bare string (primary field) or options object, or a two-arg `(primary, options)` merge for the string-primary tools (`read`/`bash`/`ls`/`grep`/`find`): `pi.read('index.ts', { limit: 120 })` becomes `{ path: 'index.ts', limit: 120 }`, the positional string winning the primary field on conflict; a non-object second arg on those is still a type error. Positional tuple calls are accepted for `grep`/`find` (`pattern, path, limit`), `write` (`path, content`), and `edit` (`path, oldText, newText`).
 
 | Tool | Form | Returns |
 |------|------|---------|
-| `read` | `path` \| `{path,offset?,limit?}` | `string` |
-| `bash` | `command` \| `{command,timeout?}` | `{ok:true,output,details}`; rejects on a nonzero exit (`settle:true` returns `{ok:false,output,details:null,exitCode,error}` instead) |
+| `read` | `path` \| `{path,offset?,limit?}` \| `(path, options?)` | `string` |
+| `bash` | `command` \| `{command,timeout?}` \| `(command, options?)` | `{ok:true,output,details}`; rejects on a nonzero exit (`settle:true` returns `{ok:false,output,details:null,exitCode,error}` instead) |
 | `grep` | `pattern` \| `{pattern,path?,glob?,ignoreCase?,literal?,context?,limit?}` \| `(pattern, path?, limit?)` | `string` |
 | `find` | `pattern` \| `{pattern,path?,limit?}` \| `(pattern, path?, limit?)` | `string` |
-| `ls` | `path?` \| `{path?,limit?}` | `string` |
+| `ls` | `path?` \| `{path?,limit?}` \| `(path, options?)` | `string` |
 | `edit` | `{path,edits:[{oldText,newText,all?}],all?}` \| `{path,oldText,newText,all?}` \| `(path, oldText, newText)` | `{ok,output,details}` |
 | `write` | `{path,content}` \| `(path, content)` | `{ok,output,details}` |
 
@@ -90,7 +90,7 @@ The guest TypeScript declarations contain the complete argument and return contr
 Refs are namespaced (`pi.grep`, `extensions.<tool>`, `mcp.<server>.<tool>`, `schema.<action>`); bare names are rejected. `tools.providers()`→`[{name,description}]` · `tools.catalog({provider?,limit?})`→current provider/action head tree (navigation metadata, not session evidence) · `tools.search({query,limit?})`→`FabricAction[]`(`ref,name,description,inputSchema,risk`) · `tools.describe({ref})`→full `FabricAction` (read `inputSchema` first) · `tools.call({ref,args?})` · `tools.list({provider?,namespace?,query?,limit?})` · `tools.models()`→Pi `[{provider,id,name,key}]`; `agents.models({runner:"claude"})`→Claude Code runtime models with canonical `claude/<value>` keys. Use `tools.call()` for refs discovered or computed at runtime, or names that cannot use property access—not as the default for known actions. Calling a core-tool name on `tools` (e.g. `tools.read(...)`) throws with a hint to use `pi.read(...)`.
 
 ## Error recovery: read, describe, retry
-Read the line-numbered error → `await tools.describe({ref})` for the schema → match `inputSchema`, rerun (don't guess). Common mistakes: bare ref (`grep`→`pi.grep`); 2 positional args on `read`/`bash`/`ls` (use an options object — positional is supported only for `grep`/`find`/`write`/`edit`).
+Read the line-numbered error → `await tools.describe({ref})` for the schema → match `inputSchema`, rerun (don't guess). Common mistakes: bare ref (`grep`→`pi.grep`); a non-object second arg on `read`/`bash`/`ls` (`(primary, optionsObject)` already merges on the string-primary tools; positional tuples exist only for `grep`/`find`/`write`/`edit`).
 
 ## Orchestration surfaces (opt-in)
 Advanced workflow skills are user-invoked; never load them autonomously. When the user has explicitly invoked an agent or mesh workflow, `/Users/monotykamary/VCS/working-remote/open-source/pi-fabric/skills/fabric-exec/references/agents.md` and `/Users/monotykamary/VCS/working-remote/open-source/pi-fabric/skills/fabric-exec/references/mesh.md` are branch pointers for low-level API detail.

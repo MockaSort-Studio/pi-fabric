@@ -329,23 +329,34 @@ type FabricExtensionsApi = Record<string, FabricCapturedTool>;
 // data → content, ls's folder → path, bash's script → command; numeric option
 // fields (limit/offset/context/timeout) also accept numeric strings, coerced
 // at runtime (2322 diagnostics are suppressed by the type-checker by design).
+// String-primary tools also take a two-arg (primary, options) form —
+// pi.read("index.ts", { limit: 120 }) merges to { path, ...options } at
+// runtime, the positional string winning the primary field on conflict.
 // bash/edit/write envelopes are proxy-guarded so string-method access
 // (.trim(), .split(), iteration) fails with an actionable TypeError pointing
 // at .output instead of QuickJS's context-free "not a function" — property-
 // miss (2339) checks are suppressed by design, so the runtime gives the hint.
 type PiEditOperation = { oldText: string; newText: string; all?: boolean } | { old: string; new: string; all?: boolean } | { old: string; replacement: string; all?: boolean };
+// Two-arg (primary, options) bags for the string-primary tools. Only option
+// aliases belong here (max/start/ctx/ic/...), never primary-field aliases —
+// the primary field comes from the positional string.
+type PiReadOptions = { offset?: number; limit?: number; start?: number; max?: number };
+type PiBashOptions = { timeout?: number; timeoutMs?: number; settle?: boolean };
+type PiGrepOptions = { path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number };
+type PiFindOptions = { path?: string; limit?: number; max?: number };
+type PiLsOptions = { limit?: number; max?: number };
 interface PiToolsApi {
-  read(args: string | { path: string; offset?: number; limit?: number; start?: number; max?: number } | { file: string; offset?: number; limit?: number; start?: number; max?: number }): Promise<string>;
-  bash(args: string | { command: string; timeout?: number; timeoutMs?: number; settle?: boolean } | { cmd: string; timeout?: number; timeoutMs?: number; settle?: boolean } | { shell: string; timeout?: number; timeoutMs?: number; settle?: boolean } | { script: string; timeout?: number; timeoutMs?: number; settle?: boolean }): Promise<{ ok: true; output: string; details: unknown } | { ok: false; output: string; details: null; exitCode: number; error: string }>;
+  read(args: string | { path: string; offset?: number; limit?: number; start?: number; max?: number } | { file: string; offset?: number; limit?: number; start?: number; max?: number }, options?: PiReadOptions): Promise<string>;
+  bash(args: string | { command: string; timeout?: number; timeoutMs?: number; settle?: boolean } | { cmd: string; timeout?: number; timeoutMs?: number; settle?: boolean } | { shell: string; timeout?: number; timeoutMs?: number; settle?: boolean } | { script: string; timeout?: number; timeoutMs?: number; settle?: boolean }, options?: PiBashOptions): Promise<{ ok: true; output: string; details: unknown } | { ok: false; output: string; details: null; exitCode: number; error: string }>;
   edit(args: { path: string; edits: PiEditOperation[]; all?: boolean } | { file: string; edits: PiEditOperation[]; all?: boolean } | { path: string; oldText: string; newText: string; all?: boolean } | { file: string; oldText: string; newText: string; all?: boolean } | { path: string; old: string; new: string; all?: boolean } | { path: string; old: string; replacement: string; all?: boolean }): Promise<{ ok: true; output: string; details: unknown }>;
   edit(path: string, oldText: string, newText: string): Promise<{ ok: true; output: string; details: unknown }>;
   write(args: { path: string; content: string } | { file: string; content: string } | { path: string; contents: string } | { path: string; body: string } | { path: string; text: string } | { path: string; data: string }): Promise<{ ok: true; output: string; details: unknown }>;
   write(path: string, content: string): Promise<{ ok: true; output: string; details: unknown }>;
   grep(args: string | { pattern: string; path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number } | { query: string; path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number } | { regex: string; path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number } | { search: string; path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number }): Promise<string>;
-  grep(pattern: string, path?: string, limit?: number): Promise<string>;
+  grep(pattern: string, path?: string | PiGrepOptions, limit?: number): Promise<string>;
   find(args: string | { pattern: string; path?: string; limit?: number; max?: number } | { query: string; path?: string; limit?: number; max?: number } | { regex: string; path?: string; limit?: number; max?: number } | { search: string; path?: string; limit?: number; max?: number } | { name: string; path?: string; limit?: number; max?: number } | { filename: string; path?: string; limit?: number; max?: number } | { glob: string; path?: string; limit?: number; max?: number }): Promise<string>;
-  find(pattern: string, path?: string, limit?: number): Promise<string>;
-  ls(args?: string | { path?: string; limit?: number; max?: number } | { dir?: string; folder?: string; limit?: number; max?: number } | { file?: string; limit?: number; max?: number }): Promise<string>;
+  find(pattern: string, path?: string | PiFindOptions, limit?: number): Promise<string>;
+  ls(args?: string | { path?: string; limit?: number; max?: number } | { dir?: string; folder?: string; limit?: number; max?: number } | { file?: string; limit?: number; max?: number }, options?: PiLsOptions): Promise<string>;
 }
 type FabricActorHostEvent =
   | "resources_discover"
