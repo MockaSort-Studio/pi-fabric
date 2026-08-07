@@ -336,7 +336,68 @@ type FabricExtensionsApi = Record<string, FabricCapturedTool>;
 // (.trim(), .split(), iteration) fails with an actionable TypeError pointing
 // at .output instead of QuickJS's context-free "not a function" — property-
 // miss (2339) checks are suppressed by design, so the runtime gives the hint.
-type PiEditOperation = { oldText: string; newText: string; all?: boolean } | { old: string; new: string; all?: boolean } | { old: string; replacement: string; all?: boolean };
+type PiPathArgument = {
+  path?: string;
+  file?: string;
+  absolutePath?: string;
+  file_path?: string;
+  filePath?: string;
+  filepath?: string;
+  pathname?: string;
+  target_file?: string;
+  targetFile?: string;
+  absolute_path?: string;
+  fileAbsolutePath?: string;
+};
+type PiOptionalPathArgument = {
+  path?: string;
+  file?: string;
+  absolutePath?: string;
+  file_path?: string;
+  filePath?: string;
+  filepath?: string;
+  pathname?: string;
+  target_file?: string;
+  targetFile?: string;
+  absolute_path?: string;
+  fileAbsolutePath?: string;
+  dir?: string;
+  folder?: string;
+  directory?: string;
+  directoryPath?: string;
+};
+type PiOldTextArgument = {
+  oldText?: string;
+  old?: string;
+  old_string?: string;
+  oldString?: string;
+  old_str?: string;
+  oldStr?: string;
+  from?: string;
+  old_value?: string;
+  old_text?: string;
+  oldContent?: string;
+  old_content?: string;
+};
+type PiNewTextArgument = {
+  newText?: string;
+  new?: string;
+  replacement?: string;
+  new_string?: string;
+  newString?: string;
+  new_str?: string;
+  newStr?: string;
+  to?: string;
+  new_value?: string;
+  new_text?: string;
+  newContent?: string;
+  new_content?: string;
+};
+type PiEditOperation = PiOldTextArgument & PiNewTextArgument & { all?: boolean };
+type PiCommandArgument = { command?: string; cmd?: string; shell?: string; cmdline?: string; script?: string; commandLine?: string };
+type PiContentArgument = { content?: string; contents?: string; body?: string; text?: string; data?: string; fileContent?: string };
+type PiGrepPatternArgument = { pattern?: string; query?: string; regex?: string; search?: string; q?: string; expression?: string; text?: string };
+type PiFindPatternArgument = { pattern?: string; query?: string; regex?: string; search?: string; name?: string; filename?: string; glob?: string; expression?: string; include?: string };
 // Two-arg (primary, options) bags for the string-primary tools. Only option
 // aliases belong here (max/start/ctx/ic/...), never primary-field aliases —
 // the primary field comes from the positional string.
@@ -346,17 +407,17 @@ type PiGrepOptions = { path?: string; glob?: string; globPattern?: string; ignor
 type PiFindOptions = { path?: string; limit?: number; max?: number };
 type PiLsOptions = { limit?: number; max?: number };
 interface PiToolsApi {
-  read(args: string | { path: string; offset?: number; limit?: number; start?: number; max?: number } | { file: string; offset?: number; limit?: number; start?: number; max?: number }, options?: PiReadOptions): Promise<string>;
-  bash(args: string | { command: string; timeout?: number; timeoutMs?: number; settle?: boolean } | { cmd: string; timeout?: number; timeoutMs?: number; settle?: boolean } | { shell: string; timeout?: number; timeoutMs?: number; settle?: boolean } | { script: string; timeout?: number; timeoutMs?: number; settle?: boolean }, options?: PiBashOptions): Promise<{ ok: true; output: string; details: unknown } | { ok: false; output: string; details: null; exitCode: number; error: string }>;
-  edit(args: { path: string; edits: PiEditOperation[]; all?: boolean } | { file: string; edits: PiEditOperation[]; all?: boolean } | { path: string; oldText: string; newText: string; all?: boolean } | { file: string; oldText: string; newText: string; all?: boolean } | { path: string; old: string; new: string; all?: boolean } | { path: string; old: string; replacement: string; all?: boolean }): Promise<{ ok: true; output: string; details: unknown }>;
+  read(args: string | (PiPathArgument & PiReadOptions), options?: PiReadOptions): Promise<string>;
+  bash(args: string | (PiCommandArgument & PiBashOptions), options?: PiBashOptions): Promise<{ ok: true; output: string; details: unknown } | { ok: false; output: string; details: null; exitCode: number; error: string }>;
+  edit(args: PiPathArgument & ({ edits: PiEditOperation[]; all?: boolean } | (PiOldTextArgument & PiNewTextArgument & { all?: boolean }))): Promise<{ ok: true; output: string; details: unknown }>;
   edit(path: string, oldText: string, newText: string): Promise<{ ok: true; output: string; details: unknown }>;
-  write(args: { path: string; content: string } | { file: string; content: string } | { path: string; contents: string } | { path: string; body: string } | { path: string; text: string } | { path: string; data: string }): Promise<{ ok: true; output: string; details: unknown }>;
+  write(args: PiPathArgument & PiContentArgument): Promise<{ ok: true; output: string; details: unknown }>;
   write(path: string, content: string): Promise<{ ok: true; output: string; details: unknown }>;
-  grep(args: string | { pattern: string; path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number } | { query: string; path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number } | { regex: string; path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number } | { search: string; path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number }): Promise<string>;
+  grep(args: string | (PiGrepPatternArgument & PiGrepOptions)): Promise<string>;
   grep(pattern: string, path?: string | PiGrepOptions, limit?: number): Promise<string>;
-  find(args: string | { pattern: string; path?: string; limit?: number; max?: number } | { query: string; path?: string; limit?: number; max?: number } | { regex: string; path?: string; limit?: number; max?: number } | { search: string; path?: string; limit?: number; max?: number } | { name: string; path?: string; limit?: number; max?: number } | { filename: string; path?: string; limit?: number; max?: number } | { glob: string; path?: string; limit?: number; max?: number }): Promise<string>;
+  find(args: string | (PiFindPatternArgument & PiFindOptions)): Promise<string>;
   find(pattern: string, path?: string | PiFindOptions, limit?: number): Promise<string>;
-  ls(args?: string | { path?: string; limit?: number; max?: number } | { dir?: string; folder?: string; limit?: number; max?: number } | { file?: string; limit?: number; max?: number }, options?: PiLsOptions): Promise<string>;
+  ls(args?: string | (PiOptionalPathArgument & PiLsOptions), options?: PiLsOptions): Promise<string>;
 }
 type FabricActorHostEvent =
   | "resources_discover"

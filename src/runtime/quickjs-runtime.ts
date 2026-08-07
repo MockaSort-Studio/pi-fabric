@@ -112,18 +112,55 @@ const __piStringFields = { bash: "command", read: "path", ls: "path", grep: "pat
 // call. Keep these in sync with the PiToolsApi overloads in guest-types.ts so
 // the type-checker accepts the same spellings it coercion-handles at runtime.
 const __piArgAliases = {
-  bash: { cmd: "command", shell: "command", cmdline: "command", script: "command" },
-  find: { query: "pattern", regex: "pattern", search: "pattern", max: "limit", name: "pattern", filename: "pattern", glob: "pattern" },
+  bash: {
+    cmd: "command", shell: "command", cmdline: "command", script: "command",
+    commandLine: "command",
+  },
+  find: {
+    query: "pattern", regex: "pattern", search: "pattern", name: "pattern",
+    filename: "pattern", glob: "pattern", expression: "pattern", include: "pattern",
+    max: "limit",
+  },
   grep: {
-    query: "pattern", regex: "pattern", search: "pattern",
+    query: "pattern", regex: "pattern", search: "pattern", q: "pattern",
+    expression: "pattern", text: "pattern",
     ic: "ignoreCase", caseInsensitive: "ignoreCase",
     globPattern: "glob",
     max: "limit", ctx: "context",
   },
-  read: { file: "path", max: "limit", start: "offset" },
-  ls: { dir: "path", file: "path", max: "limit", folder: "path" },
-  edit: { file: "path", old: "oldText", new: "newText", replacement: "newText" },
-  write: { file: "path", contents: "content", body: "content", text: "content", data: "content" },
+  read: {
+    file: "path", absolutePath: "path", file_path: "path", filePath: "path",
+    filepath: "path", pathname: "path", target_file: "path", targetFile: "path",
+    absolute_path: "path", fileAbsolutePath: "path",
+    max: "limit", start: "offset",
+  },
+  ls: {
+    dir: "path", file: "path", folder: "path", absolutePath: "path",
+    file_path: "path", filePath: "path", filepath: "path", pathname: "path",
+    target_file: "path", targetFile: "path", absolute_path: "path",
+    fileAbsolutePath: "path", directory: "path", directoryPath: "path",
+    max: "limit",
+  },
+  edit: {
+    file: "path", absolutePath: "path", file_path: "path", filePath: "path",
+    filepath: "path", pathname: "path", target_file: "path", targetFile: "path",
+    absolute_path: "path", fileAbsolutePath: "path",
+    old: "oldText", old_string: "oldText", oldString: "oldText",
+    old_str: "oldText", oldStr: "oldText", from: "oldText",
+    old_value: "oldText", old_text: "oldText", oldContent: "oldText",
+    old_content: "oldText",
+    new: "newText", replacement: "newText", new_string: "newText",
+    newString: "newText", new_str: "newText", newStr: "newText",
+    to: "newText", new_value: "newText", new_text: "newText",
+    newContent: "newText", new_content: "newText",
+  },
+  write: {
+    file: "path", absolutePath: "path", file_path: "path", filePath: "path",
+    filepath: "path", pathname: "path", target_file: "path", targetFile: "path",
+    absolute_path: "path", fileAbsolutePath: "path",
+    contents: "content", body: "content", text: "content", data: "content",
+    fileContent: "content",
+  },
 };
 // Multi-arg positional order, used only when a call passes >= 2 args and the
 // (primary, options) merge in __positionalToArgs does not apply. One-field
@@ -145,6 +182,13 @@ const __piNumericFields = {
   grep: ["limit", "context"],
   find: ["limit"],
   ls: ["limit"],
+  bash: ["timeout"],
+};
+const __piOptionalFields = {
+  read: ["offset", "limit"],
+  grep: ["path", "glob", "ignoreCase", "literal", "context", "limit"],
+  find: ["path", "limit"],
+  ls: ["path", "limit"],
   bash: ["timeout"],
 };
 // (primary, options) two-arg merge for the string-primary tools:
@@ -187,7 +231,9 @@ const __normalizePiArgs = (name, args) => {
     out = Object.assign({}, args);
     if (!("timeout" in out)) {
       const timeoutMs = out.timeoutMs;
-      out.timeout = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) / 1000 : timeoutMs;
+      if (timeoutMs !== null && timeoutMs !== undefined) {
+        out.timeout = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) / 1000 : timeoutMs;
+      }
     }
     delete out.timeoutMs;
   }
@@ -217,15 +263,26 @@ const __normalizePiArgs = (name, args) => {
       }
     }
   }
+  const optionalFields = __piOptionalFields[name];
+  if (optionalFields) {
+    for (const key of optionalFields) {
+      if (out[key] !== null && out[key] !== undefined) continue;
+      if (!(key in out)) continue;
+      if (out === args) out = Object.assign({}, args);
+      delete out[key];
+    }
+  }
   if (name === "edit" && Array.isArray(out.edits)) {
     let changed = false;
+    const editAliases = __piArgAliases.edit;
     const edits = out.edits.map((entry) => {
       if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
       let edit = entry;
-      for (const alias of ["old", "new", "replacement"]) {
+      for (const alias in editAliases) {
+        const canonical = editAliases[alias];
+        if (canonical !== "oldText" && canonical !== "newText") continue;
         if (!(alias in edit)) continue;
         if (edit === entry) edit = Object.assign({}, entry);
-        const canonical = alias === "old" ? "oldText" : "newText";
         if (!(canonical in edit)) edit[canonical] = edit[alias];
         delete edit[alias];
         changed = true;

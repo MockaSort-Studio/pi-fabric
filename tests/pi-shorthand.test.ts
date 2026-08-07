@@ -106,6 +106,23 @@ describe("pi argument alias flattening", () => {
     expect(result.errors).toEqual([]);
   });
 
+
+  it("type-checks observed long-tail aliases", () => {
+    const result = typeCheckFabricCode(
+      'const a = await pi.read({ file_path: "/x" });' +
+        'const b = await pi.grep({ q: "TODO" });' +
+        'const c = await pi.write({ target_file: "/y", fileContent: "z" });' +
+        'const d = await pi.edit({ absolutePath: "/x", from: "a", to: "b" });' +
+        'const e = await pi.edit({ path: "/x", edits: [{ old_string: "a", new_content: "b" }] });' +
+        'const f = await pi.ls({ directoryPath: "/s" });' +
+        'const g = await pi.find({ include: "*.ts" });' +
+        'const h = await pi.bash({ commandLine: "pwd" });' +
+        'return { a, b, c: c.output, d: d.output, e: e.output, f, g, h: h.output };',
+      GUEST_TYPE_DECLARATIONS,
+    );
+    expect(result.errors).toEqual([]);
+  });
+
   it("normalizes aliases inside batched edits", async () => {
     const hostCall = vi.fn(async () => ({ ok: true, output: "edited", details: null }));
     const result = await new QuickJsRuntime().execute(
@@ -151,6 +168,73 @@ describe("pi argument alias flattening", () => {
     expect(hostCall.mock.calls[5]?.[1]).toEqual({ path: "/s" });
     expect(result.value).toEqual({ a: "echo hi", b: "found", c: "read", d: "wrote", e: "edited", f: "listed" });
   });
+
+  it("normalizes observed long-tail aliases before host validation", async () => {
+    const calls: Array<{ ref: string; args: Record<string, unknown> }> = [];
+    const result = await new QuickJsRuntime().execute(
+      `
+await pi.read({ file_path: "/x" });
+await pi.grep({ q: "TODO" });
+await pi.write({ target_file: "/y", fileContent: "z" });
+await pi.edit({ absolutePath: "/x", from: "a", to: "b" });
+await pi.edit({ path: "/x", edits: [{ old_string: "c", new_content: "d" }] });
+await pi.ls({ directoryPath: "/s" });
+await pi.find({ include: "*.ts" });
+await pi.bash({ commandLine: "pwd" });
+return "done";
+`,
+      async (ref, args) => {
+        calls.push({ ref, args });
+        return ref === "pi.bash" || ref === "pi.edit" || ref === "pi.write"
+          ? { ok: true, output: "ok", details: null }
+          : "ok";
+      },
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(calls.map((call) => call.args)).toEqual([
+      { path: "/x" },
+      { pattern: "TODO" },
+      { path: "/y", content: "z" },
+      { path: "/x", edits: [{ oldText: "a", newText: "b" }] },
+      { path: "/x", edits: [{ oldText: "c", newText: "d" }] },
+      { path: "/s" },
+      { pattern: "*.ts" },
+      { command: "pwd" },
+    ]);
+  });
+
+  it("omits only known optional nulls and lets canonical fields win", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const result = await new QuickJsRuntime().execute(
+      `
+await pi.read({ path: "/canonical", file_path: "/alias", offset: null, limit: null });
+await pi.bash({ command: "pwd", timeoutMs: null });
+await pi.grep({ pattern: "TODO", path: null, glob: null, ignoreCase: null, literal: null, context: null, limit: null });
+await pi.find({ pattern: "*.ts", path: null, limit: null });
+await pi.ls({ path: null, limit: null });
+await pi.read({ path: null, offset: null });
+return "done";
+`,
+      async (ref, args) => {
+        calls.push(args);
+        return ref === "pi.bash" ? { ok: true, output: "ok", details: null } : "ok";
+      },
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(calls).toEqual([
+      { path: "/canonical" },
+      { command: "pwd" },
+      { pattern: "TODO" },
+      { pattern: "*.ts" },
+      {},
+      { path: null },
+    ]);
+  });
+
 });
 
 describe("agents.status debug fields", () => {

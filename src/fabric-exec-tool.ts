@@ -17,6 +17,7 @@ import {
 import { DEFAULT_FABRIC_CONFIG } from "./config.js";
 import type { FabricState } from "./fabric-state.js";
 import { formatFailureProgress } from "./failure-progress.js";
+import { prepareFabricExecArguments } from "./fabric-exec-arguments.js";
 import { typeErrorRecoveryHint } from "./type-error-guidance.js";
 import { normalizeRunDisplay } from "./run-display.js";
 import type { PendingFabricHandoff } from "./prewalk/handoff.js";
@@ -164,6 +165,12 @@ export const createFabricExecTool = (
         ]),
       ),
     }),
+    // Pi validates custom-tool arguments before `tool_call` and `execute`, so
+    // compatibility coercions for the model-facing boundary must live in the
+    // official prepareArguments hook rather than execute-time fallbacks.
+    prepareArguments(args) {
+      return prepareFabricExecArguments(args) as any;
+    },
     renderCall(params, theme, context) {
       observePiTheme(theme);
       const code = Array.isArray(params.code) ? params.code.join("\n") : params.code;
@@ -663,10 +670,8 @@ export const createFabricExecTool = (
     },
     async execute(toolCallId, params, signal, onUpdate, context) {
       await state.ensure(context);
-      // Defensive: a non-strict provider may deliver code as an array of lines;
-      // join before type-checking so the program runs instead of failing on a
-      // non-string code param. Strict providers reject an array upstream
-      // against the Type.String schema, so this branch is a no-op there.
+      // prepareArguments joins code arrays before Pi validates this call; keep
+      // the same coercion here for direct internal invocations of the definition.
       const code = Array.isArray(params.code) ? params.code.join("\n") : params.code;
       const runDisplay = normalizeRunDisplay(params.display);
       const result = await state.execution.execute({
