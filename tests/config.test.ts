@@ -573,6 +573,15 @@ describe("Fabric configuration", () => {
     ).toBe(1_200_000);
   });
 
+  it("accepts arbitrary non-negative safe agent depths", () => {
+    expect(DEFAULT_FABRIC_CONFIG.agents.maxDepth).toBe(2);
+    expect(normalizeFabricConfig({ agents: { maxDepth: 64 } }).agents.maxDepth).toBe(64);
+    expect(normalizeFabricConfig({ agents: { maxDepth: -1 } }).agents.maxDepth).toBe(0);
+    expect(
+      normalizeFabricConfig({ agents: { maxDepth: Number.MAX_VALUE } }).agents.maxDepth,
+    ).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
   it("normalizes the per-child token limit and treats zero as disabled", () => {
     expect(DEFAULT_FABRIC_CONFIG.agents.maxTokensPerChild).toBe(0);
     const set = normalizeFabricConfig({ agents: { maxTokensPerChild: 50_000 } });

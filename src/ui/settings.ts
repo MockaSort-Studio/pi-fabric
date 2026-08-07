@@ -7,6 +7,7 @@ import {
 import {
   Container,
   type Component,
+  Input,
   Key,
   matchesKey,
   SelectList,
@@ -351,6 +352,13 @@ const numericSubmenu = (
   );
 };
 
+const nonNegativeIntegerSubmenu = (
+  theme: Theme,
+  title: string,
+  description: string,
+): SettingsSubmenu => (currentValue, done) =>
+  new IntegerInputSubmenu(theme, title, description, currentValue, done, () => done());
+
 const stringOptionsSubmenu = (
   theme: Theme,
   values: readonly string[],
@@ -420,6 +428,57 @@ const sectionSubmenu = (
   persist: (id: string, value: string) => void,
 ): SettingsSubmenu => (_currentValue, done) =>
   new SectionSubmenu(theme, title, description, markDrillIn(items), persist, () => done());
+
+class IntegerInputSubmenu extends Container {
+  readonly input: Input;
+  private readonly validationText: Text;
+
+  constructor(
+    theme: Theme,
+    title: string,
+    description: string,
+    currentValue: string,
+    onSelect: (value: string) => void,
+    onCancel: () => void,
+  ) {
+    super();
+    this.addChild(new Text(theme.bold(theme.fg("accent", title)), 0, 0));
+    this.addChild(new Spacer(1));
+    this.addChild(new Text(theme.fg("muted", description), 0, 0));
+    this.addChild(new Spacer(1));
+
+    this.input = new Input();
+    this.input.handleInput(currentValue);
+    this.input.focused = true;
+    this.validationText = new Text("", 0, 0);
+    this.input.onSubmit = (value) => {
+      const normalized = value.trim();
+      const parsed = /^\d+$/.test(normalized) ? Number(normalized) : Number.NaN;
+      if (!Number.isSafeInteger(parsed) || parsed < 0) {
+        this.validationText.setText(
+          theme.fg("error", "Enter a non-negative safe integer."),
+        );
+        return;
+      }
+      onSelect(String(parsed));
+    };
+    this.input.onEscape = onCancel;
+    this.addChild(this.input);
+    this.addChild(this.validationText);
+    this.addChild(new Spacer(1));
+    this.addChild(new Text(theme.fg("dim", "  Enter to save · Esc to go back"), 0, 0));
+  }
+
+  handleInput(data: string): void {
+    this.validationText.setText("");
+    this.input.handleInput(data);
+  }
+
+  render(width: number): string[] {
+    this.input.focused = true;
+    return super.render(width);
+  }
+}
 
 class SelectSubmenu extends Container {
   readonly selectList: SelectList;
@@ -982,13 +1041,12 @@ export const buildFabricSettingsItems = (
             ),
           }),
           setting("agents.maxDepth", "Max depth", String(config.agents.maxDepth), {
-            description: "Maximum nesting depth for recursive agent calls.",
-            submenu: numericSubmenu(
+            description:
+              "Maximum nesting depth for child agent calls. Enter any non-negative integer; 0 disables child spawning.",
+            submenu: nonNegativeIntegerSubmenu(
               theme,
-              [0, 1, 2, 3, 4, 6],
-              String,
               "Agent depth",
-              "Maximum nesting depth for recursive agent calls.",
+              "Maximum nesting depth for child agent calls. Enter any non-negative integer; 0 disables child spawning.",
             ),
           }),
           setting("agents.budgetUsd", "Recursion budget", formatUsd(config.agents.budgetUsd), {

@@ -6,7 +6,13 @@ disable-model-invocation: true
 
 # Fabric Recursive Decomposition
 
-Use recursion for context size, not mere difficulty. If the relevant material fits one context, work directly. Otherwise pass the root task as `strings.task` and use one `fabric_exec` program to orient → delegate non-overlapping context-sized partitions → combine available results.
+Use recursion for context size, not mere difficulty. If the relevant material fits one context, work directly. Otherwise pass only the root objective as `strings.task` and use one `fabric_exec` program to orient → delegate non-overlapping context-sized partitions → combine available results.
+
+## Context is an external variable
+
+Canonical RLM keeps oversized source context and intermediate products as addressable environment values instead of repeatedly serializing them through Main’s conversation. Within one `fabric_exec`, keep source handles, parsed values, partitions, and findings in QuickJS variables. Give each child only a context-sized slice or project-relative path, let it inspect that source with tools, and return only the compact synthesis. Do not inline an entire corpus into `strings.task` or a child prompt.
+
+QuickJS bindings end with the current `fabric_exec` call. When decomposition must continue across turns, persist JSON-serializable bindings under a root-scoped `rlm/<rootId>/bindings/...` key in `mesh`, pass the key rather than the value, and have descendants load it with `mesh.get()`. Use a project-relative file plus a digest for values larger than `mesh.maxEventBytes`. Mesh bindings are project-visible and have no automatic TTL, so do not store secrets and delete them when the work is complete. `state` is for claims, evidence, certification, and goals—not scratch data. This explicit durable environment provides context-as-variable semantics without a persistent executable heap or a new workspace provider.
 
 `rlm.query()` is `agents.run({ runner: "pi", recursive: true })`. Use plain `agent()` for a partition that fits one child context; reserve `rlm.query()` for a partition that remains oversized.
 
@@ -157,7 +163,7 @@ for (let offset = 0; offset < runnable.length; offset += batchSize) {
   const batch = runnable.slice(offset, offset + batchSize);
   const settled = await parallel(
     batch.map((partition) => async (): Promise<RecursiveOutcome> => {
-      const task = `Analyze this bounded partition for the objective; return concrete evidence.\n\nPartition: ${partition.label}\nPaths:\n${partition.paths.join("\n")}\n\nObjective:\n${π.task}`;
+      const task = `Analyze this bounded partition for the objective. Treat the listed paths as external context: inspect them with tools and return one compact, evidence-backed finding.\n\nPartition: ${partition.label}\nPaths:\n${partition.paths.join("\n")}\n\nObjective:\n${π.task}`;
       try {
         if (!partition.recursive) {
           const finding = await agent(task, {
@@ -272,7 +278,7 @@ Guardrails:
 - Deduplicate and partition before spawning. Plain agents handle context-sized leaves; recursion is only for oversized partitions.
 - Work in batches so an all-failed batch stops new spend. At most two top-level partitions may recurse; additional recursive proposals return as `not_started` with their paths.
 - Partition edit ownership by path or use `worktree: true`; concurrent children must not edit the same files.
-- `agents.maxDepth` bounds each recursive branch. The shared `agents.budgetUsd` check and `tokenBudget` are best-effort under concurrency because usage settles afterward; batches reduce, but cannot eliminate, overshoot.
+- `agents.maxDepth` bounds each recursive branch. It accepts any non-negative safe integer; `0` disables child spawning. The shared `agents.budgetUsd` check and `tokenBudget` are best-effort under concurrency because usage settles afterward; batches reduce, but cannot eliminate, overshoot.
 - Reserve current-execution agent capacity for orientation and optional synthesis. Recursive descendants enforce their own process limits.
 - `budget.remaining()` reflects completed usage only. When the ceiling matters, keep batches small rather than treating it as a reservation.
 - Initial approval delegates only agent risk; network, execution, and write approvals are not inherited. Redirect a valuable drifting child with `agents.steer` rather than discarding its context.

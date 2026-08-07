@@ -277,7 +277,7 @@ Other agent settings:
 - `thinking` — default reasoning effort (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), default `medium`.
 - `maxConcurrent` — global child concurrency semaphore.
 - `maxPerExecution` — hard cap on children per `fabric_exec` invocation.
-- `maxDepth` — recursion depth bound for `rlm.query()`.
+- `maxDepth` — nesting bound for child agent calls, including `rlm.query()`. Accepts any non-negative safe integer; `0` disables child spawning. `/fabric settings` provides free-form numeric entry.
 - `timeoutMs` — default per-child wall-clock budget and floor for per-call overrides (60 minutes by default). Lower per-call values are ignored; callers should only set `timeoutMs` to request a longer run.
 - `extensions` — whether Claude children keep their normal Claude Code customizations.
 - `defaultTools` — the default tool allowlist for children.

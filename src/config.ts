@@ -626,7 +626,12 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         1,
         1_000,
       ),
-      maxDepth: boundedInteger(agents.maxDepth, DEFAULT_FABRIC_CONFIG.agents.maxDepth, 0, 8),
+      maxDepth: boundedInteger(
+        agents.maxDepth,
+        DEFAULT_FABRIC_CONFIG.agents.maxDepth,
+        0,
+        Number.MAX_SAFE_INTEGER,
+      ),
       timeoutMs: boundedInteger(
         agents.timeoutMs,
         DEFAULT_FABRIC_CONFIG.agents.timeoutMs,

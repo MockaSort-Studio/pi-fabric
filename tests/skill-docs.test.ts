@@ -142,7 +142,7 @@ describe("fabric-exec skill provider contracts", () => {
       "fabric-exec": ["read, describe, retry", "tools.describe", "timeoutMs", "multiline or syntax-heavy payloads", "shell heredocs", "never load them autonomously", "Peer is a reserved Fabric term", "query `agents.peers()` first", "Search before reading", "offset", "2000 lines or 50KB", "Use offset=n to continue"],
       "fabric-guide": ["smallest sufficient path", "No advanced skill", "preserves the user’s task as arguments", "Never load or execute"],
       "fabric-fusion": ["2–8 model panel", "PanelOutcome", "ambiguous", 'status: "partial"', "automatic full-panel rerun"],
-      "fabric-rlm": ["strings.task", "context-sized", "recursive=true only", "all-failed batch", "full `FabricAgentResult` objects never return", "never rerun successful partitions"],
+      "fabric-rlm": ["strings.task", "context-sized", "Context is an external variable", "QuickJS bindings end", "root-scoped `rlm/<rootId>/bindings/...`", "`state` is for claims", "recursive=true only", "all-failed batch", "full `FabricAgentResult` objects never return", "never rerun successful partitions"],
       "fabric-schema": ["one same-`fabric_exec`", "Evidence is not proof", 'status: commit.outcome === "committed"', "actually inspected"],
       "fabric-supervisor": ["agent_settled", "tool_error", "Goal verified complete", "without recreating or retrying automatically"],
       "fabric-swarm": ["ifVersion: 0", "observed version", "CAS-unblock dependents", "agents.tell"],

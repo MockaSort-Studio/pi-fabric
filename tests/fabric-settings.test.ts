@@ -283,6 +283,40 @@ describe("FabricSettingsComponent", () => {
     expect(lines).toContain("Off");
   });
 
+  it("accepts an arbitrary non-negative agent depth", () => {
+    const applied: Array<{ id: string; value: unknown }> = [];
+    const items = buildFabricSettingsItems(
+      theme,
+      structuredClone(DEFAULT_FABRIC_CONFIG),
+      (id, value) => applied.push({ id, value }),
+      { keepVisibleCandidates: ["fabric_exec"], modelSource: fakeModelSource },
+    );
+    const agents = items.find((item) => item.id === "agents")!;
+    const section = agents.submenu!("", () => {}) as any;
+    const list = section.settingsList as any;
+    list.selectedIndex = list.items.findIndex(
+      (item: { id: string }) => item.id === "agents.maxDepth",
+    );
+    list.activateItem();
+
+    expect(list.submenuComponent.render(100).join("\n")).toContain(
+      "Enter any non-negative integer",
+    );
+    list.submenuComponent.input.setValue("-1");
+    list.submenuComponent.handleInput("\r");
+    expect(applied).toEqual([]);
+    expect(list.submenuComponent.render(100).join("\n")).toContain(
+      "Enter a non-negative safe integer",
+    );
+
+    list.submenuComponent.input.setValue("");
+    list.submenuComponent.handleInput("64");
+    list.submenuComponent.handleInput("\r");
+
+    expect(applied.at(-1)).toEqual({ id: "agents.maxDepth", value: 64 });
+    expect(list.items[list.selectedIndex].currentValue).toBe("64");
+  });
+
   it("shows the configured budget as a currency value", () => {
     const items = buildFabricSettingsItems(
       theme,
