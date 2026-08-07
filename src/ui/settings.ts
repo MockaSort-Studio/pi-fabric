@@ -29,6 +29,7 @@ import {
   type ModelSource,
 } from "./model-picker.js";
 import {
+  loadFabricConfigForScope,
   maxExecutorMemoryLimitBytes,
   QUICKJS_MAX_MEMORY_LIMIT_BYTES,
   saveFabricConfig,
@@ -621,14 +622,19 @@ export interface FabricSettingsComponentOptions {
   initialSaveScope?: FabricConfigScope;
   projectScopeAvailable?: boolean;
   onSaveScopeChange?: (scope: FabricConfigScope) => void;
+  itemsForSaveScope?: (scope: FabricConfigScope) => SettingItem[];
 }
 
 export class FabricSettingsComponent extends Container {
-  readonly settingsList: SettingsList;
+  settingsList: SettingsList;
   private readonly theme: Theme;
   private readonly saveScopeText: Text;
+  private readonly settingsListContainer: Container;
   private readonly projectScopeAvailable: boolean;
+  private readonly onChange: (id: string, newValue: string) => void;
+  private readonly onCancel: () => void;
   private readonly onSaveScopeChange: (scope: FabricConfigScope) => void;
+  private readonly itemsForSaveScope: ((scope: FabricConfigScope) => SettingItem[]) | undefined;
   private saveScope: FabricConfigScope;
 
   constructor(
@@ -644,16 +650,19 @@ export class FabricSettingsComponent extends Container {
     this.saveScope = options.initialSaveScope === "global" || !this.projectScopeAvailable
       ? "global"
       : "project";
+    this.onChange = onChange;
+    this.onCancel = onCancel;
     this.onSaveScopeChange = options.onSaveScopeChange ?? (() => {});
+    this.itemsForSaveScope = options.itemsForSaveScope;
     this.addChild(new DynamicBorder((text) => theme.fg("border", text)));
     this.saveScopeText = new Text("", 1, 0);
     this.updateSaveScopeText();
     this.addChild(this.saveScopeText);
     this.addChild(new Spacer(1));
-    this.settingsList = new SettingsList(items, 10, settingsListTheme(theme), onChange, onCancel, {
-      enableSearch: true,
-    });
-    this.addChild(this.settingsList);
+    this.settingsListContainer = new Container();
+    this.settingsList = this.createSettingsList(items);
+    this.settingsListContainer.addChild(this.settingsList);
+    this.addChild(this.settingsListContainer);
     this.addChild(new DynamicBorder((text) => theme.fg("border", text)));
   }
 
@@ -663,20 +672,39 @@ export class FabricSettingsComponent extends Container {
       this.saveScope = this.saveScope === "project" ? "global" : "project";
       this.updateSaveScopeText();
       this.onSaveScopeChange(this.saveScope);
+      const nextItems = this.itemsForSaveScope?.(this.saveScope);
+      if (nextItems) {
+        this.settingsListContainer.clear();
+        this.settingsList = this.createSettingsList(nextItems);
+        this.settingsListContainer.addChild(this.settingsList);
+      }
       return;
     }
     this.settingsList.handleInput(data);
   }
 
+  private createSettingsList(items: SettingItem[]): SettingsList {
+    return new SettingsList(
+      items,
+      10,
+      settingsListTheme(this.theme),
+      this.onChange,
+      this.onCancel,
+      { enableSearch: true },
+    );
+  }
+
   private updateSaveScopeText(): void {
     const destination = this.saveScope === "project"
-      ? "Project (.pi/fabric.json)"
-      : "Global (~/.pi/agent/fabric.json)";
-    const hint = this.projectScopeAvailable
-      ? " · Ctrl+G toggles save scope"
-      : " · project scope unavailable for untrusted projects";
+      ? "Project overrides (.pi/fabric.json)"
+      : "Global defaults (~/.pi/agent/fabric.json)";
+    const hint = !this.projectScopeAvailable
+      ? " · project scope unavailable for untrusted projects"
+      : this.saveScope === "global"
+        ? " · Ctrl+G switches scope · project overrides may remain active here"
+        : " · Ctrl+G switches scope";
     this.saveScopeText.setText(
-      this.theme.fg("muted", "Save scope: ") +
+      this.theme.fg("muted", "Editing: ") +
       this.theme.fg("accent", destination) +
       this.theme.fg("dim", hint),
     );
@@ -1518,8 +1546,10 @@ export async function openFabricSettings(
 
   const agentDir = getAgentDir();
   const projectTrusted = context.isProjectTrusted();
+  const configLocation = { cwd: context.cwd, agentDir, projectTrusted };
   let saveScope: FabricConfigScope = projectTrusted ? "project" : "global";
-  let rootList: SettingsList | undefined;
+  let settingsConfig = loadFabricConfigForScope(configLocation, saveScope);
+  let rootComponent: FabricSettingsComponent | undefined;
   const changedSections = new Set<string>();
   let dirty = false;
 
@@ -1544,19 +1574,20 @@ export async function openFabricSettings(
       return;
     }
     deps.state.reloadConfig(context);
+    Object.assign(settingsConfig, loadFabricConfigForScope(configLocation, saveScope));
     deps.onConfigApplied?.();
     dirty = true;
     changedSections.add(id.split(".")[0] ?? id);
-    const list = rootList;
+    const list = rootComponent?.settingsList;
     if (list) {
       for (const rootId of ROOT_ITEM_IDS) {
-        list.updateValue(rootId, summaryFor(rootId, deps.state.config));
+        list.updateValue(rootId, summaryFor(rootId, settingsConfig));
       }
     }
   };
 
   const persist = (id: string, newValue: string): void =>
-    apply(id, coerceValue(id, newValue, deps.state.config));
+    apply(id, coerceValue(id, newValue, settingsConfig));
 
   const keepVisibleCandidates = unique([
     "fabric_exec",
@@ -1584,21 +1615,31 @@ export async function openFabricSettings(
 
   await context.ui.custom<void>(
     (tui, theme, _keybindings, done) => {
-      const items = buildFabricSettingsItems(theme, deps.state.config, apply, {
-        keepVisibleCandidates,
-        modelSource,
-        claudeModelSource,
-        ...(activeModelKey ? { activeModelKey } : {}),
-      });
-      const component = new FabricSettingsComponent(theme, items, persist, () => done(), {
-        initialSaveScope: saveScope,
-        projectScopeAvailable: projectTrusted,
-        onSaveScopeChange: (scope) => {
-          saveScope = scope;
-          tui.requestRender();
+      const itemsForScope = (scope: FabricConfigScope): SettingItem[] => {
+        settingsConfig = loadFabricConfigForScope(configLocation, scope);
+        return buildFabricSettingsItems(theme, settingsConfig, apply, {
+          keepVisibleCandidates,
+          modelSource,
+          claudeModelSource,
+          ...(activeModelKey ? { activeModelKey } : {}),
+        });
+      };
+      const component = new FabricSettingsComponent(
+        theme,
+        itemsForScope(saveScope),
+        persist,
+        () => done(),
+        {
+          initialSaveScope: saveScope,
+          projectScopeAvailable: projectTrusted,
+          onSaveScopeChange: (scope) => {
+            saveScope = scope;
+            tui.requestRender();
+          },
+          itemsForSaveScope: itemsForScope,
         },
-      });
-      rootList = component.settingsList;
+      );
+      rootComponent = component;
       return component;
     },
   );

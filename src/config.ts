@@ -978,15 +978,17 @@ const writeJsonAtomic = (
   }
 };
 
-export const loadFabricConfig = (options: {
-  cwd: string;
-  agentDir: string;
-  projectTrusted: boolean;
-}): FabricConfig => {
+const resolveFabricConfig = (
+  options: {
+    cwd: string;
+    agentDir: string;
+  },
+  includeProject: boolean,
+): FabricConfig => {
   let merged = structuredClone(DEFAULT_FABRIC_CONFIG) as unknown as Record<string, unknown>;
   const plans = [
     planConfigFile(path.join(options.agentDir, "fabric.json")),
-    ...(options.projectTrusted
+    ...(includeProject
       ? [planConfigFile(path.join(options.cwd, ".pi", "fabric.json"))]
       : []),
   ].filter((plan): plan is FabricConfigFilePlan => plan !== undefined);
@@ -998,7 +1000,29 @@ export const loadFabricConfig = (options: {
   if (inheritedFullCodeMode === "true" || inheritedFullCodeMode === "false") {
     merged.fullCodeMode = inheritedFullCodeMode === "true";
   }
-  const config = normalizeFabricConfig(merged);
+  return normalizeFabricConfig(merged);
+};
+
+export const loadFabricConfigForScope = (
+  options: {
+    cwd: string;
+    agentDir: string;
+    projectTrusted: boolean;
+  },
+  scope: FabricConfigScope,
+): FabricConfig => {
+  if (scope === "project" && !options.projectTrusted) {
+    throw new Error("Cannot load project Fabric configuration for an untrusted project");
+  }
+  return resolveFabricConfig(options, scope === "project");
+};
+
+export const loadFabricConfig = (options: {
+  cwd: string;
+  agentDir: string;
+  projectTrusted: boolean;
+}): FabricConfig => {
+  const config = resolveFabricConfig(options, options.projectTrusted);
   if (config.compaction.engine === "fabric") {
     process.env.PI_FABRIC_COMPACTION_ENGINE = "fabric";
   } else {

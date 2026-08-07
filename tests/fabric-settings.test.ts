@@ -4,7 +4,7 @@ import path from "node:path";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import type { CapturedToolCatalog } from "../src/capture/catalog.js";
-import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
+import { DEFAULT_FABRIC_CONFIG, loadFabricConfig } from "../src/config.js";
 import type { FabricState } from "../src/fabric-state.js";
 import type { ModelSource } from "../src/ui/model-picker.js";
 import {
@@ -93,7 +93,7 @@ describe("FabricSettingsComponent", () => {
     expect(lines.some((line) => line.includes("Type to search"))).toBe(true);
     expect(lines.some((line) => line.includes("Full code mode"))).toBe(true);
     expect(lines.some((line) => line.includes("Executor"))).toBe(true);
-    expect(lines.some((line) => line.includes("Save scope: Project (.pi/fabric.json)"))).toBe(true);
+    expect(lines.some((line) => line.includes("Editing: Project overrides (.pi/fabric.json)"))).toBe(true);
   });
 
   it("toggles save scope with Ctrl+G from the root and active submenus", () => {
@@ -106,7 +106,7 @@ describe("FabricSettingsComponent", () => {
 
     component.handleInput("\x07");
     expect(component.render(100).join("\n")).toContain(
-      "Save scope: Global (~/.pi/agent/fabric.json)",
+      "Editing: Global defaults (~/.pi/agent/fabric.json)",
     );
 
     const list = component.settingsList as any;
@@ -116,7 +116,7 @@ describe("FabricSettingsComponent", () => {
 
     expect(list.submenuComponent).not.toBeNull();
     expect(component.render(100).join("\n")).toContain(
-      "Save scope: Project (.pi/fabric.json)",
+      "Editing: Project overrides (.pi/fabric.json)",
     );
     expect(scopes).toEqual(["global", "project"]);
   });
@@ -132,11 +132,9 @@ describe("FabricSettingsComponent", () => {
     component.handleInput("\x07");
 
     expect(component.render(100).join("\n")).toContain(
-      "Save scope: Global (~/.pi/agent/fabric.json)",
+      "Editing: Global defaults (~/.pi/agent/fabric.json)",
     );
-    expect(component.render(100).join("\n")).toContain(
-      "project scope unavailable for untrusted projects",
-    );
+    expect(component.render(100).join("\n")).toContain("project scope unavailable");
     expect(onSaveScopeChange).not.toHaveBeenCalled();
   });
 
@@ -704,6 +702,78 @@ describe("FabricSettingsComponent", () => {
     } finally {
       if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = inheritedAgentDir;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps global edits visible when a project override remains effective", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-settings-shadowed-global-"));
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    const inheritedAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const inheritedFullCodeMode = process.env.PI_FABRIC_FULL_CODE_MODE;
+    fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, "fabric.json"), JSON.stringify({ fullCodeMode: true }));
+    fs.writeFileSync(path.join(cwd, ".pi", "fabric.json"), JSON.stringify({ fullCodeMode: true }));
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    delete process.env.PI_FABRIC_FULL_CODE_MODE;
+    try {
+      const location = { cwd, agentDir, projectTrusted: true };
+      const config = loadFabricConfig(location);
+      const applyFabricMode = vi.fn();
+      const requestRender = vi.fn();
+      const state = {
+        config,
+        ensure: vi.fn().mockResolvedValue(undefined),
+        reloadConfig: vi.fn(() => Object.assign(config, loadFabricConfig(location))),
+        agents: { claudeModels: vi.fn().mockResolvedValue([]) },
+      } as unknown as FabricState;
+      let globalLines: string[] = [];
+      let projectLines: string[] = [];
+      const context = {
+        mode: "tui",
+        cwd,
+        isProjectTrusted: () => true,
+        modelRegistry: { getAvailable: () => fakeModelSource.models },
+        ui: {
+          notify: vi.fn(),
+          custom: vi.fn(async (factory) => {
+            const component = factory({ requestRender }, theme, {}, () => {}) as FabricSettingsComponent;
+            component.handleInput("\x07");
+            expect(component.render(120).join("\n")).toContain(
+              "project overrides may remain active here",
+            );
+
+            component.handleInput(" ");
+            globalLines = component.render(120);
+            expect(config.fullCodeMode).toBe(true);
+
+            component.handleInput("\x07");
+            projectLines = component.render(120);
+          }),
+        },
+      } as unknown as ExtensionContext;
+
+      await openFabricSettings(context, {
+        state,
+        applyFabricMode,
+        capturedTools: { list: () => [] } as unknown as CapturedToolCatalog,
+      });
+
+      expect(globalLines.find((line) => line.includes("Full code mode"))).toContain("false");
+      expect(projectLines.find((line) => line.includes("Full code mode"))).toContain("true");
+      expect(JSON.parse(fs.readFileSync(path.join(agentDir, "fabric.json"), "utf8")))
+        .toMatchObject({ fullCodeMode: false });
+      expect(JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8")))
+        .toMatchObject({ fullCodeMode: true });
+      expect(requestRender).toHaveBeenCalledTimes(2);
+      expect(applyFabricMode).toHaveBeenCalledOnce();
+    } finally {
+      if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = inheritedAgentDir;
+      if (inheritedFullCodeMode === undefined) delete process.env.PI_FABRIC_FULL_CODE_MODE;
+      else process.env.PI_FABRIC_FULL_CODE_MODE = inheritedFullCodeMode;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });

@@ -8,6 +8,7 @@ import {
   QUICKJS_MAX_MEMORY_LIMIT_BYTES,
   effectiveToolCaptureConfig,
   loadFabricConfig,
+  loadFabricConfigForScope,
   normalizeFabricConfig,
   saveFabricConfig,
 } from "../src/config.js";
@@ -367,10 +368,16 @@ describe("Fabric configuration", () => {
       path.join(cwd, ".pi", "fabric.json"),
       JSON.stringify({ agents: { transport: "localterm" } }),
     );
-    const config = loadFabricConfig({ cwd, agentDir, projectTrusted: true });
+    const location = { cwd, agentDir, projectTrusted: true };
+    const config = loadFabricConfig(location);
     expect(config.approvals.network).toBe("allow");
     expect(config.agents.maxConcurrent).toBe(2);
     expect(config.agents.transport).toBe("localterm");
+
+    const globalConfig = loadFabricConfigForScope(location, "global");
+    expect(globalConfig.agents.maxConcurrent).toBe(2);
+    expect(globalConfig.agents.transport).toBe("process");
+    expect(loadFabricConfigForScope(location, "project").agents.transport).toBe("localterm");
   });
 
   it("updates the compaction engine environment across config re-initialization", () => {
