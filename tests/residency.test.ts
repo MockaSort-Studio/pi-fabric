@@ -393,6 +393,9 @@ describe.skipIf(!hasResidentHost)("durable participant residency", () => {
       triggerTurn: false,
       message: "fake worker complete",
     });
+    // Delivery lands before MeshStore.delete completes its locked write, so
+    // poll the queue drain instead of asserting the removal synchronously.
+    await waitFor(() => state.mesh.listAll(prefix).length === 0);
     expect(state.mesh.listAll(prefix)).toEqual([]);
 
     await client.removeActor(actor.id);
