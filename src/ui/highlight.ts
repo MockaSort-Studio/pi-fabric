@@ -1,10 +1,11 @@
+import { readFileSync, statSync } from "node:fs";
 import { basename, extname } from "node:path";
 // The light shiki subpath entries carry only catalog metadata (~5ms combined).
 // The full shiki entry (createHighlighter, ~50ms in-host) is dynamic-imported
 // lazily inside initHighlighting so extension startup stays off the shiki graph.
 import { bundledLanguages } from "shiki/langs";
 import { bundledThemesInfo } from "shiki/themes";
-import type { Highlighter } from "shiki";
+import type { GrammarState, Highlighter } from "shiki";
 import { resolveShikiTheme, type ShikiThemeVariant } from "./code-preview.js";
 
 const configuredMaxHighlightChars = Number.parseInt(
@@ -15,9 +16,26 @@ const MAX_HIGHLIGHT_CHARS =
   Number.isFinite(configuredMaxHighlightChars) && configuredMaxHighlightChars > 0
     ? configuredMaxHighlightChars
     : 80_000;
+const configuredFileHighlightMaxSourceChars = Number.parseInt(
+  process.env.CODE_PREVIEW_FILE_HIGHLIGHT_MAX_CHARS ?? "",
+  10,
+);
+// Files larger than this never enter full-file tokenization; their previews
+// fall back to per-run tokenization. Bounds worst-case background work.
+const FILE_HIGHLIGHT_MAX_SOURCE_CHARS =
+  Number.isFinite(configuredFileHighlightMaxSourceChars) &&
+  configuredFileHighlightMaxSourceChars > 0
+    ? configuredFileHighlightMaxSourceChars
+    : 200_000;
+// One background slice covers ~5-10ms of shiki work on heavy grammars
+// (measured ~106ms for a 1.3k-line TS file), keeping each event-loop tick
+// well under one frame.
+const FILE_HIGHLIGHT_TICK_LINE_BUDGET = 96;
+const FILE_HIGHLIGHT_TICK_CHAR_BUDGET = 16_000;
+const FILE_HIGHLIGHT_ENTRY_LIMIT = 24;
+const FILE_HIGHLIGHT_CHAR_LIMIT = 4_000_000;
 const CACHE_LIMIT = 192;
 const CACHE_CHAR_LIMIT = 4_000_000;
-
 const PRELOADED_LANGUAGES = [
   "bash",
   "typescript",
@@ -253,6 +271,7 @@ const syncEffectiveTheme = (preference: string, variant: ShikiThemeVariant): boo
   currentTheme = effective;
   renderCache.clear();
   renderCacheChars = 0;
+  resetFileHighlighting();
   if (enabled && (highlighter || initializingTheme)) {
     void initHighlighting(effective, true);
   }
@@ -315,6 +334,7 @@ export function configureHighlighting(themePreferenceValue: string, syntaxEnable
     highlighterReadyCallbacks.clear();
     renderCache.clear();
     renderCacheChars = 0;
+    resetFileHighlighting();
     return;
   }
   const themeChanged = syncEffectiveTheme(preference, observedVariant);
@@ -342,6 +362,7 @@ export async function initHighlighting(theme: string, syntaxEnabled = true): Pro
     }
     highlighter?.dispose();
     highlighter = next;
+    resetFileHighlighting();
     readyTheme = theme;
     initializingTheme = undefined;
     highlighterGeneration++;
@@ -521,4 +542,250 @@ export function highlightCode(
   } catch {
     return null;
   }
+}
+
+interface FileHighlightWaiter {
+  to: number;
+  invalidate: () => void;
+}
+
+interface FileHighlightEntry {
+  highlighter: Highlighter;
+  lang: string;
+  mtimeMs: number;
+  size: number;
+  sourceLines: string[];
+  lines: string[];
+  state: GrammarState | undefined;
+  target: number;
+  waiters: FileHighlightWaiter[];
+  stale: boolean;
+  chars: number;
+}
+
+export interface FileHighlightLine {
+  raw: string;
+  ansi: string;
+}
+
+const fileHighlightCache = new Map<string, FileHighlightEntry>();
+let fileHighlightChars = 0;
+const fileHighlightQueue: FileHighlightEntry[] = [];
+let fileHighlightQueueScheduled = false;
+
+const expandFileLineTabs = (text: string): string => text.replace(/\t/g, "    ");
+
+const dropFileHighlightEntry = (key: string, entry: FileHighlightEntry): void => {
+  if (fileHighlightCache.get(key) !== entry) return;
+  entry.stale = true;
+  entry.waiters = [];
+  fileHighlightCache.delete(key);
+  fileHighlightChars -= entry.chars;
+};
+
+const evictFileHighlightCache = (): void => {
+  while (
+    fileHighlightCache.size > FILE_HIGHLIGHT_ENTRY_LIMIT ||
+    fileHighlightChars > FILE_HIGHLIGHT_CHAR_LIMIT
+  ) {
+    const oldestKey = fileHighlightCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = fileHighlightCache.get(oldestKey);
+    if (oldest) dropFileHighlightEntry(oldestKey, oldest);
+    else fileHighlightCache.delete(oldestKey);
+  }
+};
+
+const resetFileHighlighting = (): void => {
+  for (const [, entry] of fileHighlightCache) {
+    entry.stale = true;
+    entry.waiters = [];
+  }
+  fileHighlightCache.clear();
+  fileHighlightQueue.length = 0;
+  fileHighlightChars = 0;
+};
+
+const fireSatisfiedWaiters = (entry: FileHighlightEntry): void => {
+  const covered = entry.lines.length;
+  const ready = new Set<() => void>();
+  const remaining: FileHighlightWaiter[] = [];
+  for (const waiter of entry.waiters) {
+    if (waiter.to <= covered) ready.add(waiter.invalidate);
+    else remaining.push(waiter);
+  }
+  entry.waiters = remaining;
+  if (ready.size === 0) return;
+  queueMicrotask(() => {
+    for (const invalidate of ready) {
+      try {
+        invalidate();
+      } catch {
+        // A stale invalidate callback is harmless.
+      }
+    }
+  });
+};
+
+const advanceFileHighlight = (entry: FileHighlightEntry): void => {
+  const instance = highlighter;
+  if (!instance || readyTheme !== currentTheme || instance !== entry.highlighter) {
+    entry.stale = true;
+    return;
+  }
+  const start = entry.lines.length;
+  const hardEnd = Math.min(entry.target, entry.sourceLines.length);
+  let end = start;
+  let chars = 0;
+  const maxEnd = Math.min(start + FILE_HIGHLIGHT_TICK_LINE_BUDGET, hardEnd);
+  while (end < maxEnd && chars <= FILE_HIGHLIGHT_TICK_CHAR_BUDGET) {
+    chars += (entry.sourceLines[end]?.length ?? 0) + 1;
+    end++;
+  }
+  if (end <= start) return;
+  try {
+    const tokens = instance.codeToTokensBase(entry.sourceLines.slice(start, end).join("\n"), {
+      lang: entry.lang as never,
+      theme: currentTheme as never,
+      ...(entry.state ? { grammarState: entry.state } : {}),
+    });
+    const rendered = tokens.map((line) =>
+      normalizeContrast(line.map(ansiFromToken).join("")),
+    );
+    entry.state = instance.getLastGrammarState(tokens as never);
+    entry.lines.push(...rendered);
+    const delta = rendered.reduce((total, line) => total + line.length, 0);
+    entry.chars += delta;
+    fileHighlightChars += delta;
+  } catch {
+    entry.stale = true;
+  }
+};
+
+const pumpFileHighlightQueue = (): void => {
+  fileHighlightQueueScheduled = false;
+  let entry = fileHighlightQueue.shift();
+  while (
+    entry !== undefined &&
+    (entry.stale ||
+      entry.highlighter !== highlighter ||
+      entry.lines.length >= Math.min(entry.target, entry.sourceLines.length))
+  ) {
+    if (entry.waiters.length > 0) fireSatisfiedWaiters(entry);
+    entry = fileHighlightQueue.shift();
+  }
+  if (!entry) return;
+  advanceFileHighlight(entry);
+  if (!entry.stale) {
+    fireSatisfiedWaiters(entry);
+    // Coverage only progresses while something on screen waits for it; an
+    // entry with no waiters parks so idle state never burns CPU.
+    if (entry.waiters.length > 0) fileHighlightQueue.push(entry);
+  }
+  if (fileHighlightQueue.length > 0) {
+    fileHighlightQueueScheduled = true;
+    setImmediate(pumpFileHighlightQueue);
+  }
+};
+
+const scheduleFileHighlight = (entry: FileHighlightEntry): void => {
+  if (!fileHighlightQueue.includes(entry)) fileHighlightQueue.push(entry);
+  if (fileHighlightQueueScheduled) return;
+  fileHighlightQueueScheduled = true;
+  setImmediate(pumpFileHighlightQueue);
+};
+
+/**
+ * Highlight a line range of an on-disk file with full grammar state, returning
+ * per-line { raw, ansi } entries for 0-based [from, to). `raw` is the
+ * tab-expanded source line so callers can verify the rendered content still
+ * matches the file. Returns null while coverage has not reached `to` (or when
+ * the file is unusable); passing `invalidate` repaints as soon as the range is
+ * covered and pumps bounded background tokenization — parked shiki
+ * GrammarState, one ~5-10ms slice per event-loop tick, work only while
+ * waiters exist.
+ */
+export function highlightFileLines(
+  filePath: string,
+  lang: string,
+  from: number,
+  to: number,
+  invalidate?: () => void,
+): FileHighlightLine[] | null {
+  if (!enabled || !lang || !filePath || to <= from || from < 0) return null;
+  if (!highlighter || readyTheme !== currentTheme) {
+    requestInit(invalidate);
+    return null;
+  }
+  const shikiLang = normalizeLanguage(lang);
+  if (!(shikiLang in bundledLanguages)) return null;
+  if (!loadedLanguages.has(shikiLang)) {
+    requestLanguageLoad(shikiLang, invalidate);
+    return null;
+  }
+  let stat;
+  try {
+    stat = statSync(filePath);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile() || stat.size > FILE_HIGHLIGHT_MAX_SOURCE_CHARS) return null;
+  const key = `${currentTheme}\0${shikiLang}\0${filePath}`;
+  let entry = fileHighlightCache.get(key);
+  if (entry && (entry.mtimeMs !== stat.mtimeMs || entry.size !== stat.size)) {
+    dropFileHighlightEntry(key, entry);
+    entry = undefined;
+  }
+  if (!entry) {
+    let text: string;
+    try {
+      text = readFileSync(filePath, "utf8");
+    } catch {
+      return null;
+    }
+    if (text.includes("\0")) return null;
+    const sourceLines = text
+      .replace(/\r\n?/g, "\n")
+      .split("\n")
+      .map(expandFileLineTabs);
+    entry = {
+      highlighter,
+      lang: shikiLang,
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      sourceLines,
+      lines: [],
+      state: undefined,
+      target: 0,
+      waiters: [],
+      stale: false,
+      chars: sourceLines.reduce((total, line) => total + line.length, 0),
+    };
+    fileHighlightCache.set(key, entry);
+    fileHighlightChars += entry.chars;
+    evictFileHighlightCache();
+    if (entry.stale) {
+      // Evicted immediately by the char budget; treat as unusable.
+      entry.waiters = [];
+      return null;
+    }
+  } else {
+    fileHighlightCache.delete(key);
+    fileHighlightCache.set(key, entry);
+  }
+  const total = entry.sourceLines.length;
+  if (from >= total) return null;
+  const clampedTo = Math.max(Math.min(to, total), Math.min(from, total));
+  entry.target = Math.max(entry.target, clampedTo);
+  if (invalidate && entry.lines.length < clampedTo) {
+    entry.waiters = entry.waiters.filter((waiter) => waiter.invalidate !== invalidate);
+    entry.waiters.push({ to: clampedTo, invalidate });
+    scheduleFileHighlight(entry);
+  }
+  if (entry.lines.length < to) return null;
+  const out: FileHighlightLine[] = [];
+  for (let index = from; index < to; index++) {
+    out.push({ raw: entry.sourceLines[index] ?? "", ansi: entry.lines[index] ?? "" });
+  }
+  return out;
 }

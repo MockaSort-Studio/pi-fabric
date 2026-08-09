@@ -1,8 +1,13 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { CodePreviewSettings } from "../src/ui/code-preview.js";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { describe, expect, it, vi } from "vitest";
-import { configureHighlighting } from "../src/ui/highlight.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  configureHighlighting,
+  highlightCode,
+  highlightFileLines,
+  initHighlighting,
+} from "../src/ui/highlight.js";
 import {
   coreToolPreviewEnabled,
   coreToolRendererEnabled,
@@ -513,4 +518,103 @@ describe("Fabric core tool parity rendering", () => {
     expect(renderCoreToolBody(other, theme, options())).toBeNull();
     expect(coreToolTitle(other, theme, { cwd: process.cwd(), settings })).toBeNull();
   });
+});
+
+describe("Fabric core tool stateful highlighting", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(async () => {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    dir = mkdtempSync((await import("node:path")).join(tmpdir(), "pi-fabric-render-"));
+    file = (await import("node:path")).join(dir, "audio.cpp");
+    writeFileSync(
+      file,
+      [
+        "/**",
+        " * @brief Shared queue carrying captured PCM sample buffers.",
+        " */",
+        "using sample_queue_t = int;",
+        "static int start_audio_control(int ctx);",
+      ].join("\n"),
+      "utf8",
+    );
+    await initHighlighting("dark-plus", true);
+    await vi.waitFor(
+      () => expect(highlightCode(`int warm${Math.random()};`, "cpp")).not.toBeNull(),
+      { timeout: 15_000 },
+    );
+  });
+
+  afterEach(async () => {
+    const { rmSync } = await import("node:fs");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("colors doc-comment rows in grep output with full-file grammar state", async () => {
+    const source = [
+      "/**",
+      " * @brief Shared queue carrying captured PCM sample buffers.",
+      " */",
+      "using sample_queue_t = int;",
+      "static int start_audio_control(int ctx);",
+    ].join("\n");
+    const output = [
+      `${file}:2:  * @brief Shared queue carrying captured PCM sample buffers.`,
+      `${file}-3-  */`,
+      `${file}:4: using sample_queue_t = int;`,
+    ].join("\n");
+    const call = audit("grep", {
+      args: { pattern: "sample_queue|@brief", path: dir },
+      result: output,
+      success: true,
+    });
+
+    // Drive the on-disk coverage to completion.
+    const coverage = vi.fn();
+    highlightFileLines(file, "cpp", 0, 5, coverage);
+    await vi.waitFor(() => expect(coverage).toHaveBeenCalled(), { timeout: 15_000 });
+
+    const rendered = renderCoreToolBody(call, theme, options({ expanded: true }));
+    expect(rendered).not.toBeNull();
+    const full = highlightCode(source, "cpp")!;
+    const commentColor = full[0]!.match(/\x1b\[38;2;[0-9;]+m/)?.[0];
+    expect(commentColor).toBeTruthy();
+    // Every doc-comment row, including the interior lines that used to be
+    // tokenized in isolation, now carries the comment color of the opener.
+    const body = rendered!.lines.find((line) => line.includes("@brief"));
+    const closer = rendered!.lines.find((line) => line.includes("*/"));
+    expect(body).toContain(commentColor);
+    expect(body).toContain(full[1]!);
+    expect(closer).toContain(commentColor);
+  }, 20_000);
+
+  it("tokenizes proposed edit diff sides as separate streams", async () => {
+    const call = audit("edit", {
+      args: {
+        path: (await import("node:path")).join(dir, "missing.ts"),
+        edits: [{ oldText: "const b = 2;\n/* dangling", newText: "const b = 3;" }],
+      },
+      success: false,
+    });
+    const rendered = renderCoreToolBody(call, theme, options({ expanded: true }));
+    expect(rendered).not.toBeNull();
+    const stripAnsi = (line: string) =>
+      line.replace(/\u0000PI_DIFF_[A-Z]+\u0000/g, "").replace(/\x1b\[[0-9;]*m/g, "");
+    const added = rendered!.lines.find((line) => stripAnsi(line).includes("const b = 3;"));
+    const removed = rendered!.lines.find((line) => stripAnsi(line).includes("/* dangling"));
+    expect(added).toBeDefined();
+    expect(removed).toBeDefined();
+    const newlineFirst = highlightCode("const b = 3;", "typescript")![0]!;
+    const keywordSpan = newlineFirst.match(/^(\x1b\[[0-9;]+m)const/)?.[1];
+    expect(keywordSpan).toBeTruthy();
+    // The removed `/* dangling` must not bleed comment state into the added
+    // line: it is tokenized as the new-side stream, so `const` keeps its
+    // keyword color (word-emphasis backgrounds only touch the changed `3`).
+    expect(added).toContain(`${keywordSpan}const`);
+    const commentSpan = removed!.match(/(\x1b\[[0-9;]+m)\/\*/)?.[1];
+    expect(commentSpan).toBeTruthy();
+    expect(added).not.toContain(`${commentSpan}const`);
+  }, 20_000);
 });

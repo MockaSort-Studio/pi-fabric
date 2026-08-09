@@ -1304,15 +1304,37 @@ export function nestedEditDiff(
     const newText = typeof record.newText === "string" ? record.newText : "";
     const diff = lineDiff(oldText.split("\n"), newText.split("\n"));
     if (diff.length === 0) continue;
-    const contents = diff.map((entry) => entry.content);
-    let highlighted: string[] | null = null;
-    if (lang) highlighted = highlightCode(contents.join("\n"), lang, invalidate);
+    // Tokenize the old and new side as separate streams so removal-side
+    // comment/string state cannot bleed into added lines.
+    const oldHighlighted = lang
+      ? highlightCode(
+          diff.filter((entry) => entry.kind !== "+").map((entry) => entry.content).join("\n"),
+          lang,
+          invalidate,
+        )
+      : null;
+    const newHighlighted = lang
+      ? highlightCode(
+          diff.filter((entry) => entry.kind !== "-").map((entry) => entry.content).join("\n"),
+          lang,
+          invalidate,
+        )
+      : null;
+    let oldCursor = 0;
+    let newCursor = 0;
     for (let index = 0; index < diff.length; index++) {
       const entry = diff[index]!;
+      let text: string | undefined;
+      if (entry.kind === "-") {
+        text = oldHighlighted?.[oldCursor++];
+      } else if (entry.kind === "+") {
+        text = newHighlighted?.[newCursor++];
+      } else {
+        oldCursor++;
+        text = newHighlighted?.[newCursor++];
+      }
       const content =
-        highlighted && highlighted[index] != null
-          ? highlighted[index] || " "
-          : theme.fg("toolOutput", escapeControlChars(entry.content) || " ");
+        text != null ? text || " " : theme.fg("toolOutput", escapeControlChars(entry.content) || " ");
       if (entry.kind === "+") {
         lines.push(`${theme.fg("toolDiffAdded", "+")} ${content}`);
       } else if (entry.kind === "-") {

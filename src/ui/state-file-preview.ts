@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { highlightCode, languageFromPath } from "./highlight.js";
+import { highlightCode, highlightFileLines, languageFromPath } from "./highlight.js";
 import { safeText } from "./format.js";
 import type { FabricUiStateEntry } from "./types.js";
 
@@ -12,6 +12,7 @@ const CACHE_LIMIT = 64;
 
 export interface FabricStateFilePreview {
   path: string;
+  absolutePath: string;
   language: string;
   content: string;
   lines: string[];
@@ -70,6 +71,7 @@ export const loadStateFilePreview = (
     const boundedLines = allLines.slice(0, MAX_FILE_LINES);
     const preview: FabricStateFilePreview = {
       path: (path.relative(root, absolute) || path.basename(absolute)).split(path.sep).join("/"),
+      absolutePath: absolute,
       language: languageFromPath(absolute) ?? "text",
       content: boundedLines.join("\n"),
       lines: boundedLines,
@@ -92,8 +94,22 @@ export const renderStateFilePreview = (
 ): string[] => {
   if (width <= 0 || maxLines <= 0) return [];
   const shown = preview.lines.slice(0, maxLines);
-  const highlighted = highlightCode(shown.join("\n"), preview.language, invalidate) ??
-    shown.map((line) => theme.fg("mdCodeBlock", safeText(line) || " "));
+  // Prefer the file's tokenization coverage so long comments/strings opened
+  // near the top highlight state-correctly even in short excerpts.
+  const fileLines = highlightFileLines(
+    preview.absolutePath,
+    preview.language,
+    0,
+    shown.length,
+    invalidate,
+  );
+  const fileVerified =
+    fileLines !== null &&
+    fileLines.every((line, index) => line.raw === (shown[index] ?? "").replace(/\t/g, "    "));
+  const highlighted = fileVerified
+    ? fileLines!.map((line) => line.ansi || " ")
+    : highlightCode(shown.join("\n"), preview.language, invalidate) ??
+      shown.map((line) => theme.fg("mdCodeBlock", safeText(line) || " "));
   const digits = String(Math.max(1, shown.length)).length;
   const output = highlighted.map((line, index) => {
     const gutter = theme.fg("dim", `${String(index + 1).padStart(digits)} │ `);

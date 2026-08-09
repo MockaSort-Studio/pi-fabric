@@ -1,6 +1,6 @@
 // Adapted from pi-code-previews for audited nested calls; see THIRD_PARTY_NOTICES.md.
 import { homedir } from "node:os";
-import { basename, extname, isAbsolute, relative } from "node:path";
+import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { CodePreviewSettings } from "./code-preview.js";
 import { diffLines } from "diff";
@@ -9,6 +9,7 @@ import type { FabricRenderAudit } from "./fabric-render.js";
 import {
   effectiveShikiThemeIsLight,
   highlightCode,
+  highlightFileLines,
   languageFromPath,
   observePiTheme,
 } from "./highlight.js";
@@ -327,13 +328,33 @@ const renderContent = (
   const rendered: string[] = [];
   const warning = warningLine(content, options, theme);
   if (warning) rendered.push(warning);
+  const absoluteFilePath = language && filePath ? resolve(options.cwd, filePath) : undefined;
   let chunk: Array<{ line: string; index: number }> = [];
+  // A chunk is a contiguous run of visible file lines; when the on-disk file
+  // matches, slice its fully-tokenized coverage (state-correct across excerpt
+  // boundaries). Any mismatch falls back to per-chunk tokenization.
   const flush = (): void => {
     if (chunk.length === 0) return;
     const normalized = chunk.map((entry) => expandTabs(escapeControlChars(entry.line)));
-    const highlighted = language
-      ? highlightCode(normalized.join("\n"), language, options.invalidate)
-      : null;
+    const first = chunk[0]!;
+    const from = (config.firstLine ?? 1) - 1 + first.index;
+    const fileLines =
+      absoluteFilePath && language && first.index + chunk.length <= selected.total
+        ? highlightFileLines(
+            absoluteFilePath,
+            language,
+            from,
+            from + chunk.length,
+            options.invalidate,
+          )
+        : null;
+    const fileVerified =
+      fileLines !== null && fileLines.every((line, index) => line.raw === normalized[index]);
+    const highlighted = fileVerified
+      ? fileLines!.map((line) => line.ansi)
+      : language
+        ? highlightCode(normalized.join("\n"), language, options.invalidate)
+        : null;
     const width = String((config.firstLine ?? 1) + selected.total - 1).length;
     for (let index = 0; index < chunk.length; index++) {
       const entry = chunk[index]!;
@@ -606,19 +627,79 @@ const renderDiff = (
       : undefined;
   const highlighted: Array<string | undefined> = Array.from({ length: shown.length }, () => undefined);
   if (language) {
+    // Prefer the on-disk document: numbered diff lines whose content still
+    // matches the file take fully state-correct tokens straight from its
+    // coverage. Removed/rewritten lines of a successful edit (and proposed
+    // edits whose file doesn't match) fail verification and fall through.
+    if (filePath) {
+      const numbered: Array<{ index: number; n: number }> = [];
+      for (let index = 0; index < parsed.length; index++) {
+        const line = parsed[index];
+        if (!line) continue;
+        const n = Number.parseInt(line.lineNumber.trim(), 10);
+        if (Number.isFinite(n) && n > 0) numbered.push({ index, n });
+      }
+      if (numbered.length > 0) {
+        const from = Math.min(...numbered.map((row) => row.n)) - 1;
+        const to = Math.max(...numbered.map((row) => row.n)) + 1;
+        const slice = highlightFileLines(
+          resolve(options.cwd, filePath),
+          language,
+          from,
+          to,
+          options.invalidate,
+        );
+        if (slice) {
+          for (const row of numbered) {
+            const entry = slice[row.n - 1 - from];
+            if (entry && entry.raw === expandTabs(parsed[row.index]!.content)) {
+              highlighted[row.index] = entry.ansi;
+            }
+          }
+        }
+      }
+    }
+    // Remaining lines: tokenize the old and new side of each contiguous
+    // segment as separate streams so removal-side comment/string state can
+    // never bleed into added lines (and vice versa).
     let start = 0;
     while (start < parsed.length) {
-      if (!parsed[start]) {
+      if (!parsed[start] || highlighted[start] !== undefined) {
         start++;
         continue;
       }
       let end = start;
-      while (end < parsed.length && parsed[end]) end++;
-      const content = parsed.slice(start, end).map((line) => expandTabs(line!.content));
-      const rendered = highlightCode(content.join("\n"), language, options.invalidate);
-      if (rendered) {
-        for (let index = 0; index < content.length; index++) {
-          highlighted[start + index] = rendered[index] ?? theme.fg("toolOutput", escapeControlChars(content[index] ?? ""));
+      while (end < parsed.length && parsed[end] && highlighted[end] === undefined) end++;
+      const oldOffsets: number[] = [];
+      const newOffsets: number[] = [];
+      const oldContent: string[] = [];
+      const newContent: string[] = [];
+      for (let offset = start; offset < end; offset++) {
+        const line = parsed[offset]!;
+        const content = expandTabs(line.content);
+        if (line.kind !== "+") {
+          oldOffsets.push(offset);
+          oldContent.push(content);
+        }
+        if (line.kind !== "-") {
+          newOffsets.push(offset);
+          newContent.push(content);
+        }
+      }
+      const oldRendered = oldContent.length
+        ? highlightCode(oldContent.join("\n"), language, options.invalidate)
+        : null;
+      if (oldRendered) {
+        for (let index = 0; index < oldOffsets.length; index++) {
+          highlighted[oldOffsets[index]!] = oldRendered[index];
+        }
+      }
+      const newRendered = newContent.length
+        ? highlightCode(newContent.join("\n"), language, options.invalidate)
+        : null;
+      if (newRendered) {
+        for (let index = 0; index < newOffsets.length; index++) {
+          highlighted[newOffsets[index]!] = newRendered[index];
         }
       }
       start = end;
@@ -879,59 +960,88 @@ const grepMatchRanges = (
   return ranges;
 };
 
-const renderGrepLine = (
-  raw: string,
-  audit: FabricRenderAudit,
-  theme: Theme,
-  options: CoreToolRenderOptions,
-  currentPath: { value: string; language: string | undefined },
-  syntaxHighlight: boolean,
-): string[] => {
+type GrepParsedRow = {
+  filePath: string;
+  lineNumber: number;
+  lineNumberLabel: string;
+  code: string;
+  isMatch: boolean;
+};
+
+const parseGrepRow = (raw: string): GrepParsedRow | null => {
   const match = raw.match(/^(.+):(\d+):\s(.*)$/);
   const context = raw.match(/^(.+)-(\d+)-\s(.*)$/);
   const parsed = match ?? context;
-  if (!parsed) {
-    return [
-      raw.startsWith("[") && raw.endsWith("]")
-        ? theme.fg("warning", escapeControlChars(raw))
-        : theme.fg("toolOutput", escapeControlChars(raw) || " "),
-    ];
+  if (!parsed) return null;
+  const lineNumberLabel = parsed[2] ?? "";
+  const lineNumber = Number.parseInt(lineNumberLabel, 10);
+  return {
+    filePath: parsed[1] ?? "",
+    lineNumber: Number.isFinite(lineNumber) ? lineNumber : 0,
+    lineNumberLabel,
+    code: expandTabs(parsed[3] ?? ""),
+    isMatch: Boolean(match),
+  };
+};
+
+// Tokenize one run of consecutive same-file grep rows. Preferred source is
+// the on-disk file's coverage (correct grammar state across excerpt edges,
+// e.g. a doc comment whose opener sits above the match); otherwise the whole
+// run is tokenized as a single unit so adjacent lines still share state.
+const highlightGrepRun = (
+  run: GrepParsedRow[],
+  language: string | undefined,
+  options: CoreToolRenderOptions,
+): Array<string | undefined> => {
+  if (!language) return run.map(() => undefined);
+  const first = run[0]!;
+  const last = run[run.length - 1]!;
+  const slice = highlightFileLines(
+    resolve(options.cwd, first.filePath),
+    language,
+    first.lineNumber - 1,
+    last.lineNumber,
+    options.invalidate,
+  );
+  if (slice && slice.every((line, index) => line.raw === run[index]!.code)) {
+    return slice.map((line) => line.ansi);
   }
-  const filePath = parsed[1] ?? "";
-  const lineNumber = parsed[2] ?? "";
-  const code = expandTabs(parsed[3] ?? "");
-  const lines: string[] = [];
-  if (filePath !== currentPath.value) {
-    currentPath.value = filePath;
-    currentPath.language = syntaxHighlight ? languageFromPath(filePath) : undefined;
-    lines.push(theme.fg("accent", escapeControlChars(filePath)));
-  }
-  let highlighted = currentPath.language
-    ? highlightCode(code, currentPath.language, options.invalidate)?.[0]
-    : undefined;
-  highlighted ??= theme.fg("toolOutput", escapeControlChars(code));
-  if (match) {
+  const rendered = highlightCode(
+    run.map((row) => row.code).join("\n"),
+    language,
+    options.invalidate,
+  );
+  return run.map((_, index) => rendered?.[index]);
+};
+
+const renderGrepRowLine = (
+  row: GrepParsedRow,
+  highlighted: string,
+  audit: FabricRenderAudit,
+  theme: Theme,
+): string => {
+  let content = highlighted;
+  if (row.isMatch) {
     const ranges = grepMatchRanges(
-      code,
+      row.code,
       argString(audit, "pattern") ?? "",
       audit.args?.literal === true,
       audit.args?.ignoreCase === true,
     );
     if (ranges.length > 0) {
-      highlighted = injectVisibleRanges(
-        highlighted,
+      content = injectVisibleRanges(
+        content,
         ranges,
         effectiveShikiThemeIsLight() ? "\x1b[48;2;234;225;171m" : "\x1b[48;2;90;74;28m",
         "\x1b[49m",
       );
     }
   }
-  const number = match
-    ? theme.fg("accent", lineNumber.padStart(4, " "))
-    : theme.fg("dim", lineNumber.padStart(4, " "));
-  const marker = match ? theme.fg("warning", "│") : theme.fg("dim", "┆");
-  lines.push(`${theme.fg("dim", "  ")}${number} ${marker} ${highlighted}`);
-  return lines;
+  const number = row.isMatch
+    ? theme.fg("accent", row.lineNumberLabel.padStart(4, " "))
+    : theme.fg("dim", row.lineNumberLabel.padStart(4, " "));
+  const marker = row.isMatch ? theme.fg("warning", "│") : theme.fg("dim", "┆");
+  return `${theme.fg("dim", "  ")}${number} ${marker} ${content}`;
 };
 
 const renderGrep = (
@@ -947,30 +1057,57 @@ const renderGrep = (
   const raw = output.split("\n");
   const skipHighlight =
     options.settings.syntaxHighlighting && output.length > MAX_HIGHLIGHT_CHARS;
+  const syntaxOn = options.settings.syntaxHighlighting && !skipHighlight;
   const selected = previewEntries(raw, toolLimit(audit, options));
-  const path: { value: string; language: string | undefined } = {
-    value: "",
-    language: undefined,
-  };
   const lines: string[] = [];
+  let currentPath = "";
+  let currentLanguage: string | undefined;
+  let run: GrepParsedRow[] = [];
+
+  const flushRun = (): void => {
+    if (run.length === 0) return;
+    const highlighted = syntaxOn ? highlightGrepRun(run, currentLanguage, options) : [];
+    for (let index = 0; index < run.length; index++) {
+      const row = run[index]!;
+      const content = highlighted[index] ?? theme.fg("toolOutput", escapeControlChars(row.code));
+      lines.push(renderGrepRowLine(row, content, audit, theme));
+    }
+    run = [];
+  };
+
   for (const entry of selected.entries) {
     if (entry.kind === "hidden") {
+      flushRun();
       lines.push(theme.fg("muted", `      --- ${entry.hidden} lines hidden ---`));
-      path.value = "";
-      path.language = undefined;
-    } else {
-      lines.push(
-        ...renderGrepLine(
-          entry.line,
-          audit,
-          theme,
-          options,
-          path,
-          options.settings.syntaxHighlighting && !skipHighlight,
-        ),
-      );
+      currentPath = "";
+      currentLanguage = undefined;
+      continue;
     }
+    const row = parseGrepRow(entry.line);
+    if (!row) {
+      flushRun();
+      lines.push(
+        entry.line.startsWith("[") && entry.line.endsWith("]")
+          ? theme.fg("warning", escapeControlChars(entry.line))
+          : theme.fg("toolOutput", escapeControlChars(entry.line) || " "),
+      );
+      continue;
+    }
+    if (row.filePath !== currentPath) {
+      flushRun();
+      currentPath = row.filePath;
+      currentLanguage = syntaxOn ? languageFromPath(row.filePath) : undefined;
+      lines.push(theme.fg("accent", escapeControlChars(row.filePath)));
+      run.push(row);
+      continue;
+    }
+    const previous = run[run.length - 1];
+    if (!previous || row.lineNumber !== previous.lineNumber + 1) {
+      flushRun();
+    }
+    run.push(row);
   }
+  flushRun();
   if (skipHighlight) {
     pushArcItem(lines, arcItem(theme, "Syntax highlighting skipped for large grep output"));
   }
