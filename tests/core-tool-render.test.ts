@@ -328,6 +328,46 @@ describe("Fabric core tool parity rendering", () => {
     expect(rendered!.lines).toContain("╰─ Full output: /tmp/bash.log");
   });
 
+  it("keeps bash command rows aligned when the command embeds raw carriage returns", async () => {
+    const command = [
+      "sleep 15",
+      "pid=$(adb shell pidof com.example.app | tr -d '\r')",
+      "echo faults",
+      "adb logcat -d | grep -E 'playback|drops'",
+      "echo faults",
+    ].join("\n");
+    const call = audit("bash", {
+      args: { command: "ignored" },
+      preview: { bashCommand: command },
+      result: { ok: true, output: "", details: {} },
+      success: true,
+    });
+    const strip = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
+    const expected = [
+      "  pid=$(adb shell pidof com.example.app | tr -d '␍')",
+      "  echo faults",
+      "  adb logcat -d | grep -E 'playback|drops'",
+      "  echo faults",
+      "No output",
+    ];
+
+    const plain = renderCoreToolBody(call, theme, options());
+    expect(plain).not.toBeNull();
+    expect(plain!.lines.map(strip)).toEqual(expected);
+
+    configureHighlighting("dark-plus", true);
+    const invalidate = vi.fn();
+    await vi.waitFor(
+      () => expect(highlightCode("echo ready", "bash", invalidate)).not.toBeNull(),
+      { timeout: 15_000 },
+    );
+    const highlighted = renderCoreToolBody(call, theme, options());
+    expect(highlighted!.lines.map(strip)).toEqual(expected);
+    expect(
+      highlighted!.lines.slice(0, 4).every((row) => row.includes("\x1b[38;2;")),
+    ).toBe(true);
+  }, 20_000);
+
   it("honors collapsed preview visibility while allowing expanded output", () => {
     const read = audit("read", { args: { path: "a.txt" }, result: "hidden", success: true });
     const hiddenSettings = { ...settings, readContentPreview: false };

@@ -1249,12 +1249,17 @@ const renderBash = (
           : true);
   if (!options.expanded && !resultEnabled) return null;
   const command = bashCommand(audit);
-  const commandLines = command.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  // Shiki's tokenizer only splits on "\n"; escape remaining control characters
+  // (\r -> visible glyph) rather than folding them into line breaks, so the
+  // highlighted array stays row-aligned with commandLines and trailing rows
+  // can't drift into the plain fallback as duplicated lines.
+  const displayCommand = escapeControlChars(command.replace(/\r\n/g, "\n"));
+  const commandLines = displayCommand.split("\n");
   const highlightedCommand = command
-    ? highlightCode(command, "bash", options.invalidate)
+    ? highlightCode(displayCommand, "bash", options.invalidate)
     : null;
   const lines = commandLines.slice(1).map((line, index) =>
-    `${theme.fg("dim", "  ")}${highlightedCommand?.[index + 1] ?? theme.fg("accent", escapeControlChars(line))}`,
+    `${theme.fg("dim", "  ")}${highlightedCommand?.[index + 1] ?? theme.fg("accent", line)}`,
   );
   const output = resultOutput(audit)?.replace(/\r?\n$/, "") ?? "";
   if (!output || output === "(no output)") {
