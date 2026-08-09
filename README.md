@@ -139,6 +139,7 @@ The test suite covers configuration, schema validation, provider dispatch, regis
 ## Acknowledgments
 
 - Thanks to [@hazrid93](https://github.com/hazrid93), who originally requested a better LLM advisor pattern that saved on tokens — the idea that became Fabric's advisor.
+- Thanks to Chad Gibson at [Neuralwatt](https://neuralwatt.com), who opened the door to extended testing of long MCR sessions and patiently listened to every debugging woe along the way.
 
 ## License
 
