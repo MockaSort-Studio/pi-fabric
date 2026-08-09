@@ -8,6 +8,7 @@ import {
   NESTED_TOOL_CALL_ID_PREFIX,
   type FabricCallAudit,
 } from "../core/action-registry.js";
+import type { CompactRequestIntent } from "../core/compact-controller.js";
 import type { FabricExecutionResult } from "../execution-service.js";
 import type {
   FabricInvocationActivityUpdate,
@@ -42,6 +43,37 @@ const PREWALK_TRAJECTORY_VERIFY_PROMPT = [
 ].join(" ");
 
 export const PREWALK_ARMED_MESSAGE_TYPE = "pi-fabric-prewalk-armed";
+const PREWALK_CONTINUE_MESSAGE_TYPE = "pi-fabric-prewalk-continue";
+
+const prewalkContinuationId = (message: unknown): string | undefined => {
+  if (typeof message !== "object" || message === null) return undefined;
+  const custom = message as { role?: unknown; customType?: unknown; details?: unknown };
+  if (custom.role !== "custom" || custom.customType !== PREWALK_CONTINUE_MESSAGE_TYPE) {
+    return undefined;
+  }
+  if (typeof custom.details !== "object" || custom.details === null) return undefined;
+  const details = custom.details as { mode?: unknown; continuationId?: unknown };
+  // Identity filtering applies to in-place continuations only: they carry the
+  // accept/settle lifecycle. The trajectory verify prompt shares this custom
+  // type but has no continuation identity and must always reach Main.
+  if (details.mode !== "in-place") return undefined;
+  return typeof details.continuationId === "string" ? details.continuationId : "";
+};
+
+export const filterPrewalkContinuationMessages = <Message>(
+  messages: Message[],
+  accept: (continuationId: string) => boolean,
+): { messages: Message[]; changed: boolean } => {
+  let changed = false;
+  const filtered = messages.filter((message) => {
+    const continuationId = prewalkContinuationId(message);
+    if (continuationId === undefined) return true;
+    const keep = continuationId.length > 0 && accept(continuationId);
+    if (!keep) changed = true;
+    return keep;
+  });
+  return { messages: changed ? filtered : messages, changed };
+};
 
 // Advisory arm-time framing, delivered as a hidden nextTurn custom message:
 // LLM-visible, TUI-hidden, and never fired as an `input` event, so it cannot
@@ -197,6 +229,7 @@ const modelForKey = (key: string, context: ExtensionContext) => {
 };
 
 const runInPlacePrewalk = async (
+  controller: PrewalkController,
   extension: ExtensionAPI,
   pending: PendingFabricHandoff,
   context: ExtensionContext,
@@ -231,50 +264,67 @@ const runInPlacePrewalk = async (
     },
   };
   const branch = context.sessionManager.getBranch();
+  const returnModel = context.model;
+  if (!returnModel) throw new Error("Prewalk cannot determine Main return model");
+  const returnModelKey = `${returnModel.provider}/${returnModel.id}`;
+  const continuationId = randomUUID();
   const switched = await extension.setModel(model);
   if (!switched) {
     throw new Error(`No authentication configured for prewalk model: ${modelKey}`);
   }
-  const transferPolicy = thinkingTransferPolicy(transfer);
-  if (transferPolicy !== "preserved") {
-    const digest = buildThinkingDigest(branch, transfer);
-    if (digest) {
-      extension.sendMessage(
-        {
-          customType: THINKING_DIGEST_CUSTOM_TYPE,
-          content: digest.content,
-          display: false,
-          details: {
-            mode: "in-place",
-            policy: transferPolicy,
-            citedBlocks: digest.citedBlocks,
-            target: modelKey,
-            trigger: pending.triggerRef,
+
+  try {
+    const transferPolicy = thinkingTransferPolicy(transfer);
+    if (transferPolicy !== "preserved") {
+      const digest = buildThinkingDigest(branch, transfer);
+      if (digest) {
+        extension.sendMessage(
+          {
+            customType: THINKING_DIGEST_CUSTOM_TYPE,
+            content: digest.content,
+            display: false,
+            details: {
+              mode: "in-place",
+              policy: transferPolicy,
+              citedBlocks: digest.citedBlocks,
+              target: modelKey,
+              trigger: pending.triggerRef,
+            },
           },
+          { deliverAs: "followUp" },
+        );
+      }
+    }
+    extension.sendMessage(
+      {
+        customType: PREWALK_CONTINUE_MESSAGE_TYPE,
+        content: PREWALK_CONTINUE_PROMPT,
+        display: false,
+        details: {
+          mode: "in-place",
+          model: modelKey,
+          continuationId,
+          returnModel: returnModelKey,
+          trigger: pending.triggerRef,
         },
-        { deliverAs: "followUp" },
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
+  } catch (error) {
+    const restored = await extension.setModel(returnModel);
+    if (!restored) {
+      throw new Error(
+        `Prewalk could not queue its continuation or return Main to ${returnModelKey}`,
+        { cause: error },
       );
     }
+    throw error;
   }
-  if (!switched) {
-    throw new Error(`No authentication configured for prewalk model: ${modelKey}`);
-  }
+
+  controller.beginContinuation(continuationId, returnModelKey);
   context.ui.notify(
-    `Prewalk continuing Main in place with ${modelKey}. Pi will retain this model after the task.`,
+    `Prewalk is continuing in Main with ${modelKey}, then returning to ${returnModelKey}.`,
     "info",
-  );
-  extension.sendMessage(
-    {
-      customType: "pi-fabric-prewalk-continue",
-      content: PREWALK_CONTINUE_PROMPT,
-      display: false,
-      details: {
-        mode: "in-place",
-        model: modelKey,
-        trigger: pending.triggerRef,
-      },
-    },
-    { deliverAs: "followUp", triggerTurn: true },
   );
   context.ui.setStatus("fabric-prewalk", `continuing Main → ${modelKey}`);
   return {
@@ -286,6 +336,97 @@ const runInPlacePrewalk = async (
     trigger: { ref: pending.triggerRef },
   };
 };
+
+const modelForReturnKey = (key: string, context: ExtensionContext) => {
+  const separator = key.indexOf("/");
+  if (separator <= 0 || separator === key.length - 1) return undefined;
+  return context.modelRegistry.find(key.slice(0, separator), key.slice(separator + 1));
+};
+
+const PREWALK_RETURN_COMPACTION_INSTRUCTIONS = [
+  "Compact before Main returns to its boundary model after an in-place prewalk continuation.",
+  "Preserve the executor's final report and verification results; summarize implementation scratch work, file reads, and command output.",
+].join(" ");
+
+export interface InPlacePrewalkSettleOptions {
+  // Enabled by default when a compact controller is provided.
+  compactOnReturn?: boolean;
+  compact?: {
+    request(intent: CompactRequestIntent): unknown;
+    maybeCommit(context: ExtensionContext): Promise<void>;
+    status?(): { pending?: unknown };
+  };
+}
+
+export const settleInPlacePrewalk = async (
+  controller: PrewalkController,
+  extension: ExtensionAPI,
+  context: ExtensionContext,
+  options?: InPlacePrewalkSettleOptions,
+): Promise<boolean> => {
+  const sessionId = context.sessionManager.getSessionId();
+  const settlement = controller.takeContinuationSettlement(sessionId);
+  if (!settlement) return false;
+
+  const model = modelForReturnKey(settlement.returnModel, context);
+  if (!model) {
+    controller.finishContinuation(sessionId, settlement.continuationId);
+    context.ui.setStatus("fabric-prewalk", `return failed → ${settlement.returnModel}`);
+    context.ui.notify(
+      `Prewalk completed, but Main could not return to unavailable model ${settlement.returnModel}.`,
+      "error",
+    );
+    return false;
+  }
+
+  context.ui.setStatus("fabric-prewalk", `returning Main → ${settlement.returnModel}`);
+  if (options?.compact && options.compactOnReturn !== false) {
+    // Compact while the executor is still active so the restored boundary
+    // model re-ingests a compacted transcript instead of the executor's full
+    // implementation scratch work: the return prefill is cold regardless of
+    // provider cache-policy differences, so keep it small. An already-pending
+    // intent (e.g. requested by the model) wins over ours. The commit is
+    // best-effort; the controller records failures without throwing.
+    if (!options.compact.status?.().pending) {
+      options.compact.request({
+        reason: "in-place prewalk return",
+        instructions: PREWALK_RETURN_COMPACTION_INSTRUCTIONS,
+        requestedBy: "prewalk",
+      });
+    }
+    await options.compact.maybeCommit(context);
+  }
+  let restored = false;
+  try {
+    restored = await extension.setModel(model);
+  } catch {
+    restored = false;
+  }
+  if (!restored) {
+    controller.finishContinuation(sessionId, settlement.continuationId);
+    context.ui.setStatus("fabric-prewalk", `return failed → ${settlement.returnModel}`);
+    context.ui.notify(
+      `Prewalk completed, but Main could not return to ${settlement.returnModel}. Check model authentication.`,
+      "error",
+    );
+    return false;
+  }
+
+  controller.finishContinuation(sessionId, settlement.continuationId);
+  const status = controller.status();
+  context.ui.setStatus(
+    "fabric-prewalk",
+    status.state === "armed" ? `armed → ${status.model}` : undefined,
+  );
+  context.ui.notify(
+    status.state === "armed"
+      ? `Prewalk complete. Main returned to ${settlement.returnModel} and re-armed for the next task.`
+      : `Prewalk complete. Main returned to ${settlement.returnModel}.`,
+    "info",
+  );
+  return true;
+};
+
 
 export const runFabricHandoffAtBoundary = async (
   controller: PrewalkController,
@@ -304,7 +445,7 @@ export const runFabricHandoffAtBoundary = async (
   );
   try {
     if (inPlace) {
-      const result = await runInPlacePrewalk(extension, pending, context);
+      const result = await runInPlacePrewalk(controller, extension, pending, context);
       pending.audit.success = true;
       pending.audit.result = result;
       pending.audit.endedAt = Date.now();
@@ -372,6 +513,7 @@ export const runFabricHandoffAtBoundary = async (
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (inPlace) controller.failHandoff();
     pending.audit.success = false;
     pending.audit.error = message;
     pending.audit.endedAt = Date.now();
@@ -391,9 +533,11 @@ export const runFabricHandoffAtBoundary = async (
       error: message,
     };
   } finally {
-    const status = controller.completeTask();
-    if (status.state === "armed") {
-      context.ui.setStatus("fabric-prewalk", `armed → ${status.model}`);
+    if (!inPlace) {
+      const status = controller.completeTask();
+      if (status.state === "armed") {
+        context.ui.setStatus("fabric-prewalk", `armed → ${status.model}`);
+      }
     }
   }
 };

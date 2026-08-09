@@ -1057,7 +1057,7 @@ export const buildFabricSettingsItems = (
         [
           setting("prewalk.mode", "Mode", config.prewalk.mode, {
             description:
-              "In-place switches Main, retains that model, and queues a hidden continuation. Trajectory moves the session snapshot to a visible child executor, then queues a hidden verify-and-summarize continuation for Main when it finishes.",
+              "In-place temporarily switches Main to the executor, queues a hidden continuation, then returns to Main's previous model. Trajectory moves the session snapshot to a visible child executor, then queues a hidden verify-and-summarize continuation for Main when it finishes.",
             values: PREWALK_MODES,
           }),
           setting(
@@ -1067,6 +1067,16 @@ export const buildFabricSettingsItems = (
             {
               description:
                 "After a task settles or continues, arm prewalk again for the next user task until explicitly cancelled.",
+              values: BOOLEANS,
+            },
+          ),
+          setting(
+            "prewalk.compactOnReturn",
+            "Compact on return",
+            config.prewalk.compactOnReturn ? "true" : "false",
+            {
+              description:
+                "After an in-place continuation settles, compact the session with the configured compaction engine just before Main's boundary model is restored, so Main re-ingests a compacted transcript rather than the executor's full scratch work.",
               values: BOOLEANS,
             },
           ),
