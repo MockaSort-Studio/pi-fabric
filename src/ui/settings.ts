@@ -29,10 +29,13 @@ import {
   type ModelSource,
 } from "./model-picker.js";
 import {
+  clampCompactionRatioThreshold,
   clampCompactionTokenThreshold,
   loadFabricConfigForScope,
+  MAX_COMPACTION_RATIO_THRESHOLD,
   MAX_COMPACTION_TOKEN_THRESHOLD,
   maxExecutorMemoryLimitBytes,
+  MIN_COMPACTION_RATIO_THRESHOLD,
   MIN_COMPACTION_TOKEN_THRESHOLD,
   QUICKJS_MAX_MEMORY_LIMIT_BYTES,
   saveFabricConfig,
@@ -58,11 +61,12 @@ const EXECUTOR_RUNTIMES = ["quickjs", "node-process"] as const;
 const COMPACTION_ENGINES = ["fabric", "pi"] as const;
 const COMPACTION_THRESHOLD_SETTING_ID = "compaction.threshold";
 const COMPACTION_DEFAULT_THRESHOLD_LABEL = "Pi default";
-const COMPACTION_THRESHOLDS = [
-  COMPACTION_DEFAULT_THRESHOLD_LABEL,
-  ...Array.from({ length: 15 }, (_, index) => `${25 + index * 5}%`),
-];
+const COMPACTION_PERCENT_OPTION_LABEL = "Custom percent…";
 const COMPACTION_TOKENS_OPTION_LABEL = "Custom tokens…";
+const COMPACTION_PERCENT_MIN = Math.round(MIN_COMPACTION_RATIO_THRESHOLD * 100);
+const COMPACTION_PERCENT_MAX = Math.round(MAX_COMPACTION_RATIO_THRESHOLD * 100);
+const clampCompactionPercentThreshold = (value: number): number =>
+  Math.round(clampCompactionRatioThreshold(value / 100) * 100);
 const COMPACTION_TARGET_RATIOS = Array.from(
   { length: 13 },
   (_, index) => String((25 + index * 5) / 100),
@@ -564,9 +568,9 @@ class SelectSubmenu extends Container {
   }
 }
 
-// Two-phase threshold picker: first select Pi default / a percent / the
-// token drill-in; the token phase swaps in an integer input and Esc returns
-// to the percent list instead of closing the submenu.
+// Three-phase threshold picker: the root select offers Pi default plus
+// custom percent / token drill-ins; each drill-in swaps in an integer input
+// and Esc returns to the root select instead of closing the submenu.
 class CompactionThresholdSubmenu extends Container {
   selectList: SelectList | undefined;
   input: Input | undefined;
@@ -589,17 +593,19 @@ class CompactionThresholdSubmenu extends Container {
 
   private showSelect(): void {
     const options: SelectItem[] = [
-      ...COMPACTION_THRESHOLDS.map((label) => ({ value: label, label })),
+      { value: COMPACTION_DEFAULT_THRESHOLD_LABEL, label: COMPACTION_DEFAULT_THRESHOLD_LABEL },
+      { value: COMPACTION_PERCENT_OPTION_LABEL, label: COMPACTION_PERCENT_OPTION_LABEL },
       { value: COMPACTION_TOKENS_OPTION_LABEL, label: COMPACTION_TOKENS_OPTION_LABEL },
     ];
     const select = new SelectSubmenu(
       this.theme,
       "Compaction threshold",
-      "Percent of the context window that triggers compaction, or an exact token count via the custom option.",
+      "Percent of the context window that triggers compaction, or an exact token count, entered via the custom options.",
       options,
       this.currentValue,
       (value) => {
-        if (value === COMPACTION_TOKENS_OPTION_LABEL) this.showTokens();
+        if (value === COMPACTION_PERCENT_OPTION_LABEL) this.showPercent();
+        else if (value === COMPACTION_TOKENS_OPTION_LABEL) this.showTokens();
         else this.done(value);
       },
       () => this.done(),
@@ -607,6 +613,21 @@ class CompactionThresholdSubmenu extends Container {
     this.selectList = select.selectList;
     this.input = undefined;
     this.swap(select);
+  }
+
+  private showPercent(): void {
+    const percent = /^(\d+)%$/.exec(this.currentValue);
+    const inputSubmenu = new IntegerInputSubmenu(
+      this.theme,
+      "Compaction percent threshold",
+      `Compaction triggers once context usage reaches this percent of its window (${COMPACTION_PERCENT_MIN}–${COMPACTION_PERCENT_MAX}).`,
+      percent?.[1] ?? "",
+      (value) => this.done(`${clampCompactionPercentThreshold(Number(value))}%`),
+      () => this.showSelect(),
+    );
+    this.selectList = undefined;
+    this.input = inputSubmenu.input;
+    this.swap(inputSubmenu);
   }
 
   private showTokens(): void {

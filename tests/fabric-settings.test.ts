@@ -224,11 +224,13 @@ describe("FabricSettingsComponent", () => {
     );
   });
 
-  it("persists the active model's compaction threshold as a ratio", () => {
+  it("persists the active model's compaction threshold as a custom percent", () => {
     const applied: Array<{ id: string; value: unknown }> = [];
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.compaction.thresholds["openai/gpt-5.5"] = 0.6;
     const items = buildFabricSettingsItems(
       theme,
-      structuredClone(DEFAULT_FABRIC_CONFIG),
+      config,
       (id, value) => applied.push({ id, value }),
       {
         keepVisibleCandidates: ["fabric_exec"],
@@ -239,14 +241,37 @@ describe("FabricSettingsComponent", () => {
     const section = items.find((item) => item.id === "compaction")!.submenu!("", () => {}) as any;
     const list = section.settingsList as any;
     list.selectedIndex = list.items.findIndex((item: { id: string }) => item.id === "compaction.threshold");
-    list.activateItem();
-    list.submenuComponent.selectList.onSelect({ value: "80%", label: "80%" });
+    expect(list.items[list.selectedIndex].currentValue).toBe("60%");
 
+    list.activateItem();
+    list.submenuComponent.selectList.onSelect({ value: "Custom percent…", label: "Custom percent…" });
+    expect(list.submenuComponent.input).toBeDefined();
+    expect(list.submenuComponent.input.getValue()).toBe("60");
+
+    list.submenuComponent.input.setValue("");
+    list.submenuComponent.handleInput("73");
+    list.submenuComponent.handleInput("\r");
     expect(applied.at(-1)).toEqual({
       id: "compaction.threshold",
-      value: { mode: "percent", value: 0.8 },
+      value: { mode: "percent", value: 0.73 },
     });
-    expect(list.items[list.selectedIndex].currentValue).toBe("80%");
+    expect(list.items[list.selectedIndex].currentValue).toBe("73%");
+
+    list.activateItem();
+    list.submenuComponent.selectList.onSelect({ value: "Custom percent…", label: "Custom percent…" });
+    list.submenuComponent.input.setValue("");
+    list.submenuComponent.handleInput("5");
+    list.submenuComponent.handleInput("\r");
+    expect(applied.at(-1)).toEqual({
+      id: "compaction.threshold",
+      value: { mode: "percent", value: 0.25 },
+    });
+    expect(list.items[list.selectedIndex].currentValue).toBe("25%");
+
+    list.activateItem();
+    list.submenuComponent.selectList.onSelect({ value: "Custom percent…", label: "Custom percent…" });
+    list.submenuComponent.handleInput("\x1b");
+    expect(list.submenuComponent.selectList).toBeDefined();
   });
 
   it("persists a custom token threshold through the drill-in input", () => {

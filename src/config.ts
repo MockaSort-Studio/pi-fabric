@@ -137,11 +137,19 @@ interface FabricCompactionConfig {
 
 export const MIN_COMPACTION_TOKEN_THRESHOLD = 1_000;
 export const MAX_COMPACTION_TOKEN_THRESHOLD = 100_000_000;
+export const MIN_COMPACTION_RATIO_THRESHOLD = 0.25;
+export const MAX_COMPACTION_RATIO_THRESHOLD = 0.95;
 
 export const clampCompactionTokenThreshold = (value: number): number =>
   Math.min(
     MAX_COMPACTION_TOKEN_THRESHOLD,
     Math.max(MIN_COMPACTION_TOKEN_THRESHOLD, Math.round(value)),
+  );
+
+export const clampCompactionRatioThreshold = (value: number): number =>
+  Math.min(
+    MAX_COMPACTION_RATIO_THRESHOLD,
+    Math.max(MIN_COMPACTION_RATIO_THRESHOLD, value),
   );
 
 export interface FabricRetentionConfig {
@@ -512,7 +520,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       )
       .map(([model, threshold]) => [
         model,
-        Math.min(0.95, Math.max(0.25, threshold as number)),
+        clampCompactionRatioThreshold(threshold as number),
       ]),
   );
   const compactionTokenThresholds = Object.fromEntries(
