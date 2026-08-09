@@ -29,8 +29,11 @@ import {
   type ModelSource,
 } from "./model-picker.js";
 import {
+  clampCompactionTokenThreshold,
   loadFabricConfigForScope,
+  MAX_COMPACTION_TOKEN_THRESHOLD,
   maxExecutorMemoryLimitBytes,
+  MIN_COMPACTION_TOKEN_THRESHOLD,
   QUICKJS_MAX_MEMORY_LIMIT_BYTES,
   saveFabricConfig,
   type FabricConfig,
@@ -59,6 +62,7 @@ const COMPACTION_THRESHOLDS = [
   COMPACTION_DEFAULT_THRESHOLD_LABEL,
   ...Array.from({ length: 15 }, (_, index) => `${25 + index * 5}%`),
 ];
+const COMPACTION_TOKENS_OPTION_LABEL = "Custom tokens…";
 const COMPACTION_TARGET_RATIOS = Array.from(
   { length: 13 },
   (_, index) => String((25 + index * 5) / 100),
@@ -179,6 +183,36 @@ const formatTokens = (value: number): string =>
 const formatToolCount = (count: number): string =>
   `${count} ${count === 1 ? "tool" : "tools"}`;
 
+// The threshold row is a mode selection: Pi default, a window-occupancy
+// percent, or an exact token count. mode: "default" clears both maps so Pi's
+// built-in threshold applies.
+export type CompactionThresholdSelection =
+  | { mode: "default" }
+  | { mode: "percent"; value: number }
+  | { mode: "tokens"; value: number };
+
+const formatCompactionThreshold = (
+  config: FabricConfig,
+  modelKey: string,
+): string => {
+  const tokens = config.compaction.tokenThresholds[modelKey];
+  if (tokens !== undefined) return `${formatTokens(tokens)} tokens`;
+  const ratio = config.compaction.thresholds[modelKey];
+  return ratio === undefined
+    ? COMPACTION_DEFAULT_THRESHOLD_LABEL
+    : `${Math.round(ratio * 100)}%`;
+};
+
+export const compactionThresholdPartial = (
+  modelKey: string,
+  selection: CompactionThresholdSelection,
+): Record<string, unknown> => ({
+  compaction: {
+    thresholds: { [modelKey]: selection.mode === "percent" ? selection.value : null },
+    tokenThresholds: { [modelKey]: selection.mode === "tokens" ? selection.value : null },
+  },
+});
+
 const numericOptions = (
   values: readonly number[],
   format: (value: number) => string,
@@ -236,8 +270,15 @@ export const parseFormattedNumericValue = (value: string): number => {
 
 const coerceValue = (id: string, value: string, config: FabricConfig): unknown => {
   if (id === COMPACTION_THRESHOLD_SETTING_ID) {
-    if (value === COMPACTION_DEFAULT_THRESHOLD_LABEL) return null;
-    return Number(value.replace("%", "")) / 100;
+    if (value === COMPACTION_DEFAULT_THRESHOLD_LABEL) return { mode: "default" };
+    const tokens = /^(.+?) tokens$/.exec(value);
+    if (tokens?.[1] !== undefined) {
+      return {
+        mode: "tokens",
+        value: clampCompactionTokenThreshold(parseFormattedNumericValue(tokens[1])),
+      };
+    }
+    return { mode: "percent", value: Number(value.replace("%", "")) / 100 };
   }
   if (id === CODE_PREVIEW_EDIT_LINES_ID) {
     if (value === CODE_PREVIEW_ALL_LINES || value === "all") return "all";
@@ -359,6 +400,9 @@ const nonNegativeIntegerSubmenu = (
   description: string,
 ): SettingsSubmenu => (currentValue, done) =>
   new IntegerInputSubmenu(theme, title, description, currentValue, done, () => done());
+
+const compactionThresholdSubmenu = (theme: Theme): SettingsSubmenu => (currentValue, done) =>
+  new CompactionThresholdSubmenu(theme, currentValue, done);
 
 const stringOptionsSubmenu = (
   theme: Theme,
@@ -517,6 +561,74 @@ class SelectSubmenu extends Container {
 
   handleInput(data: string): void {
     this.selectList.handleInput(data);
+  }
+}
+
+// Two-phase threshold picker: first select Pi default / a percent / the
+// token drill-in; the token phase swaps in an integer input and Esc returns
+// to the percent list instead of closing the submenu.
+class CompactionThresholdSubmenu extends Container {
+  selectList: SelectList | undefined;
+  input: Input | undefined;
+  private active!: Container & { handleInput(data: string): void };
+
+  constructor(
+    private readonly theme: Theme,
+    private readonly currentValue: string,
+    private readonly done: (selectedValue?: string) => void,
+  ) {
+    super();
+    this.showSelect();
+  }
+
+  private swap(next: Container & { handleInput(data: string): void }): void {
+    this.clear();
+    this.addChild(next);
+    this.active = next;
+  }
+
+  private showSelect(): void {
+    const options: SelectItem[] = [
+      ...COMPACTION_THRESHOLDS.map((label) => ({ value: label, label })),
+      { value: COMPACTION_TOKENS_OPTION_LABEL, label: COMPACTION_TOKENS_OPTION_LABEL },
+    ];
+    const select = new SelectSubmenu(
+      this.theme,
+      "Compaction threshold",
+      "Percent of the context window that triggers compaction, or an exact token count via the custom option.",
+      options,
+      this.currentValue,
+      (value) => {
+        if (value === COMPACTION_TOKENS_OPTION_LABEL) this.showTokens();
+        else this.done(value);
+      },
+      () => this.done(),
+    );
+    this.selectList = select.selectList;
+    this.input = undefined;
+    this.swap(select);
+  }
+
+  private showTokens(): void {
+    const tokens = /^(.+?) tokens$/.exec(this.currentValue);
+    const prefilled = tokens?.[1] === undefined
+      ? ""
+      : String(parseFormattedNumericValue(tokens[1]));
+    const inputSubmenu = new IntegerInputSubmenu(
+      this.theme,
+      "Compaction token threshold",
+      `Compaction triggers once context usage reaches this many tokens (${MIN_COMPACTION_TOKEN_THRESHOLD}–${MAX_COMPACTION_TOKEN_THRESHOLD}).`,
+      prefilled,
+      (value) => this.done(`${formatTokens(clampCompactionTokenThreshold(Number(value)))} tokens`),
+      () => this.showSelect(),
+    );
+    this.selectList = undefined;
+    this.input = inputSubmenu.input;
+    this.swap(inputSubmenu);
+  }
+
+  handleInput(data: string): void {
+    this.active.handleInput(data);
   }
 }
 
@@ -1252,12 +1364,11 @@ export const buildFabricSettingsItems = (
             ? [setting(
                 COMPACTION_THRESHOLD_SETTING_ID,
                 "Threshold",
-                config.compaction.thresholds[options.activeModelKey] === undefined
-                  ? COMPACTION_DEFAULT_THRESHOLD_LABEL
-                  : `${Math.round(config.compaction.thresholds[options.activeModelKey]! * 100)}%`,
+                formatCompactionThreshold(config, options.activeModelKey),
                 {
-                  description: `Context occupancy that triggers compaction for ${options.activeModelKey}.`,
-                  values: COMPACTION_THRESHOLDS,
+                  description:
+                    `Context usage that triggers compaction for ${options.activeModelKey}, as a percent of its window or an exact token count.`,
+                  submenu: compactionThresholdSubmenu(theme),
                 },
               )]
             : []),
@@ -1559,7 +1670,7 @@ export async function openFabricSettings(
 
   const apply = (id: string, value: unknown): void => {
     const partial = id === COMPACTION_THRESHOLD_SETTING_ID && activeModelKey
-      ? { compaction: { thresholds: { [activeModelKey]: value } } }
+      ? compactionThresholdPartial(activeModelKey, value as CompactionThresholdSelection)
       : buildPartial(id, value);
     try {
       saveFabricConfig(

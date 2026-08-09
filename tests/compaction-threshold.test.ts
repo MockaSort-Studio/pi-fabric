@@ -56,6 +56,60 @@ describe("model-linked compaction thresholds", () => {
       .toBeUndefined();
   });
 
+  it("compacts when token usage reaches a configured token threshold", async () => {
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.compaction.tokenThresholds["anthropic/sonnet"] = 50_000;
+    const context = contextWithUsage(80); // 80,000 of 100,000 tokens
+
+    await expect(compactAtConfiguredThreshold(context, config)).resolves.toBe(true);
+    expect(context.compact).toHaveBeenCalledOnce();
+  });
+
+  it("lets token thresholds win over ratios and skips unknown token usage", async () => {
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.compaction.thresholds["anthropic/sonnet"] = 0.25;
+    config.compaction.tokenThresholds["anthropic/sonnet"] = 900_000;
+    const context = contextWithUsage(80); // 80,000 tokens: ratio exceeded, token threshold not
+
+    await expect(compactAtConfiguredThreshold(context, config)).resolves.toBe(false);
+    expect(context.compact).not.toHaveBeenCalled();
+
+    const unknown = contextWithUsage(null); // tokens unknown right after compaction
+    await expect(compactAtConfiguredThreshold(unknown, config)).resolves.toBe(false);
+    expect(unknown.compact).not.toHaveBeenCalled();
+  });
+
+  it("defers Pi's automatic threshold below a configured token threshold", () => {
+    let handler: ((event: SessionBeforeCompactEvent, context: ExtensionContext) => unknown) | undefined;
+    const pi = {
+      on(name: string, candidate: unknown) {
+        if (name === "session_before_compact") {
+          handler = candidate as typeof handler;
+        }
+      },
+    } as unknown as ExtensionAPI;
+    registerCompactionHook(pi, {
+      getEngine: () => "pi",
+      getThresholdTokens: (key) => key === "anthropic/sonnet" ? 150_000 : undefined,
+      // A configured token threshold takes precedence: this ratio is ignored.
+      getThresholdContextRatio: () => 0.25,
+    });
+    const context = {
+      model: { provider: "anthropic", id: "sonnet", contextWindow: 100_000 },
+    } as unknown as ExtensionContext;
+    const event = {
+      reason: "threshold",
+      preparation: { tokensBefore: 120_000 },
+      branchEntries: [],
+    } as unknown as SessionBeforeCompactEvent;
+
+    expect(handler?.(event, context)).toEqual({ cancel: true });
+    expect(handler?.({ ...event, preparation: { tokensBefore: 150_000 } } as SessionBeforeCompactEvent, context))
+      .toBeUndefined();
+    expect(handler?.({ ...event, reason: "overflow" } as SessionBeforeCompactEvent, context))
+      .toBeUndefined();
+  });
+
   it("does not compact below threshold or for an unconfigured model", async () => {
     const config = structuredClone(DEFAULT_FABRIC_CONFIG);
     config.compaction.thresholds["anthropic/sonnet"] = 0.85;

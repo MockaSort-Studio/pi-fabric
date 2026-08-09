@@ -417,6 +417,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       state.initialized
         ? state.config.compaction.thresholds[modelKey]
         : DEFAULT_FABRIC_CONFIG.compaction.thresholds[modelKey],
+    getThresholdTokens: (modelKey) =>
+      state.initialized
+        ? state.config.compaction.tokenThresholds[modelKey]
+        : DEFAULT_FABRIC_CONFIG.compaction.tokenThresholds[modelKey],
   });
 
   pi.on("context", (event) => {

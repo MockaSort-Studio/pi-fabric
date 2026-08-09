@@ -27,10 +27,11 @@ Pi's continuity tail is configured in Pi's `settings.json`:
 
 Use `{ "compaction": { "engine": "pi" } }` to disable the Fabric engine.
 
-`/fabric settings` also exposes a **Threshold** for the active model. Thresholds
-are context-window occupancy ratios and are stored by canonical
-`provider/model` key, so switching models selects that model's own value.
-`Pi default` leaves Pi's built-in threshold unchanged.
+`/fabric settings` also exposes a **Threshold** for the active model with two
+modes: a window-occupancy percent or an exact token count ("Custom
+tokens…"). Thresholds are stored by canonical `provider/model` key, so
+switching models selects that model's own value. `Pi default` clears both maps
+and leaves Pi's built-in threshold unchanged.
 
 ```json
 {
@@ -38,12 +39,17 @@ are context-window occupancy ratios and are stored by canonical
     "thresholds": {
       "anthropic/claude-sonnet-4-5": 0.8,
       "openai/gpt-5.4": 0.9
+    },
+    "tokenThresholds": {
+      "google/gemini-3-pro": 400000
     }
   }
 }
 ```
 
-Configured values are bounded to `0.25`–`0.95`. Fabric triggers compaction at a
+Percent thresholds are bounded to `0.25`–`0.95`; token thresholds are rounded
+to integers bounded to `1,000`–`100,000,000`. When a hand-written config sets
+both for one model, the token threshold wins. Fabric triggers compaction at a
 safe settled boundary when a configured threshold is lower than Pi's built-in
 threshold. When Pi's built-in threshold is lower, Fabric defers that automatic
 compaction until the model-specific threshold is reached; overflow and manual

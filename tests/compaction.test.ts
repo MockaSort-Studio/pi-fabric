@@ -278,9 +278,9 @@ describe("compaction config", () => {
     const configured = normalizeFabricConfig({
       compaction: { engine: "pi", targetContextRatio: 0.7 },
     }).compaction;
-    expect(configured).toEqual({ engine: "pi", targetContextRatio: 0.7, thresholds: {} });
+    expect(configured).toEqual({ engine: "pi", targetContextRatio: 0.7, thresholds: {}, tokenThresholds: {} });
     expect(normalizeFabricConfig({ compaction: { engine: "bogus", targetContextRatio: 2 } }).compaction)
-      .toEqual({ engine: "fabric", targetContextRatio: 0.85, thresholds: {} });
+      .toEqual({ engine: "fabric", targetContextRatio: 0.85, thresholds: {}, tokenThresholds: {} });
     expect(normalizeFabricConfig({ compaction: { targetContextRatio: 0.1 } }).compaction.targetContextRatio)
       .toBe(0.25);
     expect(normalizeFabricConfig({ compaction: { targetContextRatio: "large" } }).compaction.targetContextRatio)
@@ -300,6 +300,26 @@ describe("compaction config", () => {
     }).compaction.thresholds).toEqual({
       "anthropic/sonnet": 0.8,
       "openai/gpt": 0.95,
+    });
+  });
+
+  it("normalizes model-linked token thresholds", () => {
+    expect(normalizeFabricConfig({
+      compaction: {
+        tokenThresholds: {
+          "anthropic/sonnet": 128_000,
+          "openai/gpt": 5,
+          "google/gemini": 1e12,
+          "xai/grok": 150_000.6,
+          malformed: 100_000,
+          "meta/llama": "many",
+        },
+      },
+    }).compaction.tokenThresholds).toEqual({
+      "anthropic/sonnet": 128_000,
+      "openai/gpt": 1_000,
+      "google/gemini": 100_000_000,
+      "xai/grok": 150_001,
     });
   });
 });

@@ -804,6 +804,7 @@ export interface CompactionHookOptions {
   getEngine: () => CompactionEngine;
   getTargetContextRatio?: () => number;
   getThresholdContextRatio?: (modelKey: string) => number | undefined;
+  getThresholdTokens?: (modelKey: string) => number | undefined;
   enrichers?: readonly CompactionEnricher[];
 }
 
@@ -821,7 +822,17 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
     const { preparation, branchEntries } = event;
     const contextWindow = context?.model?.contextWindow;
     const modelKey = modelCompactionKey(context?.model);
-    const threshold = modelKey === undefined
+    const thresholdTokens = modelKey === undefined
+      ? undefined
+      : options.getThresholdTokens?.(modelKey);
+    if (
+      event.reason === "threshold"
+      && typeof thresholdTokens === "number"
+      && preparation.tokensBefore < thresholdTokens
+    ) {
+      return { cancel: true };
+    }
+    const threshold = modelKey === undefined || typeof thresholdTokens === "number"
       ? undefined
       : options.getThresholdContextRatio?.(modelKey);
     if (

@@ -129,7 +129,17 @@ interface FabricCompactionConfig {
   engine: FabricCompactionEngine;
   targetContextRatio: number;
   thresholds: Record<string, number>;
+  tokenThresholds: Record<string, number>;
 }
+
+export const MIN_COMPACTION_TOKEN_THRESHOLD = 1_000;
+export const MAX_COMPACTION_TOKEN_THRESHOLD = 100_000_000;
+
+export const clampCompactionTokenThreshold = (value: number): number =>
+  Math.min(
+    MAX_COMPACTION_TOKEN_THRESHOLD,
+    Math.max(MIN_COMPACTION_TOKEN_THRESHOLD, Math.round(value)),
+  );
 
 export interface FabricRetentionConfig {
   orphanedTempRunMs: number;
@@ -277,6 +287,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     engine: "fabric",
     targetContextRatio: 0.65,
     thresholds: {},
+    tokenThresholds: {},
   },
   retention: {
     orphanedTempRunMs: 6 * 60 * 60 * 1_000,
@@ -500,6 +511,18 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         Math.min(0.95, Math.max(0.25, threshold as number)),
       ]),
   );
+  const compactionTokenThresholds = Object.fromEntries(
+    Object.entries(objectValue(compaction.tokenThresholds))
+      .filter(([model, tokens]) =>
+        model.includes("/")
+        && typeof tokens === "number"
+        && Number.isFinite(tokens),
+      )
+      .map(([model, tokens]) => [
+        model,
+        clampCompactionTokenThreshold(tokens as number),
+      ]),
+  );
   const prewalkModel = stringValue(prewalk.model);
   const prewalkThinking = isFabricThinking(prewalk.thinking) ? prewalk.thinking : undefined;
   const agentModel = stringValue(agents.model);
@@ -704,6 +727,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         0.85,
       ),
       thresholds: compactionThresholds,
+      tokenThresholds: compactionTokenThresholds,
     },
     retention: {
       orphanedTempRunMs: boundedInteger(

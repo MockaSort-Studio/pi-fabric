@@ -9,6 +9,7 @@ import type { FabricState } from "../src/fabric-state.js";
 import type { ModelSource } from "../src/ui/model-picker.js";
 import {
   buildFabricSettingsItems,
+  compactionThresholdPartial,
   executorMemoryLimitOptions,
   FabricSettingsComponent,
   openFabricSettings,
@@ -238,14 +239,85 @@ describe("FabricSettingsComponent", () => {
     const section = items.find((item) => item.id === "compaction")!.submenu!("", () => {}) as any;
     const list = section.settingsList as any;
     list.selectedIndex = list.items.findIndex((item: { id: string }) => item.id === "compaction.threshold");
-    expect(list.items[list.selectedIndex].values).toEqual([
-      "Pi default",
-      ...Array.from({ length: 15 }, (_, index) => `${25 + index * 5}%`),
-    ]);
-    for (let index = 0; index < 12; index++) list.activateItem();
+    list.activateItem();
+    list.submenuComponent.selectList.onSelect({ value: "80%", label: "80%" });
 
-    expect(applied.at(-1)).toEqual({ id: "compaction.threshold", value: 0.8 });
+    expect(applied.at(-1)).toEqual({
+      id: "compaction.threshold",
+      value: { mode: "percent", value: 0.8 },
+    });
     expect(list.items[list.selectedIndex].currentValue).toBe("80%");
+  });
+
+  it("persists a custom token threshold through the drill-in input", () => {
+    const applied: Array<{ id: string; value: unknown }> = [];
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.compaction.tokenThresholds["openai/gpt-5.5"] = 150_000;
+    const items = buildFabricSettingsItems(
+      theme,
+      config,
+      (id, value) => applied.push({ id, value }),
+      {
+        keepVisibleCandidates: ["fabric_exec"],
+        modelSource: fakeModelSource,
+        activeModelKey: "openai/gpt-5.5",
+      },
+    );
+    const section = items.find((item) => item.id === "compaction")!.submenu!("", () => {}) as any;
+    const list = section.settingsList as any;
+    list.selectedIndex = list.items.findIndex((item: { id: string }) => item.id === "compaction.threshold");
+    expect(list.items[list.selectedIndex].currentValue).toBe("150k tokens");
+
+    list.activateItem();
+    list.submenuComponent.selectList.onSelect({ value: "Custom tokens…", label: "Custom tokens…" });
+    expect(list.submenuComponent.input).toBeDefined();
+    expect(list.submenuComponent.input.getValue()).toBe("150000");
+
+    list.submenuComponent.input.setValue("");
+    list.submenuComponent.handleInput("5");
+    list.submenuComponent.handleInput("\r");
+    expect(applied.at(-1)).toEqual({
+      id: "compaction.threshold",
+      value: { mode: "tokens", value: 1_000 },
+    });
+    expect(list.items[list.selectedIndex].currentValue).toBe("1k tokens");
+
+    list.activateItem();
+    list.submenuComponent.selectList.onSelect({ value: "Custom tokens…", label: "Custom tokens…" });
+    list.submenuComponent.input.setValue("");
+    list.submenuComponent.handleInput("240000");
+    list.submenuComponent.handleInput("\r");
+    expect(applied.at(-1)).toEqual({
+      id: "compaction.threshold",
+      value: { mode: "tokens", value: 240_000 },
+    });
+    expect(list.items[list.selectedIndex].currentValue).toBe("240k tokens");
+
+    list.activateItem();
+    list.submenuComponent.selectList.onSelect({ value: "Custom tokens…", label: "Custom tokens…" });
+    list.submenuComponent.handleInput("\x1b");
+    expect(list.submenuComponent.selectList).toBeDefined();
+  });
+
+  it("builds exclusive compaction threshold partials per mode", () => {
+    expect(compactionThresholdPartial("openai/gpt-5.5", { mode: "percent", value: 0.8 })).toEqual({
+      compaction: {
+        thresholds: { "openai/gpt-5.5": 0.8 },
+        tokenThresholds: { "openai/gpt-5.5": null },
+      },
+    });
+    expect(compactionThresholdPartial("openai/gpt-5.5", { mode: "tokens", value: 240_000 })).toEqual({
+      compaction: {
+        thresholds: { "openai/gpt-5.5": null },
+        tokenThresholds: { "openai/gpt-5.5": 240_000 },
+      },
+    });
+    expect(compactionThresholdPartial("openai/gpt-5.5", { mode: "default" })).toEqual({
+      compaction: {
+        thresholds: { "openai/gpt-5.5": null },
+        tokenThresholds: { "openai/gpt-5.5": null },
+      },
+    });
   });
 
   it("exposes temporal retention defaults", () => {
