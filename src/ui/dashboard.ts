@@ -1515,8 +1515,8 @@ export class FabricDashboard implements Component, Focusable {
     if (overlayRows < minimumRows) {
       return [
         title,
-        summaryText || "No Fabric activity yet",
-        "1 activity · 2 topology · arrows move · esc close",
+        this.theme.fg("dim", summaryText || "No Fabric activity yet"),
+        this.theme.fg("dim", "1 activity · 2 topology · arrows move · esc close"),
       ]
         .slice(0, overlayRows)
         .map((line) => truncateToWidth(line, width, ""));
@@ -1772,9 +1772,9 @@ export class FabricDashboard implements Component, Focusable {
       const selected = index === this.phaseIndex;
       const prefix = selected ? "› " : "  ";
       const count = panel.total > 0 ? `${panel.completed}/${panel.total}` : "";
-      const raw = `${prefix}${colorStatus(this.theme, panel.status, statusGlyph(panel.status))} ${safeText(
+      const raw = `${prefix}${colorStatus(this.theme, panel.status, statusGlyph(panel.status))} ${this.theme.fg("muted", safeText(
         panel.name,
-      )}`;
+      ))}`;
       const countWidth = visibleWidth(count);
       const contentWidth = Math.max(0, width - countWidth - (count ? 1 : 0));
       let line = `${padToWidth(raw, contentWidth)}${count ? ` ${this.theme.fg("dim", count)}` : ""}`;
@@ -1845,9 +1845,9 @@ export class FabricDashboard implements Component, Focusable {
       const entity = row.entity;
       const selected = row.entityIndex === this.entityIndex;
       const prefix = selected ? "› " : "  ";
-      const lead = `${prefix}${colorStatus(this.theme, entity.status, statusGlyph(entity.status))} ${safeText(
+      const lead = `${prefix}${colorStatus(this.theme, entity.status, statusGlyph(entity.status))} ${this.theme.fg("muted", safeText(
         entity.label,
-      )}`;
+      ))}`;
       const tail = safeText(entityTail(entity, now));
       let line = tail ? `${lead}  ${this.theme.fg("dim", tail)}` : lead;
       if (selected && this.pane === "entities") {

@@ -55,7 +55,7 @@ interface FabricGraphLayout {
 
 interface Cell {
   char: string;
-  style: "plain" | "edge" | "dim" | "accent" | "success" | "warning" | "error";
+  style: "plain" | "edge" | "dim" | "muted" | "accent" | "success" | "warning" | "error";
 }
 
 export interface FabricGraphAnimation {
@@ -722,7 +722,7 @@ const renderCanvas = (
     setCell(node.x + 1, node.y, " ", "plain");
     let offset = 0;
     for (const char of label) {
-      setCell(node.x + 2 + offset, node.y, char, selected ? "accent" : spotlighted ? "plain" : "dim");
+      setCell(node.x + 2 + offset, node.y, char, selected ? "accent" : spotlighted ? "muted" : "dim");
       offset += visibleWidth(char);
     }
   }
@@ -730,6 +730,7 @@ const renderCanvas = (
   const apply = (style: Cell["style"], value: string): string => {
     if (style === "edge") return theme.fg("borderMuted", value);
     if (style === "dim") return theme.fg("dim", value);
+    if (style === "muted") return theme.fg("muted", value);
     if (style === "accent") return theme.fg("accent", theme.bold(value));
     if (style === "success") return theme.fg("success", value);
     if (style === "warning") return theme.fg("warning", value);
@@ -755,7 +756,7 @@ const renderCanvas = (
 const wrapInspector = (theme: Theme, label: string, value: string, width: number): string[] => {
   const clean = safeText(value);
   const first = truncateToWidth(clean, Math.max(1, width - label.length - 1), "…");
-  return [`${label} ${theme.fg("dim", first)}`];
+  return [theme.fg("muted", `${label} ${first}`)];
 };
 
 const inspectorLines = (
@@ -778,30 +779,30 @@ const inspectorLines = (
     if (entity.kind === "agent") {
       const agentRun = snapshot.runs.find((candidate) => candidate.id === entity.value.runId) ?? run;
       const phase = agentRun?.phases.find((candidate) => candidate.id === entity.value.phaseId);
-      if (agentRun) content.push(`run   ${safeText(agentRun.name)}`);
-      if (phase) content.push(`phase ${safeText(phase.name)}`);
-      if (entity.value.currentTool) content.push(`tool  ${safeText(entity.value.currentTool)}`);
-      if (entity.value.model) content.push(`model ${safeText(entity.value.model)}`);
+      if (agentRun) content.push(theme.fg("muted", `run   ${safeText(agentRun.name)}`));
+      if (phase) content.push(theme.fg("muted", `phase ${safeText(phase.name)}`));
+      if (entity.value.currentTool) content.push(theme.fg("muted", `tool  ${safeText(entity.value.currentTool)}`));
+      if (entity.value.model) content.push(theme.fg("muted", `model ${safeText(entity.value.model)}`));
       if (entity.value.task) content.push(...wrapInspector(theme, "task", entity.value.task, inner - 2));
     } else if (entity.kind === "actor") {
-      content.push(`runner ${entity.value.runner}`);
-      content.push(`queue  ${entity.value.queued}`);
-      if (entity.value.topics.length > 0) content.push(`${entity.value.topics.length} subscriptions`);
+      content.push(theme.fg("muted", `runner ${entity.value.runner}`));
+      content.push(theme.fg("muted", `queue  ${entity.value.queued}`));
+      if (entity.value.topics.length > 0) content.push(theme.fg("muted", `${entity.value.topics.length} subscriptions`));
     } else if (entity.kind === "meshTopic") {
-      content.push(`${entity.value.subscribers.length} subscribers`);
-      content.push(`${entity.value.recentEvents} recent events`);
+      content.push(theme.fg("muted", `${entity.value.subscribers.length} subscribers`));
+      content.push(theme.fg("muted", `${entity.value.recentEvents} recent events`));
     } else if (entity.kind === "meshRoute") {
-      content.push(`${safeText(entity.value.fromName)} → ${safeText(entity.value.targetName)}`);
-      content.push(`kind  ${safeText(entity.value.kind)}`);
-      content.push(`topic ${theme.fg("dim", safeText(entity.value.topic))}`);
-      content.push(`count ${entity.value.count}`);
+      content.push(theme.fg("muted", `${safeText(entity.value.fromName)} → ${safeText(entity.value.targetName)}`));
+      content.push(theme.fg("muted", `kind  ${safeText(entity.value.kind)}`));
+      content.push(theme.fg("muted", `topic ${safeText(entity.value.topic)}`));
+      content.push(theme.fg("muted", `count ${entity.value.count}`));
     } else if (entity.kind === "state") {
-      content.push(`version ${entity.value.version}`);
-      if (entity.value.owner) content.push(`owner   ${safeText(entity.value.owner)}`);
+      content.push(theme.fg("muted", `version ${entity.value.version}`));
+      if (entity.value.owner) content.push(theme.fg("muted", `owner   ${safeText(entity.value.owner)}`));
       const filePreview = loadStateFilePreview(entity.value, snapshot.main.cwd ?? process.cwd());
       if (filePreview) {
         content.push("");
-        content.push(`file ${safeText(filePreview.path)}`);
+        content.push(theme.fg("muted", `file ${safeText(filePreview.path)}`));
         content.push(...renderStateFilePreview(
           filePreview,
           theme,

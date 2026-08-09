@@ -240,6 +240,21 @@ describe("Fabric dynamic UI", () => {
     expect(shouldShowFabricWidget(current, "auto")).toBe(true);
   });
 
+  it("renders the widget header title and agent names in muted grey, matching pi core status lines", () => {
+    const recordingTheme = {
+      fg: (color: string, text: string) => `<${color}>${text}</>`,
+      bg: (_color: string, text: string) => text,
+      bold: (text: string) => `<bold>${text}</>`,
+    } as unknown as Theme;
+    const current = snapshot();
+    const lines = new FabricWidget(recordingTheme, () => current, 8).render(120);
+    const header = lines.find((line) => line.includes("Repository migration")) ?? "";
+    const agentRow = lines.find((line) => line.includes("security-reviewer")) ?? "";
+    expect(header).toContain("<muted>Repository migration</>");
+    expect(header).not.toContain("<text>");
+    expect(agentRow).toContain("<muted>security-reviewer</>");
+  });
+
   it("indents agents by recursive depth instead of topology parentage", () => {
     const current = snapshot();
     current.actors = [];

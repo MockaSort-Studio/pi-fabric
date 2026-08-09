@@ -81,7 +81,7 @@ const agentLines = (
   ].filter((value): value is string => Boolean(value));
   const indent = "  ".repeat(1 + Math.max(0, agent.nestingDepth ?? 0));
   return [
-    `${indent}${status} ${safeText(agent.name)}  ${theme.fg("muted", safeText(activity))}${
+    `${indent}${status} ${theme.fg("muted", safeText(agent.name))}  ${theme.fg("muted", safeText(activity))}${
       metrics.length > 0 ? theme.fg("dim", ` · ${metrics.join(" · ")}`) : ""
     }`,
   ];
@@ -221,7 +221,7 @@ export class FabricWidget implements Component {
 
     const glyph = colorStatus(this.theme, headerStatus, statusGlyph(headerStatus));
     const header = `${glyph} ${this.theme.fg("accent", "Fabric")} ${this.theme.fg(
-      "text",
+      "muted",
       safeText(title),
     )}${parts.length > 0 ? this.theme.fg("dim", ` · ${parts.join(" · ")}`) : ""}`;
     const lines = [header];
