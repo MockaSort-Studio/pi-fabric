@@ -44,7 +44,10 @@ afterEach(() => {
 });
 
 describe("registered extension tool capture", () => {
-  it("captures every extension tool while hiding core overrides from the model", async () => {
+  it("captures every extension tool while keeping it in Pi's registry", async () => {
+    // Captured tools must stay visible to pi.getAllTools() consumers (e.g.
+    // permission systems validating tool_call events); hiding from the model is
+    // handled through the active tool set by FabricToolOwnership, not here.
     const fabricTool = tool("fabric_exec");
     const customTool = tool("deploy_release");
     const readOverride = tool("read");
@@ -62,6 +65,8 @@ describe("registered extension tool capture", () => {
 
     expect(runner.getAllRegisteredTools().map((entry) => entry.definition.name)).toEqual([
       "fabric_exec",
+      "deploy_release",
+      "read",
     ]);
     expect(catalog.list().map((entry) => entry.name)).toEqual(["deploy_release", "read"]);
     expect(catalog.require("deploy_release").risk).toBe("execute");
@@ -128,7 +133,7 @@ describe("registered extension tool capture", () => {
     expect(catalog.size).toBe(0);
   });
 
-  it("updates dynamically and can leave captured tools visible", async () => {
+  it("updates dynamically and clears the catalog when capture disables", async () => {
     const fabricTool = tool("fabric_exec");
     const first = registered(tool("first_tool"), "/extensions/one/index.ts");
     const runner = runnerWith(registered(fabricTool, "/extensions/pi-fabric/index.ts"), first);
@@ -147,18 +152,10 @@ describe("registered extension tool capture", () => {
     extension?.tools.set(second.definition.name, second);
     expect(runner.getAllRegisteredTools().map((entry) => entry.definition.name)).toEqual([
       "fabric_exec",
-    ]);
-    expect(catalog.list().map((entry) => entry.name)).toEqual(["first_tool", "second_tool"]);
-
-    controller.setPolicy({
-      ...structuredClone(DEFAULT_FABRIC_CONFIG.capture),
-      hideFromModel: false,
-    });
-    expect(runner.getAllRegisteredTools().map((entry) => entry.definition.name)).toEqual([
-      "fabric_exec",
       "first_tool",
       "second_tool",
     ]);
+    expect(catalog.list().map((entry) => entry.name)).toEqual(["first_tool", "second_tool"]);
 
     controller.setPolicy(
       effectiveToolCaptureConfig({
@@ -172,5 +169,33 @@ describe("registered extension tool capture", () => {
       "first_tool",
       "second_tool",
     ]);
+  });
+
+  it("notifies on every catalog refresh so ownership can be re-asserted", async () => {
+    const fabricTool = tool("fabric_exec");
+    const runner = runnerWith(
+      registered(fabricTool, "/extensions/pi-fabric/index.ts"),
+      registered(tool("deploy_release"), "/extensions/pi-deploy/index.ts"),
+    );
+    const catalog = new CapturedToolCatalog();
+    let refreshes = 0;
+    const controller = await installRegisteredToolCapture({
+      anchorDefinition: fabricTool,
+      catalog,
+      onCatalogRefresh: () => {
+        refreshes += 1;
+      },
+    });
+    controllers.push(controller);
+
+    expect(refreshes).toBe(0);
+    runner.getAllRegisteredTools();
+    expect(refreshes).toBe(1);
+    runner.getAllRegisteredTools();
+    expect(refreshes).toBe(2);
+
+    controller.dispose();
+    runner.getAllRegisteredTools();
+    expect(refreshes).toBe(2);
   });
 });

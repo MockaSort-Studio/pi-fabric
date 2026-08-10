@@ -61,4 +61,55 @@ describe("FabricToolOwnership", () => {
     expect(state.active()).toEqual(["read", "bash", "fabric_exec"]);
     expect(state.setActiveTools).not.toHaveBeenCalled();
   });
+
+  it("hides captured extension tools from the active set in full code mode", () => {
+    // Captured tools remain registered (visible to pi.getAllTools() consumers
+    // such as permission systems); only the model-facing active set is pruned.
+    const state = hostWith(["read", "ask_user_question", "deploy_release"]);
+    const ownership = new FabricToolOwnership(state.host);
+
+    expect(
+      ownership.apply(true, new Set(["ask_user_question", "deploy_release"])),
+    ).toBe(true);
+    expect(state.active()).toEqual(["fabric_exec"]);
+
+    expect(ownership.apply(true, new Set(["ask_user_question", "deploy_release"]))).toBe(
+      false,
+    );
+    expect(state.setActiveTools).toHaveBeenCalledOnce();
+  });
+
+  it("rehides extension tools that a refresh re-activated while full mode stays active", () => {
+    const state = hostWith(["fabric_exec"]);
+    const ownership = new FabricToolOwnership(state.host);
+
+    ownership.apply(true, new Set(["ask_user_question"]));
+    state.host.setActiveTools(["fabric_exec", "ask_user_question"]);
+    expect(ownership.apply(true, new Set(["ask_user_question"]))).toBe(true);
+    expect(state.active()).toEqual(["fabric_exec"]);
+  });
+
+  it("re-exposes extension tools removed from the hidden set while full mode stays active", () => {
+    const state = hostWith(["read", "ask_user_question", "deploy_release"]);
+    const ownership = new FabricToolOwnership(state.host);
+
+    ownership.apply(true, new Set(["ask_user_question", "deploy_release"]));
+    expect(state.active()).toEqual(["fabric_exec"]);
+
+    expect(ownership.apply(true, new Set(["deploy_release"]))).toBe(true);
+    expect(state.active()).toEqual(["fabric_exec", "ask_user_question"]);
+  });
+
+  it("restores hidden extension tools when full code mode is released", () => {
+    const state = hostWith(["read", "ask_user_question"]);
+    const ownership = new FabricToolOwnership(state.host);
+
+    ownership.apply(true, new Set(["ask_user_question"]));
+    expect(state.active()).toEqual(["fabric_exec"]);
+
+    expect(ownership.apply(false)).toBe(true);
+    expect(state.active()).toEqual(["read", "ask_user_question", "fabric_exec"]);
+
+    expect(ownership.release()).toBe(false);
+  });
 });

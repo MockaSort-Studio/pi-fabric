@@ -105,17 +105,38 @@ const sameTools = (left: string[], right: string[]): boolean =>
 
 export class FabricToolOwnership {
   #savedNativeCoreTools: Array<{ name: string; index: number }> | undefined;
+  // Captured extension tools stay registered so host extensions (permission
+  // systems, auditors) keep them in `pi.getAllTools()`; hiding from the model
+  // happens here, in the active set. Removed names are remembered so leaving
+  // full code mode (or adding a name to `capture.keepVisible`) re-exposes them.
+  #savedHiddenExtensionTools = new Map<string, number>();
 
   constructor(readonly host: FabricToolOwnershipHost) {}
 
-  apply(fullCodeMode: boolean): boolean {
+  apply(fullCodeMode: boolean, hiddenExtensionTools?: ReadonlySet<string>): boolean {
     const active = this.host.getActiveTools();
     if (!fullCodeMode) return this.#restore(active);
 
     this.#savedNativeCoreTools ??= active.flatMap((name, index) =>
       PI_CORE_TOOL_NAME_SET.has(name) ? [{ name, index }] : [],
     );
-    const next = active.filter((name) => !PI_CORE_TOOL_NAME_SET.has(name));
+    const hidden = hiddenExtensionTools ?? new Set<string>();
+    const next: string[] = [];
+    active.forEach((name, index) => {
+      if (PI_CORE_TOOL_NAME_SET.has(name)) return;
+      if (hidden.has(name)) {
+        if (!this.#savedHiddenExtensionTools.has(name)) {
+          this.#savedHiddenExtensionTools.set(name, index);
+        }
+        return;
+      }
+      next.push(name);
+    });
+    for (const [name, index] of this.#savedHiddenExtensionTools) {
+      if (hidden.has(name) || next.includes(name)) continue;
+      this.#savedHiddenExtensionTools.delete(name);
+      next.splice(Math.min(index, next.length), 0, name);
+    }
     if (!next.includes("fabric_exec")) next.push("fabric_exec");
     return this.#setIfChanged(active, next);
   }
@@ -126,10 +147,15 @@ export class FabricToolOwnership {
 
   #restore(active: string[]): boolean {
     const saved = this.#savedNativeCoreTools;
-    if (!saved) return false;
+    const savedHidden = this.#savedHiddenExtensionTools;
+    if (!saved && savedHidden.size === 0) return false;
     this.#savedNativeCoreTools = undefined;
+    this.#savedHiddenExtensionTools = new Map();
     const next = [...active];
-    for (const { name, index } of saved) {
+    for (const { name, index } of saved ?? []) {
+      if (!next.includes(name)) next.splice(Math.min(index, next.length), 0, name);
+    }
+    for (const [name, index] of savedHidden) {
       if (!next.includes(name)) next.splice(Math.min(index, next.length), 0, name);
     }
     return this.#setIfChanged(active, next);

@@ -21,6 +21,19 @@ export interface RegisteredToolCaptureController {
   dispose(): void;
 }
 
+export interface RegisteredToolCaptureOptions {
+  anchorDefinition: ToolDefinition<any, any, any>;
+  catalog: CapturedToolCatalog;
+  initialPolicy?: FabricToolCaptureConfig;
+  // Called after each refresh of the captured catalog so callers can re-assert
+  // active-tool ownership. Tools are deliberately left in Pi's registry — the
+  // listener observes rather than filters — because extensions that gate tool
+  // calls against `pi.getAllTools()` (e.g. permission systems) must still see
+  // captured tools as registered; hiding from the model happens exclusively in
+  // the active tool set (see FabricToolOwnership).
+  onCatalogRefresh?: () => void;
+}
+
 const HUB_SYMBOL = Symbol.for("pi-fabric.registered-tool-capture.v1");
 const ANCHOR_SYMBOL = Symbol.for("pi-fabric.registered-tool-anchor.v1");
 
@@ -114,11 +127,9 @@ const extensionRunnerConstructors = async (): Promise<ExtensionRunnerConstructor
   return [...constructors];
 };
 
-export const installRegisteredToolCapture = async (options: {
-  anchorDefinition: ToolDefinition<any, any, any>;
-  catalog: CapturedToolCatalog;
-  initialPolicy?: FabricToolCaptureConfig;
-}): Promise<RegisteredToolCaptureController> => {
+export const installRegisteredToolCapture = async (
+  options: RegisteredToolCaptureOptions,
+): Promise<RegisteredToolCaptureController> => {
   const hubs = (await extensionRunnerConstructors()).map(captureHub);
   const anchorToken = {};
   Object.defineProperty(options.anchorDefinition, ANCHOR_SYMBOL, {
@@ -140,13 +151,8 @@ export const installRegisteredToolCapture = async (options: {
     if (!anchor) return tools;
 
     options.catalog.replace(tools, runner, policy, anchor.sourceInfo.path);
-    if (!policy.enabled || !policy.hideFromModel) return tools;
-
-    const visible = new Set(policy.keepVisible);
-    return tools.filter(
-      (tool) =>
-        tool.sourceInfo.path === anchor.sourceInfo.path || visible.has(tool.definition.name),
-    );
+    options.onCatalogRefresh?.();
+    return tools;
   };
 
   for (const hub of hubs) hub.listeners.add(listener);

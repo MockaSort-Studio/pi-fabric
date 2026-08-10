@@ -204,7 +204,7 @@ In orchestration-only mode:
 
 When `fullCodeMode` is enabled, Fabric intercepts Pi's `ExtensionRunner.getAllRegisteredTools()` registry chokepoint. This captures tools registered by other extensions at startup or later through `pi.registerTool()`, regardless of whether those extensions load before or after Fabric.
 
-Captured custom tools are removed from Pi's model-facing registry by default, so their schemas, snippets, and guidelines do not consume the parent model context. The extension itself remains loaded: its commands, event handlers, state, and UI continue to work. Only tool discovery and invocation become lazy.
+Captured custom tools drop out of the model's active tool set by default, so their schemas, snippets, and guidelines do not consume the parent model context and the model can only reach them through `fabric_exec`. The tools stay **registered** in Pi's runtime — `pi.getAllTools()` keeps listing them — so host extensions that gate or audit tool calls by name (for example `@gotgenes/pi-permission-system`, which blocks names missing from that list before its own rules run) still see them as registered and evaluate nested captured calls through their normal policy and prompts. The extension itself remains loaded: its commands, event handlers, state, and UI continue to work. Only model-facing exposure and invocation become lazy.
 
 ```ts
 const matches = await tools.search({ query: "deployment status" });
@@ -225,15 +225,15 @@ return result.text;
 
 The result preserves `content`, text content as `text`, `details`, `isError`, `terminate`, and source provenance. Fabric runs the captured definition's `prepareArguments()` and original executor with its owning extension context. Pi's `tool_call`, `tool_result`, and `tool_execution_*` lifecycle handlers are also applied to nested captured calls.
 
-Extension overrides of core tools are captured and hidden with their built-in counterparts in full code mode. Inside Fabric, `pi.read`, `pi.bash`, and the other built-ins automatically route through a captured override when one exists; `extensions.read` exposes the override's full native result shape. `capture.keepVisible` can retain non-core extension tools in Pi's direct registry, but core tool names are always excluded while full code mode owns them.
+Extension overrides of core tools are captured and hidden with their built-in counterparts in full code mode. Inside Fabric, `pi.read`, `pi.bash`, and the other built-ins automatically route through a captured override when one exists; `extensions.read` exposes the override's full native result shape. `capture.keepVisible` can re-activate non-core extension tools so the model may also call them directly on Pi's native path, but core tool names are always excluded while full code mode owns them.
 
 ## Approvals and risk
 
 Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`; approval policy values are `allow`, `ask`, `auto`, or `deny`. Policies apply both to actions invoked inside `fabric_exec` and to top-level model-requested tools left on Pi's native path. Native calls keep Pi's original implementation, result shape, and renderer; only the supported pre-execution interception hook is added.
 
 - Captured and directly registered tools default to the conservative `execute` risk because Pi tool definitions do not declare effects. Add exact tool-name overrides under `capture.risks`. Fovea's verified graph-navigation tools (`fovea_sketch`, `fovea_focus`, `fovea_dwell`, and `fovea_impact`) are read-only exceptions and default to `read`.
-- Set `capture.hideFromModel` to `false` to index non-core extension tools without hiding them.
-- `capture.keepVisible` names stay in both Fabric and Pi's direct registry, except that Pi core names are always Fabric-owned in full code mode.
+- Set `capture.hideFromModel` to `false` to index non-core extension tools without hiding them from the model's active set.
+- `capture.keepVisible` names stay in both Fabric and Pi's model-facing active set, except that Pi core names are always Fabric-owned in full code mode.
 - An `ask` policy emits a warning notification and opens an explicit **Allow once** / **Allow for this session** / **Deny** permission prompt, matching Claude-style approval scopes. **Allow once** authorizes only the requested action. **Allow for this session** authorizes that risk class until the current Pi session ends. The TUI uses an inline wizard; RPC clients receive the equivalent `select` dialog.
 - Concurrent requests are serialized so a one-time approval never silently widens to sibling calls. Session-wide grants are shared between native calls and `fabric_exec`. Escape, dismissal, unavailable interactive UI, and session restart all fail closed.
 

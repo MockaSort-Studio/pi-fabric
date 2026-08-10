@@ -106,6 +106,33 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   const toolOwnership = new FabricToolOwnership(pi);
   const fabricUi = new FabricUiController(state, codePreviewSettings);
 
+  const capturePolicy = () => effectiveToolCaptureConfig(state.config);
+  const fabricOwnsModelTools = (): boolean =>
+    state.config.fullCodeMode || state.config.schema.mode === "enforce";
+  // Captured tools that must stay out of the model's active set in full code
+  // mode: every captured extension tool minus the capture.keepVisible names.
+  const hiddenCapturedToolNames = (): Set<string> => {
+    const visible = new Set(capturePolicy().keepVisible);
+    return new Set(
+      capturedTools.list().map((entry) => entry.name).filter((name) => !visible.has(name)),
+    );
+  };
+  // Pi auto-activates tools that newly appear in the registry on every tool
+  // refresh; re-assert ownership afterwards so captured tools stay hidden from
+  // the model even when a late-loading extension triggers a refresh.
+  let ownershipReassertQueued = false;
+  const reassertToolOwnership = (): void => {
+    ownershipReassertQueued = false;
+    const policy = capturePolicy();
+    if (!policy.enabled || !policy.hideFromModel || !fabricOwnsModelTools()) return;
+    toolOwnership.apply(true, hiddenCapturedToolNames());
+  };
+  const scheduleOwnershipReassert = (): void => {
+    if (ownershipReassertQueued) return;
+    ownershipReassertQueued = true;
+    queueMicrotask(reassertToolOwnership);
+  };
+
   const unsubscribeProviderRegistration = pi.events.on(
     FABRIC_PROVIDER_REGISTER_EVENT,
     (value: unknown) => {
@@ -151,14 +178,16 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     anchorDefinition: fabricTool,
     catalog: capturedTools,
     initialPolicy: inactiveCapturePolicy,
+    onCatalogRefresh: scheduleOwnershipReassert,
   });
   pi.registerTool(fabricTool);
 
   const applyFabricMode = (): void => {
-    toolCapture.setPolicy(effectiveToolCaptureConfig(state.config));
+    toolCapture.setPolicy(capturePolicy());
     pi.registerTool(fabricTool);
     toolOwnership.apply(
-      state.config.fullCodeMode || state.config.schema.mode === "enforce",
+      fabricOwnsModelTools(),
+      fabricOwnsModelTools() ? hiddenCapturedToolNames() : undefined,
     );
   };
   const suspendToolCapture = (): void => {
@@ -259,8 +288,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     installHaltOnEscape(context);
   });
 
-  // Tool ownership changes only at session or mode transitions; lifecycle hooks
-  // forward host events without churning an explicitly selected active set.
   pi.on("input", async (event, context) => {
     if (!state.initialized) return;
     state.prewalk.observeTask(
@@ -517,6 +544,14 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     } finally {
       toolCapture.dispose();
     }
+  });
+
+  // Turn-scoped invariant: even if another extension rewrote the active tool
+  // set (e.g. a permission system filtering its allowlist at before_agent_start,
+  // or a refresh that ran before Fabric's policy was active), captured tools
+  // must not leak into the model's next turn.
+  pi.on("before_agent_start", () => {
+    reassertToolOwnership();
   });
 
   registerFabricCommand(pi, {
