@@ -877,6 +877,11 @@ describe("FabricSettingsComponent", () => {
 
   it("persists a picked Prewalk thinking level through the real settings dialog flow", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-settings-thinking-"));
+    // Isolate the agent dir: the settings dialog layers the real global
+    // fabric.json under the project layer, so the developer's global prewalk
+    // config would otherwise leak into the rendered labels.
+    const inheritedAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = path.join(cwd, "agent");
     try {
       const config = structuredClone(DEFAULT_FABRIC_CONFIG);
       const applyFabricMode = vi.fn();
@@ -939,12 +944,19 @@ describe("FabricSettingsComponent", () => {
       expect(applyFabricMode).toHaveBeenCalledOnce();
       expect(notify).toHaveBeenCalledWith("Fabric settings saved.", "info");
     } finally {
+      if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = inheritedAgentDir;
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
 
   it("persists a picked Prewalk model through the real settings dialog flow", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-settings-model-"));
+    // Isolate the agent dir: the settings dialog layers the real global
+    // fabric.json under the project layer, so the developer's global prewalk
+    // config would otherwise leak into the rendered labels.
+    const inheritedAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = path.join(cwd, "agent");
     try {
       const config = structuredClone(DEFAULT_FABRIC_CONFIG);
       const applyFabricMode = vi.fn();
@@ -1013,6 +1025,8 @@ describe("FabricSettingsComponent", () => {
       expect(applyFabricMode).toHaveBeenCalledOnce();
       expect(notify).toHaveBeenCalledWith("Fabric settings saved.", "info");
     } finally {
+      if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = inheritedAgentDir;
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
