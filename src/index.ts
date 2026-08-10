@@ -45,10 +45,6 @@ import {
   CapabilityAdvisor,
 } from "./core/capability-advisory.js";
 import {
-  loadCapabilityAdvisoryState,
-  saveCapabilityAdvisoryState,
-} from "./core/capability-advisory-store.js";
-import {
   capturedToolNamespace,
   listCapturedToolDescriptors,
 } from "./providers/captured-tools-provider.js";
@@ -112,11 +108,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   const capabilityAdvisor = new CapabilityAdvisor();
   const state = new FabricState(pi, capturedTools, (entry) => {
     // Organic discovery: the model found and used the namespace on its own —
-    // burn it as ash so no future hint wastes the fire. Persist immediately.
+    // burn it as ash so no future hint wastes the fire. Nothing to persist:
+    // the tool call itself is the transcript entry a future replay recovers.
     try {
-      if (capabilityAdvisor.observeToolUse(capturedToolNamespace(entry))) {
-        saveCapabilityAdvisoryState(capabilityAdvisor.ashRecords());
-      }
+      capabilityAdvisor.observeToolUse(capturedToolNamespace(entry));
     } catch {
       // Advisory bookkeeping only.
     }
@@ -287,15 +282,28 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     });
   };
 
+  // Ash is derived state, never stored beside the session: replay the
+  // current branch's transcript entries (hints persist as pi-fabric-capability
+  // custom messages, organic use as tool calls naming captured tools).
+  const refreshAdvisorAsh = (context: ExtensionContext): void => {
+    capabilityAdvisor.restoreAshFromEntries(
+      context.sessionManager?.getBranch?.() ?? [],
+      (toolName) => {
+        const captured = capturedTools.get(toolName);
+        return captured === undefined
+          ? undefined
+          : capturedToolNamespace(captured);
+      },
+    );
+  };
+
   pi.on("session_start", async (_event, context) => {
     pendingHandoffs.clear();
     directToolApproval.clear();
     fabricUi.stop();
     suspendToolCapture();
-    // Advisory fire-once state is durable: a restarted session reloads which
-    // capabilities were already hinted instead of re-hinting them.
     capabilityAdvisor.reset();
-    capabilityAdvisor.hydrate(loadCapabilityAdvisoryState());
+    refreshAdvisorAsh(context);
     if (!compatibilityWarningShown) {
       compatibilityWarningShown = true;
       const warning = piHostCompatibilityWarning();
@@ -317,6 +325,14 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     applyFabricMode();
     fabricUi.start(context);
     installHaltOnEscape(context);
+  });
+
+  // Branch changes move the leaf: ashes must track the branch exactly, so a
+  // rewind re-exposes capabilities whose burns live only in abandoned paths.
+  pi.on("session_tree", async (_event, context) => {
+    capabilityAdvisor.reset();
+    refreshAdvisorAsh(context);
+    return undefined;
   });
 
   pi.on("input", async (event, context) => {
@@ -563,13 +579,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       captureSnapshot?.enabled === true && captureSnapshot.hideFromModel
         ? capabilityAdvisor.evaluate(event.prompt, captureSnapshot.advisory)
         : undefined;
-    if (advisory) {
-      try {
-        saveCapabilityAdvisoryState(capabilityAdvisor.ashRecords());
-      } catch {
-        // Persistence is best-effort; a failed write must not block the turn.
-      }
-    }
+    // No separate persistence: ash already lives in memory, and the custom
+    // message below is the transcript record a session replay recovers after
+    // a reload.
     return {
       systemPrompt: `${systemPrompt}\n\n${guidance}`,
       ...(advisory

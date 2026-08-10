@@ -256,16 +256,78 @@ describe("CapabilityAdvisor", () => {
     expect(Math.ceil(result!.content.length / 4)).toBeLessThanOrEqual(128);
   });
 
-  it("stays quiet across simulated restarts when hydrated with ash", () => {
+  const hintEntry = (namespace: string, at: string) => ({
+    type: "custom_message",
+    customType: CAPABILITY_ADVISORY_CUSTOM_TYPE,
+    timestamp: at,
+    details: { matches: [{ namespace }] },
+  });
+
+  it("replays ash from the session transcript on reload", () => {
     const first = advisor();
-    expect(first.evaluate("search the web for recent news", config())).toBeDefined();
+    const firedAdvisory = first.evaluate("search the web for recent news", config());
+    expect(firedAdvisory).toBeDefined();
+    // No side store: the fired hint persists as its own custom message entry,
+    // organic use as the tool call itself. The transcript is the ash ledger.
+    const transcript = [
+      {
+        type: "custom_message",
+        customType: CAPABILITY_ADVISORY_CUSTOM_TYPE,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        details: firedAdvisory?.details,
+      },
+      {
+        type: "message",
+        timestamp: "2026-01-01T00:01:00.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", name: "openai_image", arguments: {} }],
+        },
+      },
+    ];
     const second = advisor();
-    second.hydrate(first.ashRecords());
+    second.restoreAshFromEntries(transcript, (toolName) =>
+      toolName === "openai_image" ? "extension:pi-better-openai" : undefined,
+    );
+    // Burned namespaces stay quiet, organic use is replayed, timestamps come
+    // from the transcript, and unrelated capabilities still fire.
+    const burned = second.ashRecords().map((record) => record.namespace).sort();
+    expect(burned).toEqual(["extension:pi-better-openai", "extension:pi-synthetic"]);
+    expect(
+      second.ashRecords().find((record) => record.namespace === "extension:pi-synthetic")?.at,
+    ).toBe("2026-01-01T00:00:00.000Z");
     expect(second.evaluate("search the web again", config())).toBeUndefined();
-    // Unrelated capabilities still fire after hydration.
-    expect(second.ashRecords()).toEqual(first.ashRecords());
-    // Unrelated capabilities still fire after hydration.
     expect(second.evaluate("focus my code graph on a symbol", config())).toBeDefined();
+  });
+
+  it("replays ash only up to the replayed branch point", () => {
+    const transcript = [
+      hintEntry("extension:pi-synthetic", "2026-01-01T00:00:00.000Z"),
+      hintEntry("extension:pi-fovea", "2026-01-01T00:05:00.000Z"),
+    ];
+    // A fork from the first entry sees ashes up to that point only.
+    const forked = advisor();
+    forked.restoreAshFromEntries(transcript.slice(0, 1), () => undefined);
+    expect(forked.ashRecords().map((record) => record.namespace)).toEqual([
+      "extension:pi-synthetic",
+    ]);
+    expect(forked.evaluate("focus my code graph on a symbol", config())).toBeDefined();
+  });
+
+  it("replaces ash on re-replay instead of accumulating", () => {
+    const a = advisor();
+    a.restoreAshFromEntries(
+      [
+        hintEntry("extension:pi-synthetic", "2026-01-01T00:00:00.000Z"),
+        hintEntry("extension:pi-fovea", "2026-01-01T00:05:00.000Z"),
+      ],
+      () => undefined,
+    );
+    // A /tree rewind back before the second burn re-exposes the realm.
+    a.restoreAshFromEntries([hintEntry("extension:pi-synthetic", "2026-01-01T00:00:00.000Z")], () => undefined);
+    expect(a.ashRecords().map((record) => record.namespace)).toEqual([
+      "extension:pi-synthetic",
+    ]);
   });
 
   it("marks fired namespaces with origin and timestamp in the ash record", () => {

@@ -121,29 +121,42 @@ With the default fixture terms, "query the results table please" scores
 $s = 1.333$ (weak band): the EWMA crosses $0.9$ only on the second tidy prompt,
 and cool-off while the user edits code delays the fire as intended.
 
-## Ash: permanent suppression with provenance
+## Ash: session-scoped suppression — the transcript is the ledger
 
-Fired namespaces are burned. The record (ash) is append-only and machine-global,
-persisted at `<agent-dir>/fabric/capability-advisories.json`:
+Fired namespaces are burned, and the burn record lives in the session's own
+transcript — there is no side store:
+
+- `fired` — the hint itself is the record: every advisory is emitted as a
+  `pi-fabric-capability` custom-message entry whose `details` name the
+  namespaces shown. Burning happened *when the paper entered the fire*, and
+  the transcript is the fire.
+- `organic` — the model invoked a captured tool from that namespace *without
+  a hint*. The tool call is already a transcript entry; the capability's
+  information potential was spent by discovery, so we burn it preemptively
+  (organic-discovery poisoning: the same one-way door, entered from the other
+  side).
+
+Ash is *derived*, never stored: on `session_start` and on every branch switch
+(`session_tree`) the advisor replays the current branch's entries
+(`ctx.sessionManager.getBranch()`) and re-marks both burn kinds, with
+provenance (`origin`) and wall time (`at`, taken from the entry's own
+timestamp) rebuilt from the transcript:
 
 ```json
-{ "format": 2, "burned": [
-    { "namespace": "extension:pi-websearch", "origin": "fired", "at": "2026-08-10T16:00:00.000Z" },
-    { "namespace": "extension:pi-fovea",    "origin": "organic" } ] }
+{ "namespace": "extension:pi-websearch", "origin": "fired", "at": "2026-08-10T16:00:00.000Z" }
+{ "namespace": "extension:pi-fovea",    "origin": "organic", "at": "2026-08-10T16:12:11.000Z" }
 ```
 
-Provenance is in `origin`:
-
-- `fired` — a hint was emitted for this capability.
-- `organic` — the model invoked a captured tool from that namespace *without a
-  hint*. The capability's information potential is already spent; a hint would
-  be redundant, so we burn it preemptively. This is organic-discovery poisoning:
-  the same one-way door as a fire, entered from the other side.
-
-You don't unburn paper. Ash is never reclaimed: no expires, no release path, no
-defrost knob. `reset()` clears things that are inherently session-local (warmth,
-smoke streak, per-session cap) but never ash; `hydrate()` loads it on session
-start.
+Thermodynamic consequence: the ash set is exactly "burns that happened up to
+the current point in this branch's history." Fork a session and the fork
+replays ashes up to the fork point; rewind with `/tree` and capabilities whose
+burns live only in the abandoned future burn *back into paper* — you don't
+unburn paper, but undoing time restores what hadn't happened yet. A new
+session is a fresh urn: nothing carries across sessions, because the learner
+the hint was meant for (the model's context) doesn't either. Within a session
+there's still no release path: no expires, no defrost knob — `reset()` clears
+only what is inherently transient (warmth, smoke streak, per-session cap),
+never ash.
 
 ## Furnace feedback
 
@@ -162,15 +175,15 @@ zero — clean combustion keeps the furnace responsive. Smoke feedback only rais
 the *weak-band* ignition bar; strong matches still ignite instantly, because if
 the evidence is that unambiguous the furnace's skepticism isn't invited.
 
-Transient feedback lives session-locally too: smoke is lifted by the first clean
-burn, and unlike ash it doesn't persist across sessions (organic poisoning
-covers the durable learning).
+Transient feedback lives session-locally too: smoke is lifted by the first
+clean burn. Like everything else in this model, it does not cross sessions —
+the new session brings a fresh transcript, hence a fresh urn.
 
 ## Per-session cap
 
 $\leq$ `maxPerSession` fires per session regardless of model behavior (default
 3). Unchanged from the pre-combustion design; the cap guards against prompt
-storms in a single session, ash guards against repetition across sessions.
+storms in a single session, and ash guards against repetition within it.
 
 ## Summary
 

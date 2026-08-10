@@ -149,12 +149,71 @@ export class CapabilityAdvisor {
     this.#firedTotal = 0;
   }
 
-  // Machine-global persistence: hydrate with prior ash at session start so
-  // already-spent capabilities stay quiet across restarts. Warmth, smoke, and
-  // the per-session cap stay session-local — transients govern ignition, only
-  // the ash is durable.
-  hydrate(records: Iterable<CapabilityBurn>): void {
-    this.#ash = new Map([...records].map((record) => [record.namespace, record]));
+  // Ash is derived from the session transcript, never stored beside it:
+  // fired hints ARE their own custom messages, organic use IS the tool calls
+  // that named captured tools — both are already persisted entries. Replay a
+  // branch (ctx.sessionManager.getBranch()) to rebuild ash exactly up to the
+  // current leaf, so forks and /tree rewinds see ashes up to that point in
+  // time, and a brand-new session starts with a clean urn. Warmth, smoke, and
+  // the per-session cap stay pure transients: reset() governs them.
+  restoreAshFromEntries(
+    entries: Iterable<unknown>,
+    nameToNamespace: (toolName: string) => string | undefined,
+  ): void {
+    this.#ash.clear();
+    for (const entryUnknown of entries) {
+      const entry = entryUnknown as {
+        type?: unknown;
+        customType?: unknown;
+        timestamp?: unknown;
+        details?: unknown;
+        message?: unknown;
+      };
+      const at =
+        typeof entry.timestamp === "string" ? entry.timestamp : "";
+      if (
+        entry.type === "custom_message" &&
+        entry.customType === CAPABILITY_ADVISORY_CUSTOM_TYPE
+      ) {
+        const matches = (entry.details as { matches?: unknown } | undefined)
+          ?.matches;
+        if (Array.isArray(matches)) {
+          for (const match of matches) {
+            const namespace = (match as { namespace?: unknown } | undefined)
+              ?.namespace;
+            if (typeof namespace === "string" && namespace.length > 0) {
+              this.#burn(namespace, "fired", at);
+            }
+          }
+        }
+        continue;
+      }
+      if (entry.type === "message") {
+        const message = entry.message as
+          | { role?: unknown; content?: unknown }
+          | undefined;
+        if (message?.role !== "assistant" || !Array.isArray(message.content)) {
+          continue;
+        }
+        for (const block of message.content) {
+          const { type, name } = block as { type?: unknown; name?: unknown };
+          if (type !== "toolCall" || typeof name !== "string") continue;
+          const namespace = nameToNamespace(name);
+          if (namespace !== undefined) this.#burn(namespace, "organic", at);
+        }
+      }
+    }
+  }
+
+  // Idempotent append: a namespace burns at most once per session history.
+  #burn(namespace: string, origin: CapabilityBurn["origin"], at: string): boolean {
+    if (this.#ash.has(namespace)) return false;
+    this.#ash.set(namespace, {
+      namespace,
+      origin,
+      at: at.length > 0 ? at : new Date().toISOString(),
+    });
+    return true;
   }
 
   ashRecords(): CapabilityBurn[] {
@@ -166,13 +225,7 @@ export class CapabilityAdvisor {
   // with origin "organic". Returns true when the ash set changed (persist it).
   observeToolUse(namespace: string): boolean {
     if (this.#pendingFire.has(namespace)) this.#hitsThisTurn.add(namespace);
-    if (this.#ash.has(namespace)) return false;
-    this.#ash.set(namespace, {
-      namespace,
-      origin: "organic",
-      at: new Date().toISOString(),
-    });
-    return true;
+    return this.#burn(namespace, "organic", new Date().toISOString());
   }
 
   // Furnace feedback, evaluated once per turn (turn_end event). A fire whose
@@ -336,11 +389,7 @@ export class CapabilityAdvisor {
     }
 
     for (const match of included) {
-      this.#ash.set(match.namespace, {
-        namespace: match.namespace,
-        origin: "fired",
-        at: new Date().toISOString(),
-      });
+      this.#burn(match.namespace, "fired", new Date().toISOString());
       this.#warmth.delete(match.namespace);
       this.#pendingFire.add(match.namespace);
     }
