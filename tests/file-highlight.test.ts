@@ -6,6 +6,7 @@ import {
   configureHighlighting,
   highlightCode,
   highlightFileLines,
+  highlightSourceLines,
   initHighlighting,
 } from "../src/ui/highlight.js";
 
@@ -129,5 +130,63 @@ describe("fabric file highlight coverage", () => {
     expect(highlightFileLines(file, "cpp", 0, 1)).toBeNull();
     configureHighlighting("dark-plus", true);
     await initHighlighting("dark-plus", true);
+  }, 20_000);
+
+  it("highlightSourceLines matches whole-document tokens for an in-memory doc", async () => {
+    const doc = CPP.split("\n");
+    const key = `mem\u0000cpp\u0000virtual-${Math.random()}`;
+    const invalidate = vi.fn();
+    // Cold: coverage empty, returns null but schedules the pump.
+    expect(highlightSourceLines(key, doc, "cpp", 19, 22, invalidate)).toBeNull();
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalled(), { timeout: 15_000 });
+
+    const covered = highlightSourceLines(key, doc, "cpp", 19, 22);
+    expect(covered).not.toBeNull();
+    const full = highlightCode(CPP, "cpp")!;
+    for (let line = 19; line < 22; line++) {
+      expect(covered![line - 19]!.ansi).toBe(full[line]!);
+      expect(covered![line - 19]!.raw).toBe(doc[line]);
+    }
+  }, 20_000);
+
+  it("highlightSourceLines serves repeat ranges from cache without re-pumping", async () => {
+    const doc = CPP.split("\n");
+    const key = `mem\u0000cpp\u0000reuse-${Math.random()}`;
+    const invalidate = vi.fn();
+    highlightSourceLines(key, doc, "cpp", 0, 5, invalidate);
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalled(), { timeout: 15_000 });
+    const first = highlightSourceLines(key, doc, "cpp", 0, 5);
+    expect(first).not.toBeNull();
+
+    // A second range within the already-covered prefix returns synchronously
+    // with no further invalidate (no new background work is scheduled).
+    const again = vi.fn();
+    const second = highlightSourceLines(key, doc, "cpp", 2, 4, again);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    expect(second).not.toBeNull();
+    expect(again).not.toHaveBeenCalled();
+    expect(second![0]!.ansi).toBe(first![2]!.ansi);
+  }, 20_000);
+
+  it("highlightSourceLines pumps incrementally without blocking the event loop", async () => {
+    // A document larger than one tick's line budget forces multiple slices.
+    const big: string[] = [];
+    for (let index = 0; index < 400; index++) big.push(`int value_${index} = ${index};`);
+    const key = `mem\u0000cpp\u0000pump-${Math.random()}`;
+    const invalidate = vi.fn();
+    expect(highlightSourceLines(key, big, "cpp", 0, big.length, invalidate)).toBeNull();
+
+    // The pump yields via setImmediate; a concurrent timer must fire before
+    // coverage completes, proving the event loop is not starved.
+    let timerFired = false;
+    setTimeout(() => {
+      timerFired = true;
+    }, 0);
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalled(), { timeout: 15_000 });
+    expect(timerFired).toBe(true);
+
+    const covered = highlightSourceLines(key, big, "cpp", 0, big.length);
+    expect(covered).not.toBeNull();
+    expect(covered).toHaveLength(big.length);
   }, 20_000);
 });

@@ -1,4 +1,5 @@
 // Adapted from pi-code-previews for audited nested calls; see THIRD_PARTY_NOTICES.md.
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -10,6 +11,7 @@ import {
   effectiveShikiThemeIsLight,
   highlightCode,
   highlightFileLines,
+  highlightSourceLines,
   languageFromPath,
   observePiTheme,
 } from "./highlight.js";
@@ -605,6 +607,110 @@ const createSimpleDiff = (before: string, after: string): string => {
   return out.length > 0 ? [`@@ ${firstChangedLine} @@`, ...out].join("\n") : "";
 };
 
+// FNV-style content hash for virtual-document cache keys; stable within the
+// process, not persisted, so no collision risk across sessions.
+const hashSourceText = (value: string): number => {
+  let hash = 5381;
+  for (let index = 0; index < value.length; index++) {
+    hash = ((hash << 5) + hash + value.charCodeAt(index)) | 0;
+  }
+  return hash;
+};
+
+// Ceiling on the pre-edit context we weave back in front of removed lines.
+// Bounds the virtual document so a deep edit never triggers a huge background
+// tokenization just to recover grammar state for a handful of removed lines.
+const DIFF_REMOVED_CONTEXT_LINES = 512;
+
+/**
+ * Highlight removed (`-`) diff lines against a virtual pre-edit document.
+ * Removed lines no longer exist on disk, so the file-verified path can never
+ * serve them; tokenizing the removed fragment alone leaves embedded-language
+ * scopes (e.g. JS inside an HTML <script>) colorless. Weaving the removed
+ * lines back into the file's pre-edit line context restores full grammar
+ * state. Returns a map from diff-row index to ANSI, or null when the virtual
+ * document cannot be reconstructed (file unreadable/oversized/mismatched).
+ * Coverage is produced by the shared background pump; pass `invalidate` to
+ * repaint once ready.
+ */
+const highlightRemovedDiffLines = (
+  parsed: Array<ParsedDiffLine | null>,
+  filePath: string,
+  language: string,
+  cwd: string,
+  invalidate?: () => void,
+): Map<number, string> | null => {
+  // The first contiguous hunk's removed lines plus their surrounding context.
+  let start = 0;
+  while (start < parsed.length && !parsed[start]) start++;
+  let end = start;
+  while (end < parsed.length && parsed[end]) end++;
+  const block = parsed.slice(start, end) as ParsedDiffLine[];
+  const removed: Array<{ row: number; n: number; content: string }> = [];
+  let minContext = Infinity;
+  for (let offset = 0; offset < block.length; offset++) {
+    const line = block[offset]!;
+    const n = Number.parseInt(line.lineNumber.trim(), 10);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    if (line.kind === "-") removed.push({ row: start + offset, n, content: expandTabs(line.content) });
+    else if (line.kind === " ") minContext = Math.min(minContext, n);
+  }
+  if (removed.length === 0) return null;
+  // The virtual document weaves the removed lines back in as a single run, so
+  // it is only faithful when they were contiguous in the pre-edit file. A
+  // hunk that interleaves removed and context lines mid-hunk falls through to
+  // the fragment fallback rather than reconstruct a wrong document.
+  for (let index = 1; index < removed.length; index++) {
+    if (removed[index]!.n !== removed[index - 1]!.n + 1) return null;
+  }
+  const firstRemoved = removed[0]!.n;
+  const anchor = Math.min(firstRemoved, minContext === Infinity ? firstRemoved : minContext);
+
+  const absolute = resolve(cwd, filePath);
+  let stat;
+  try {
+    stat = statSync(absolute);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile() || stat.size > MAX_HIGHLIGHT_CHARS) return null;
+  let text: string;
+  try {
+    text = readFileSync(absolute, "utf8");
+  } catch {
+    return null;
+  }
+  if (text.includes("\0")) return null;
+  const fileLines = text.replace(/\r\n?/g, "\n").split("\n").map(expandTabs);
+  // Context (post-edit, 1-based) must still match the file, or the pre-edit
+  // reconstruction would be anchored to the wrong place.
+  for (const line of block) {
+    if (line.kind !== " ") continue;
+    const n = Number.parseInt(line.lineNumber.trim(), 10);
+    if (fileLines[n - 1] !== expandTabs(line.content)) return null;
+  }
+  const prefixCount = Math.max(0, Math.min(anchor - 1, DIFF_REMOVED_CONTEXT_LINES));
+  const prefix = fileLines.slice(anchor - 1 - prefixCount, anchor - 1);
+  const removedContents = removed.map((row) => row.content);
+  const virtual = [...prefix, ...removedContents];
+  const cacheKey = `removed\0${language}\0${absolute}\0${hashSourceText(virtual.join("\n"))}`;
+  const covered = highlightSourceLines(
+    cacheKey,
+    virtual,
+    language,
+    prefixCount,
+    virtual.length,
+    invalidate,
+  );
+  if (!covered) return null;
+  const out = new Map<number, string>();
+  for (let index = 0; index < removed.length; index++) {
+    const entry = covered[index];
+    if (entry && entry.raw === removed[index]!.content) out.set(removed[index]!.row, entry.ansi);
+  }
+  return out;
+};
+
 const renderDiff = (
   diff: string,
   filePath: string,
@@ -656,6 +762,21 @@ const renderDiff = (
               highlighted[row.index] = entry.ansi;
             }
           }
+        }
+      }
+      // Removed lines never verify against the post-edit file; recover their
+      // grammar state from a virtual pre-edit document before falling back to
+      // colorless fragment tokenization.
+      const removedHighlighted = highlightRemovedDiffLines(
+        parsed,
+        filePath,
+        language,
+        options.cwd,
+        options.invalidate,
+      );
+      if (removedHighlighted) {
+        for (const [row, ansi] of removedHighlighted) {
+          if (highlighted[row] === undefined) highlighted[row] = ansi;
         }
       }
     }

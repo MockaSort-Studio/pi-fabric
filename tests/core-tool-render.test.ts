@@ -657,4 +657,71 @@ describe("Fabric core tool stateful highlighting", () => {
     expect(commentSpan).toBeTruthy();
     expect(added).not.toContain(`${commentSpan}const`);
   }, 20_000);
+
+  it("colors removed lines with pre-edit grammar state instead of a flat fragment", async () => {
+    // JS embedded in an HTML <script>: a standalone removed fragment has no
+    // embedded-language scope, so without the virtual pre-edit document the
+    // keyword gets no foreground color.
+    const { writeFileSync } = await import("node:fs");
+    const path = (await import("node:path")).join(dir, "motion.html");
+    const post = [
+      "<!doctype html>",
+      "<html>",
+      "<head><script>",
+      "const state = { frame: 0 };",
+      "function draw() {",
+      "  const markerCells = 24;",
+      "}",
+      "</" + "script></head>",
+      "</html>",
+    ].join("\n");
+    writeFileSync(path, post, "utf8");
+    await vi.waitFor(
+      () => expect(highlightCode(`<p>${Math.random()}</p>`, "html")).not.toBeNull(),
+      { timeout: 15_000 },
+    );
+
+    const removedLine = "  for(let bit=0;bit<16;bit++){";
+    const diff = [
+      "@@ 5 @@",
+      " 5 function draw() {",
+      `-6 ${removedLine}`,
+      "+6   const markerCells = 24;",
+      " 7 }",
+    ].join("\n");
+    const call = audit("edit", {
+      args: { path },
+      success: true,
+      result: { details: { diff } },
+    });
+
+    const stripAnsi = (line: string) =>
+      line.replace(/\u0000PI_DIFF_[A-Z]+\u0000/g, "").replace(/\x1b\[[0-9;]*m/g, "");
+    // Drive the shared pump (file + virtual document) until the removed line
+    // picks up state-correct foreground color. The invalidate callback is the
+    // scheduling hook; readiness is the keyword actually being colored.
+    const keywordColor = hl_dark_plus_keyword();
+    const removedColored = (): string | undefined => {
+      const rendered = renderCoreToolBody(call, theme, options({ expanded: true, invalidate: vi.fn() }));
+      const row = rendered!.lines.find((line) => stripAnsi(line).includes("bit<16"));
+      if (!row) return undefined;
+      const deEmphasized = row.replace(/\x1b\[48;2;148;62;70m/g, "").replace(/\x1b\[49m/g, "");
+      return deEmphasized.includes(`${keywordColor}for`) ? deEmphasized : undefined;
+    };
+    await vi.waitFor(() => expect(removedColored()).toBeDefined(), { timeout: 15_000 });
+
+    const deEmphasized = removedColored()!;
+    // Full token coverage: the number literal and variable are colored too.
+    expect(deEmphasized).toMatch(/\x1b\[38;2;[0-9;]+m16/);
+    expect(deEmphasized).toMatch(/\x1b\[38;2;[0-9;]+mbit/);
+  }, 20_000);
 });
+
+// Resolve the exact keyword color shiki assigns under dark-plus by tokenizing
+// a known-good snippet through the whole-document path.
+function hl_dark_plus_keyword(): string {
+  const snippet = highlightCode("for(;;){}", "javascript")![0]!;
+  const match = snippet.match(/(\x1b\[38;2;[0-9;]+m)for/);
+  expect(match).toBeTruthy();
+  return match![1]!;
+}

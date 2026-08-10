@@ -552,8 +552,9 @@ interface FileHighlightWaiter {
 interface FileHighlightEntry {
   highlighter: Highlighter;
   lang: string;
-  mtimeMs: number;
-  size: number;
+  // Present only for disk-backed entries; virtual documents omit both.
+  mtimeMs?: number;
+  size?: number;
   sourceLines: string[];
   lines: string[];
   state: GrammarState | undefined;
@@ -773,6 +774,68 @@ export function highlightFileLines(
     fileHighlightCache.delete(key);
     fileHighlightCache.set(key, entry);
   }
+  return fileHighlightRange(entry, from, to, invalidate);
+}
+
+/**
+ * Highlight a line range of an in-memory document with full grammar state.
+ * Shares the disk-backed pump, cache, and budgets; the caller supplies the
+ * cache identity via `cacheKey` (already namespaced by theme + language) and
+ * the tab-expanded source lines. Returns null while coverage has not reached
+ * `to`; passing `invalidate` repaints as soon as the range is covered.
+ */
+export function highlightSourceLines(
+  cacheKey: string,
+  sourceLines: string[],
+  lang: string,
+  from: number,
+  to: number,
+  invalidate?: () => void,
+): FileHighlightLine[] | null {
+  if (!enabled || !lang || !cacheKey || to <= from || from < 0) return null;
+  if (!highlighter || readyTheme !== currentTheme) {
+    requestInit(invalidate);
+    return null;
+  }
+  const shikiLang = normalizeLanguage(lang);
+  if (!(shikiLang in bundledLanguages)) return null;
+  if (!loadedLanguages.has(shikiLang)) {
+    requestLanguageLoad(shikiLang, invalidate);
+    return null;
+  }
+  let entry = fileHighlightCache.get(cacheKey);
+  if (!entry) {
+    entry = {
+      highlighter,
+      lang: shikiLang,
+      sourceLines,
+      lines: [],
+      state: undefined,
+      target: 0,
+      waiters: [],
+      stale: false,
+      chars: sourceLines.reduce((total, line) => total + line.length, 0),
+    };
+    fileHighlightCache.set(cacheKey, entry);
+    fileHighlightChars += entry.chars;
+    evictFileHighlightCache();
+    if (entry.stale) {
+      entry.waiters = [];
+      return null;
+    }
+  } else {
+    fileHighlightCache.delete(cacheKey);
+    fileHighlightCache.set(cacheKey, entry);
+  }
+  return fileHighlightRange(entry, from, to, invalidate);
+}
+
+const fileHighlightRange = (
+  entry: FileHighlightEntry,
+  from: number,
+  to: number,
+  invalidate?: () => void,
+): FileHighlightLine[] | null => {
   const total = entry.sourceLines.length;
   if (from >= total) return null;
   const clampedTo = Math.max(Math.min(to, total), Math.min(from, total));
@@ -788,4 +851,4 @@ export function highlightFileLines(
     out.push({ raw: entry.sourceLines[index] ?? "", ansi: entry.lines[index] ?? "" });
   }
   return out;
-}
+};
