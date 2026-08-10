@@ -116,6 +116,9 @@ interface ManagedAgent {
   adapter: AgentTransportAdapter;
   launch: AgentTransportLaunch;
   startupAttempts: number;
+  // The dead-transport failure we are retrying past; preferred over a bare
+  // timed_out verdict if the run deadline lands mid-retry.
+  lastRetriedTransportFailure?: AgentRunResult;
   result: Promise<AgentRunResult> | undefined;
   resolve: ((result: AgentRunResult) => void) | undefined;
   release(): void;
@@ -1040,6 +1043,18 @@ export class AgentManager {
           );
           return;
         }
+        if (managed.lastRetriedTransportFailure) {
+          // The deadline fired mid-retry: the root cause is the dead transport
+          // we were recovering from, not runaway wall time. Report that failure.
+          this.#settle(
+            managed,
+            this.#withTransportMetadata(
+              managed.lastRetriedTransportFailure,
+              managed,
+            ) as AgentRunResult,
+          );
+          return;
+        }
         const timedOut = failedRecord(
           managed,
           "timed_out",
@@ -1066,7 +1081,10 @@ export class AgentManager {
                 ? `Agent transport exited without a result; last run log: ${logSummary}`
                 : "Agent transport exited without a result",
             );
-            if (await this.#retryStartup(managed, failed, deadline)) continue;
+            if (await this.#retryStartup(managed, failed, deadline)) {
+              managed.lastRetriedTransportFailure = failed;
+              continue;
+            }
             writeRecord(managed.statusFile, failed);
             this.#settle(managed, failed);
             return;
