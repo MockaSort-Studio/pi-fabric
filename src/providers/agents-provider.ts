@@ -40,6 +40,7 @@ import {
   effectiveAgentTimeoutMs,
   AgentManager,
 } from "../agents/manager.js";
+import { checkedHandoffCompaction } from "../agents/handoff.js";
 import type {
   AgentHandleInfo,
   AgentRunRecord,
@@ -47,6 +48,11 @@ import type {
   AgentRunResult,
   AgentSessionSeed,
 } from "../agents/types.js";
+import {
+  MAX_COMPACTION_INSTRUCTIONS_CHARS,
+  MAX_PRESERVE_ITEM_CHARS,
+  MAX_PRESERVE_ITEMS,
+} from "../compaction/instructions.js";
 import type { ThinkingTransferInput } from "../agents/thinking-transfer.js";
 import { isFabricThinking } from "../thinking.js";
 import { ResidencyClient } from "../residency/client.js";
@@ -108,6 +114,31 @@ const spawnSchema = {
   properties: { ...runProperties, residency: residencySchema },
 };
 
+const handoffCompactionSchema = {
+  anyOf: [
+    { type: "boolean" },
+    {
+      type: "object",
+      properties: {
+        instructions: {
+          type: "string",
+          maxLength: MAX_COMPACTION_INSTRUCTIONS_CHARS,
+          description: "Custom compaction instructions for the inherited trajectory",
+        },
+        preserve: {
+          type: "array",
+          items: { type: "string", maxLength: MAX_PRESERVE_ITEM_CHARS },
+          maxItems: MAX_PRESERVE_ITEMS,
+          description: "Explicit bounded facts the trajectory summary must preserve",
+        },
+      },
+      additionalProperties: false,
+    },
+  ],
+  description:
+    "Compact the inherited trajectory with Fabric's deterministic compactor before the executor resumes it. `true` applies the default summary; an object customizes instructions and bounded preserve facts. Omitted keeps the full raw trajectory.",
+};
+
 const handoffSchema = {
   type: "object",
   properties: {
@@ -127,6 +158,7 @@ const handoffSchema = {
     extensions: runProperties.extensions,
     recursive: runProperties.recursive,
     schema: runProperties.schema,
+    compact: handoffCompactionSchema,
   },
   required: ["model"],
   additionalProperties: false,
@@ -1149,6 +1181,7 @@ export class AgentsProvider implements FabricProvider {
   ): Promise<Record<string, unknown>> {
     const model = typeof args.model === "string" ? args.model.trim() : "";
     if (!model) throw new Error("agents.handoff requires an explicit Pi target model");
+    checkedHandoffCompaction(args.compact);
     if (!context.deferHandoff) {
       throw new Error(
         "agents.handoff must be scheduled from inside fabric_exec and completed at its outer result boundary",
@@ -1180,6 +1213,8 @@ export class AgentsProvider implements FabricProvider {
     );
     request.runner = "pi";
     request.sessionSeed = sessionSeed;
+    const handoffCompaction = checkedHandoffCompaction(args.compact);
+    if (handoffCompaction) request.handoffCompact = handoffCompaction;
     request.thinkingTransfer = resolveThinkingTransfer(
       context.extensionContext,
       model,

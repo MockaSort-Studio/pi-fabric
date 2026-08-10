@@ -265,7 +265,7 @@ const closeCut = (
   return 0;
 };
 
-const rawContextTokens = (branchEntries: SessionEntry[]): number =>
+export const rawContextTokens = (branchEntries: SessionEntry[]): number =>
   buildSessionContext(branchEntries).messages.reduce(
     (total, message) => total + estimateTokens(message),
     0,
