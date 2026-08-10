@@ -81,6 +81,28 @@ describe("Fabric configuration", () => {
     expect(config.mesh.eventContextChars).toBe(1_000_000);
   });
 
+  it("parses capability advisory settings with defaults and bounds", () => {
+    expect(DEFAULT_FABRIC_CONFIG.capture.advisory).toEqual({
+      mode: "enabled",
+      threshold: 0.9,
+      maxPerSession: 3,
+      budget: 512,
+    });
+    const adorned = normalizeFabricConfig({
+      capture: { advisory: { mode: "enabled", threshold: 4.2, maxPerSession: 9, budget: 2048 } },
+    });
+    expect(adorned.capture.advisory).toEqual({ mode: "enabled", threshold: 4.2, maxPerSession: 9, budget: 2048 });
+    const bounded = normalizeFabricConfig({
+      capture: {
+        advisory: { mode: "surprising", threshold: Number.NaN, maxPerSession: 500, budget: 99_999 },
+      },
+    });
+    expect(bounded.capture.advisory.mode).toBe("enabled");
+    expect(bounded.capture.advisory.threshold).toBe(0.9);
+    expect(bounded.capture.advisory.maxPerSession).toBe(50);
+    expect(bounded.capture.advisory.budget).toBe(8192);
+  });
+
   it("normalizes executor runtimes and their memory ceilings", () => {
     const native = normalizeFabricConfig({
       executor: { runtime: "node-process", memoryLimitBytes: Number.MAX_SAFE_INTEGER },

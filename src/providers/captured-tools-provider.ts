@@ -42,6 +42,10 @@ const descriptorFrom = (entry: CapturedToolEntry): FabricActionDescriptor => ({
   namespace: `extension:${sourceLabel(entry.sourceInfo)}`,
 });
 
+export const listCapturedToolDescriptors = (
+  entries: CapturedToolEntry[],
+): FabricActionDescriptor[] => entries.map(descriptorFrom);
+
 const asInvocationResult = (
   entry: CapturedToolEntry,
   result: AgentToolResult<unknown>,

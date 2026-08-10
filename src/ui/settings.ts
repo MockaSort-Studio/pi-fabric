@@ -39,6 +39,7 @@ import {
   MIN_COMPACTION_TOKEN_THRESHOLD,
   QUICKJS_MAX_MEMORY_LIMIT_BYTES,
   saveFabricConfig,
+  type FabricCapabilityAdvisoryMode,
   type FabricConfig,
   type FabricConfigScope,
 } from "../config.js";
@@ -56,6 +57,10 @@ const APPROVAL_MODES = ["allow", "ask", "auto", "deny"] as const;
 const RUNNERS = ["pi", "claude"] as const;
 const TRANSPORTS = ["auto", "process", "tmux", "screen", "localterm", "herdr"] as const;
 const WIDGET_MODES = ["auto", "always", "hidden"] as const;
+const ADVISORY_MODES = ["hidden", "enabled", "disabled"] as const satisfies readonly FabricCapabilityAdvisoryMode[];
+const ADVISORY_THRESHOLDS = ["0.6", "0.9", "1.4", "2.0"] as const;
+const ADVISORY_SESSION_CAPS = ["1", "3", "5", "10"] as const;
+const ADVISORY_BUDGETS = ["256", "512", "1024", "2048"] as const;
 const RESULT_FORMATS = ["auto", "yaml", "json", "text"] as const;
 const EXECUTOR_RUNTIMES = ["quickjs", "node-process"] as const;
 const COMPACTION_ENGINES = ["fabric", "pi"] as const;
@@ -1298,6 +1303,22 @@ export const buildFabricSettingsItems = (
           setting("capture.defaultRisk", "Default risk", config.capture.defaultRisk, {
             description: "Approval risk level applied to registered tools without an explicit override.",
             values: RISKS,
+          }),
+          setting("capture.advisory.mode", "Capability advisory", config.capture.advisory.mode, {
+            description: "Inject a one-shot hint when your prompt matches a captured tool's capability. hidden delivers it to the model only; disabled turns it off.",
+            values: ADVISORY_MODES,
+          }),
+          setting("capture.advisory.threshold", "Advisory threshold", String(config.capture.advisory.threshold), {
+            description: "Minimum match score before a capability hint fires. Higher means fewer hints.",
+            values: ADVISORY_THRESHOLDS,
+          }),
+          setting("capture.advisory.maxPerSession", "Advisories per session", String(config.capture.advisory.maxPerSession), {
+            description: "Maximum capability advisory messages per session; each capability fires at most once regardless.",
+            values: ADVISORY_SESSION_CAPS,
+          }),
+          setting("capture.advisory.budget", "Advisory token budget", String(config.capture.advisory.budget), {
+            description: "Token ceiling for advisory content (estimated as chars/4, clamped 128–8192; matches pi-fovea's sync budget).",
+            values: ADVISORY_BUDGETS,
           }),
           keepVisibleItem,
           ...CORE_RISK_TOOLS.map((tool) =>

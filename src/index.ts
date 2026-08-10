@@ -40,6 +40,15 @@ import {
   mergeFabricApprovalUsage,
 } from "./core/direct-tool-approval.js";
 import { buildSkillReferenceGuidance } from "./core/skill-references.js";
+import {
+  CAPABILITY_ADVISORY_CUSTOM_TYPE,
+  CapabilityAdvisor,
+} from "./core/capability-advisory.js";
+import {
+  loadCapabilityAdvisoryState,
+  saveCapabilityAdvisoryState,
+} from "./core/capability-advisory-store.js";
+import { listCapturedToolDescriptors } from "./providers/captured-tools-provider.js";
 import { createFabricExecTool } from "./fabric-exec-tool.js";
 import { FabricState } from "./fabric-state.js";
 import { piHostCompatibilityWarning } from "./host-compatibility.js";
@@ -97,6 +106,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     codePreviewSettings.syntaxHighlighting,
   );
   const capturedTools = new CapturedToolCatalog();
+  const capabilityAdvisor = new CapabilityAdvisor();
   const state = new FabricState(pi, capturedTools);
   const directToolApproval = new FabricDirectToolApproval(
     pi,
@@ -179,7 +189,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     anchorDefinition: fabricTool,
     catalog: capturedTools,
     initialPolicy: inactiveCapturePolicy,
-    onCatalogRefresh: scheduleOwnershipReassert,
+    onCatalogRefresh: () => {
+      scheduleOwnershipReassert();
+      capabilityAdvisor.refresh(listCapturedToolDescriptors(capturedTools.list()));
+    },
   });
   pi.registerTool(fabricTool);
 
@@ -266,6 +279,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     directToolApproval.clear();
     fabricUi.stop();
     suspendToolCapture();
+    // Advisory fire-once state is durable: a restarted session reloads which
+    // capabilities were already hinted instead of re-hinting them.
+    capabilityAdvisor.reset();
+    capabilityAdvisor.hydrate(loadCapabilityAdvisoryState());
     if (!compatibilityWarningShown) {
       compatibilityWarningShown = true;
       const warning = piHostCompatibilityWarning();
@@ -521,8 +538,35 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           ? "\n\nSchema audit mode reports actions that enforce mode would block, but preserves their current behavior."
           : "")
       + (skillReferenceGuidance ? `\n\n${skillReferenceGuidance}` : "");
+    // One-shot capability steering: when the prompt's vocabulary matches a
+    // captured tool source's fingerprint, name the tools once so the model
+    // reaches for extensions.* instead of re-implementing the capability.
+    // Fires only when captured tools are hidden (full code / schema enforce
+    // modes) — when tools are natively visible there is nothing to point at.
+    const captureSnapshot = state.initialized ? capturePolicy() : undefined;
+    const advisory =
+      captureSnapshot?.enabled === true && captureSnapshot.hideFromModel
+        ? capabilityAdvisor.evaluate(event.prompt, captureSnapshot.advisory)
+        : undefined;
+    if (advisory) {
+      try {
+        saveCapabilityAdvisoryState(capabilityAdvisor.firedNamespaces());
+      } catch {
+        // Persistence is best-effort; a failed write must not block the turn.
+      }
+    }
     return {
       systemPrompt: `${systemPrompt}\n\n${guidance}`,
+      ...(advisory
+        ? {
+            message: {
+              customType: CAPABILITY_ADVISORY_CUSTOM_TYPE,
+              content: advisory.content,
+              display: advisory.display,
+              details: advisory.details,
+            },
+          }
+        : {}),
     };
   });
 

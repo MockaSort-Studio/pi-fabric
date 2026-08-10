@@ -92,12 +92,23 @@ export interface FabricAgentConfig {
   maxTokensPerChild: number;
 }
 
+export type FabricCapabilityAdvisoryMode = "enabled" | "hidden" | "disabled";
+
+export interface FabricCapabilityAdvisoryConfig {
+  mode: FabricCapabilityAdvisoryMode;
+  threshold: number;
+  maxPerSession: number;
+  /** Token ceiling for the advisory text (estimated as chars/4, like fovea's sync.budget). */
+  budget: number;
+}
+
 export interface FabricToolCaptureConfig {
   enabled: boolean;
   hideFromModel: boolean;
   keepVisible: string[];
   defaultRisk: FabricRisk;
   risks: Record<string, FabricRisk>;
+  advisory: FabricCapabilityAdvisoryConfig;
 }
 
 export type FabricSchemaMode = "off" | "audit" | "enforce";
@@ -283,6 +294,12 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
       fovea_focus: "read",
       fovea_dwell: "read",
       fovea_impact: "read",
+    },
+    advisory: {
+      mode: "enabled",
+      threshold: 0.9,
+      maxPerSession: 3,
+      budget: 512,
     },
   },
   ui: {
@@ -473,6 +490,12 @@ const actorScopeValue = (value: unknown, fallback: FabricActorScope): FabricActo
 const schemaModeValue = (value: unknown, fallback: FabricSchemaMode): FabricSchemaMode =>
   value === "off" || value === "audit" || value === "enforce" ? value : fallback;
 
+const advisoryModeValue = (
+  value: unknown,
+  fallback: FabricCapabilityAdvisoryMode,
+): FabricCapabilityAdvisoryMode =>
+  value === "enabled" || value === "hidden" || value === "disabled" ? value : fallback;
+
 const riskValue = (value: unknown, fallback: FabricRisk): FabricRisk =>
   value === "read" ||
   value === "write" ||
@@ -550,6 +573,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     ...DEFAULT_FABRIC_CONFIG.capture.risks,
     ...objectValue(capture.risks),
   };
+  const configuredAdvisory = objectValue(capture.advisory);
   const trustedCommands = Object.fromEntries(
     Object.entries(objectValue(schema.trustedCommands)).flatMap(([name, raw]) => {
       if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name)) return [];
@@ -706,6 +730,27 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       keepVisible: [...new Set(configuredVisible)],
       defaultRisk: riskValue(capture.defaultRisk, DEFAULT_FABRIC_CONFIG.capture.defaultRisk),
       risks,
+      advisory: {
+        mode: advisoryModeValue(configuredAdvisory.mode, DEFAULT_FABRIC_CONFIG.capture.advisory.mode),
+        threshold: boundedFloat(
+          configuredAdvisory.threshold,
+          DEFAULT_FABRIC_CONFIG.capture.advisory.threshold,
+          0,
+          1_000,
+        ),
+        maxPerSession: boundedInteger(
+          configuredAdvisory.maxPerSession,
+          DEFAULT_FABRIC_CONFIG.capture.advisory.maxPerSession,
+          1,
+          50,
+        ),
+        budget: boundedInteger(
+          configuredAdvisory.budget,
+          DEFAULT_FABRIC_CONFIG.capture.advisory.budget,
+          128,
+          8192,
+        ),
+      },
     },
     ui: {
       enabled: booleanValue(ui.enabled, DEFAULT_FABRIC_CONFIG.ui.enabled),
