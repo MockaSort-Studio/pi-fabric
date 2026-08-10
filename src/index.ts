@@ -48,7 +48,10 @@ import {
   loadCapabilityAdvisoryState,
   saveCapabilityAdvisoryState,
 } from "./core/capability-advisory-store.js";
-import { listCapturedToolDescriptors } from "./providers/captured-tools-provider.js";
+import {
+  capturedToolNamespace,
+  listCapturedToolDescriptors,
+} from "./providers/captured-tools-provider.js";
 import { createFabricExecTool } from "./fabric-exec-tool.js";
 import { FabricState } from "./fabric-state.js";
 import { piHostCompatibilityWarning } from "./host-compatibility.js";
@@ -107,7 +110,17 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   );
   const capturedTools = new CapturedToolCatalog();
   const capabilityAdvisor = new CapabilityAdvisor();
-  const state = new FabricState(pi, capturedTools);
+  const state = new FabricState(pi, capturedTools, (entry) => {
+    // Organic discovery: the model found and used the namespace on its own —
+    // burn it as ash so no future hint wastes the fire. Persist immediately.
+    try {
+      if (capabilityAdvisor.observeToolUse(capturedToolNamespace(entry))) {
+        saveCapabilityAdvisoryState(capabilityAdvisor.ashRecords());
+      }
+    } catch {
+      // Advisory bookkeeping only.
+    }
+  });
   const directToolApproval = new FabricDirectToolApproval(
     pi,
     () => state.config,
@@ -325,6 +338,8 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
 
   pi.on("turn_end", async (event, context) => {
     if (!state.initialized) return;
+    // Furnace feedback: did the just-fired advisory lead to captured tool use?
+    capabilityAdvisor.endTurn();
     await state.publishHostLifecycle("pi.turn_end", event);
   });
 
@@ -550,7 +565,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         : undefined;
     if (advisory) {
       try {
-        saveCapabilityAdvisoryState(capabilityAdvisor.firedNamespaces());
+        saveCapabilityAdvisoryState(capabilityAdvisor.ashRecords());
       } catch {
         // Persistence is best-effort; a failed write must not block the turn.
       }

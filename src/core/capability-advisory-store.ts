@@ -5,9 +5,13 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 const ADVISORY_STATE_FILENAME = "capability-advisories.json";
 
+import type { CapabilityBurn } from "./capability-advisory.js";
+
+// Format 2 stores the ash record (origin + burn time); format 1 files carried
+// a bare namespace list and migrate in as origin "fired" with no timestamp.
 interface CapabilityAdvisoryFile {
-  format: 1;
-  fired: string[];
+  format: 2;
+  burned: CapabilityBurn[];
 }
 
 const defaultStatePath = (): string =>
@@ -26,21 +30,39 @@ const atomicWriteJson = (filePath: string, value: unknown): void => {
   fs.renameSync(temporaryPath, filePath);
 };
 
-export const loadCapabilityAdvisoryState = (filePath?: string): string[] => {
+export const loadCapabilityAdvisoryState = (filePath?: string): CapabilityBurn[] => {
   try {
-    const raw = JSON.parse(fs.readFileSync(filePath ?? defaultStatePath(), "utf8")) as Partial<CapabilityAdvisoryFile>;
-    if (raw.format !== 1 || !Array.isArray(raw.fired)) return [];
-    return raw.fired.filter((entry): entry is string => typeof entry === "string");
+    const raw = JSON.parse(fs.readFileSync(filePath ?? defaultStatePath(), "utf8")) as {
+      format?: number;
+      burned?: unknown;
+      fired?: unknown;
+    };
+    if (raw.format === 2 && Array.isArray(raw.burned)) {
+      return raw.burned.filter(
+        (entry): entry is CapabilityBurn =>
+          typeof entry === "object" &&
+          entry !== null &&
+          typeof (entry as CapabilityBurn).namespace === "string" &&
+          ((entry as CapabilityBurn).origin === "fired" ||
+            (entry as CapabilityBurn).origin === "organic"),
+      );
+    }
+    if (raw.format === 1 && Array.isArray(raw.fired)) {
+      return raw.fired
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((namespace) => ({ namespace, origin: "fired" as const }));
+    }
+    return [];
   } catch {
-    // Missing or corrupt state means nothing has fired yet.
+    // Missing or corrupt state means nothing has burned yet.
     return [];
   }
 };
 
 export const saveCapabilityAdvisoryState = (
-  fired: Iterable<string>,
+  burned: Iterable<CapabilityBurn>,
   filePath?: string,
 ): void => {
-  const document: CapabilityAdvisoryFile = { format: 1, fired: [...fired] };
+  const document: CapabilityAdvisoryFile = { format: 2, burned: [...burned] };
   atomicWriteJson(filePath ?? defaultStatePath(), document);
 };

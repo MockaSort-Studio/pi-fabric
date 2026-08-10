@@ -9,7 +9,7 @@ import { buildActorContext } from "./actors/context.js";
 import { actorDeliveryNotice } from "./actors/delivery-policy.js";
 import { prepareFabricActorHostPayload } from "./actors/host-event-payload.js";
 import type { FabricActorHostEvent } from "./actors/types.js";
-import { CapturedToolCatalog } from "./capture/catalog.js";
+import { CapturedToolCatalog, type CapturedToolEntry } from "./capture/catalog.js";
 import {
   loadFabricConfig,
   type FabricConfig,
@@ -95,10 +95,15 @@ export class FabricState {
   readonly sessionApprovals = new FabricSessionApprovals();
   #widgetDismissedAt = 0;
 
+  readonly #onCapturedToolUse: ((entry: CapturedToolEntry) => void) | undefined;
+
   constructor(
     readonly pi: ExtensionAPI,
     readonly capturedTools: CapturedToolCatalog,
-  ) {}
+    onCapturedToolUse?: (entry: CapturedToolEntry) => void,
+  ) {
+    this.#onCapturedToolUse = onCapturedToolUse;
+  }
 
   get initialized(): boolean {
     return Boolean(this.#execution);
@@ -208,7 +213,7 @@ export class FabricState {
     const effectiveFullCodeMode = this.#config.fullCodeMode || enforceSchema;
     const capturedToolsProvider =
       effectiveFullCodeMode && this.#config.capture.enabled && !enforceSchema
-        ? new CapturedToolsProvider(this.capturedTools)
+        ? new CapturedToolsProvider(this.capturedTools, this.#onCapturedToolUse)
         : undefined;
     if (effectiveFullCodeMode) {
       this.#registry.register(

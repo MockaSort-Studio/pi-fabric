@@ -61,28 +61,42 @@ const advisor = (): CapabilityAdvisor => {
 };
 
 describe("CapabilityAdvisor", () => {
-  it("fires on a web-search prompt and names both matching sources", () => {
-    const result = advisor().evaluate("search the web for recent llm pricing news", config());
-    expect(result).toBeDefined();
-    expect(result?.content).toContain("extensions.synthetic_web_search");
-    expect(result?.content).toContain("extensions.openai_websearch");
+  it("fires unambiguous matches instantly; weak-band sources need sustained exposure", () => {
+    // synthetic scores strong (search/web/recent → 2.0 ≥ θ+1), openai is
+    // weak (search/web → 1.0): only the strong source ignites on the first
+    // prompt, the weak one burns in after sustained exposure (asymptote 1.0
+    // crosses θ=0.9 on the fourth identical prompt).
+    const instance = advisor();
+    const first = instance.evaluate("search the web for recent llm pricing news", config());
+    expect(first?.content).toContain("extensions.synthetic_web_search");
+    expect(first?.content).not.toContain("extensions.openai_websearch");
+    expect(instance.evaluate("search the web for recent llm pricing news", config())).toBeUndefined();
+    expect(instance.evaluate("search the web for recent llm pricing news", config())).toBeUndefined();
+    const fourth = instance.evaluate("search the web for recent llm pricing news", config());
+    expect(fourth).toBeDefined();
     // Refs rank by their own prompt-term overlap: the image tool shares the
     // source but must not lead a web-search advisory.
-    expect(result?.content.indexOf("openai_websearch")).toBeLessThan(
-      result?.content.indexOf("openai_image") ?? Number.POSITIVE_INFINITY,
+    expect(fourth?.content.indexOf("openai_websearch")).toBeLessThan(
+      fourth?.content.indexOf("openai_image") ?? Number.POSITIVE_INFINITY,
     );
-    expect(result?.content).toContain("Next: tools.describe('synthetic_web_search')");
-    expect(result?.content).toContain(
+    expect(fourth?.content).toContain("extensions.openai_websearch");
+    expect(fourth?.content).toContain("possible match");
+    expect(fourth?.display).toBe(false);
+    // The strong first fire names the synthetic headline and action line.
+    expect(first?.content).toContain("Next: tools.describe('synthetic_web_search')");
+    expect(first?.content).toContain(
       "Steer: prefer these captured tools over re-implementing the capability",
     );
-    expect(result?.content).toContain("  pi-synthetic — extensions.synthetic_web_search");
-    expect(result?.content).not.toContain("(captured from");
-    expect(result?.content).not.toContain("possible match");
-    expect(result?.display).toBe(false);
-    const namespaces: CapabilityAdvisoryMatch["namespace"][] =
-      result?.details.matches.map((match) => match.namespace) ?? [];
-    expect(namespaces).toContain("extension:pi-synthetic");
-    expect(namespaces).toContain("extension:pi-better-openai");
+    expect(first?.content).toContain("  pi-synthetic — extensions.synthetic_web_search");
+    expect(first?.content).not.toContain("(captured from");
+    expect(first?.content).not.toContain("possible match");
+    expect(first?.display).toBe(false);
+    const strongNamespaces: CapabilityAdvisoryMatch["namespace"][] =
+      first?.details.matches.map((match) => match.namespace) ?? [];
+    expect(strongNamespaces).toContain("extension:pi-synthetic");
+    const weakNamespaces: CapabilityAdvisoryMatch["namespace"][] =
+      fourth?.details.matches.map((match) => match.namespace) ?? [];
+    expect(weakNamespaces).toContain("extension:pi-better-openai");
   });
 
   it("fires on a web-search prompt even with a tiny captured catalog", () => {
@@ -95,8 +109,12 @@ describe("CapabilityAdvisor", () => {
   });
 
   it("marks low-confidence matches as possible matches", () => {
-    // query (rare) + results (shared) land between threshold and the strong band.
-    const result = advisor().evaluate("query the results table please", config());
+    // query (rare) + results (shared) land between threshold and the strong
+    // band, so warmth must accumulate: first exposure stays below the
+    // ignition point, the second ignites as a "possible match".
+    const instance = advisor();
+    expect(instance.evaluate("query the results table please", config())).toBeUndefined();
+    const result = instance.evaluate("query the results table please", config());
     expect(result).toBeDefined();
     expect(result?.content).toContain("possible match");
     expect(result?.content).toContain("extensions.db_query");
@@ -137,11 +155,15 @@ describe("CapabilityAdvisor", () => {
     expect(instance.evaluate("send a mail draft to the team", capped)).toBeUndefined();
   });
 
-  it("re-arms sources after a session reset", () => {
+  it("ash survives a session reset", () => {
+    // reset() only clears session transients (warmth, smoke, per-session
+    // cap); burnedness is durable entropy and is never wiped.
     const instance = advisor();
     expect(instance.evaluate("search the web for recent news", config())).toBeDefined();
     instance.reset();
-    expect(instance.evaluate("search the web again", config())).toBeDefined();
+    expect(instance.evaluate("search the web again", config())).toBeUndefined();
+    // Unburned capabilities still ignite after a reset.
+    expect(instance.evaluate("focus my code graph on a symbol", config())).toBeDefined();
   });
 
   it("does not fire with an empty index", () => {
@@ -174,9 +196,16 @@ describe("CapabilityAdvisor", () => {
     expect(
       a.evaluate(`<skill><name>web-tools</name><description>search the web, project news</description>`, config()),
     ).toBeUndefined();
-    // Intent typed outside the envelope still matches normally.
+    // Intent typed outside the envelope still matches normally. "search" +
+    // "web" score 1.0 (weak band); warmth W_k = 1−0.5^k crosses θ=0.9 on the
+    // fourth identical prompt.
     const b = advisor();
-    const hit = b.evaluate(`somewhere in the middle: ${'neutral words'}\nsearch the web please\n${envelope}`, config());
+    const outside = `somewhere in the middle: ${'neutral words'}\nsearch the web please\n${envelope}`;
+    expect(b.evaluate(outside, config())).toBeUndefined();
+    expect(b.evaluate(outside, config())).toBeUndefined();
+    expect(b.evaluate(outside, config())).toBeUndefined();
+    const hit = b.evaluate(outside, config());
+    expect(hit).toBeDefined();
     expect(hit?.details.matches.some((m) => m.namespace === "extension:pi-synthetic" || m.namespace === "extension:pi-better-openai")).toBe(true);
   });
 
@@ -200,14 +229,85 @@ describe("CapabilityAdvisor", () => {
     expect(Math.ceil(result!.content.length / 4)).toBeLessThanOrEqual(128);
   });
 
-  it("stays quiet across simulated restarts when hydrated with fired state", () => {
+  it("stays quiet across simulated restarts when hydrated with ash", () => {
     const first = advisor();
     expect(first.evaluate("search the web for recent news", config())).toBeDefined();
     const second = advisor();
-    second.hydrate(first.firedNamespaces());
+    second.hydrate(first.ashRecords());
     expect(second.evaluate("search the web again", config())).toBeUndefined();
     // Unrelated capabilities still fire after hydration.
+    expect(second.ashRecords()).toEqual(first.ashRecords());
+    // Unrelated capabilities still fire after hydration.
     expect(second.evaluate("focus my code graph on a symbol", config())).toBeDefined();
+  });
+
+  it("marks fired namespaces with origin and timestamp in the ash record", () => {
+    const a = advisor();
+    a.evaluate("search the web for recent news", config());
+    const fired = a.ashRecords().filter((record) => record.namespace === "extension:pi-synthetic");
+    expect(fired).toHaveLength(1);
+    expect(fired[0]?.origin).toBe("fired");
+    expect(fired[0]?.at).toBeDefined();
+  });
+
+  it("poisons organically-discovered namespaces permanently", () => {
+    const a = advisor();
+    // Model finds synthetic_web_search on its own: the hint must never fire.
+    expect(a.observeToolUse("extension:pi-synthetic")).toBe(true);
+    // Duplicate observations don't churn the ash set.
+    expect(a.observeToolUse("extension:pi-synthetic")).toBe(false);
+    expect(a.evaluate("search the web for recent news", config())).toBeUndefined();
+    const organic = a.ashRecords().find((record) => record.namespace === "extension:pi-synthetic");
+    expect(organic?.origin).toBe("organic");
+  });
+
+  it("gates weak-band matches behind sustained warmth", () => {
+    // Weak-band score s=1.5: warmth W_i = 1.5·(1−α) Σ_{k<i} α^k with α=0.5,
+    // so W_1=0.75 < θ, W_2=1.125 ≥ θ — exactly one soft turn then ignition.
+    const instance = advisor();
+    expect(instance.evaluate("query the results table please", config())).toBeUndefined();
+    expect(instance.evaluate("query the results table please", config())).toBeDefined();
+  });
+
+  it("cools weak warmth while the topic is dropped", () => {
+    // s=1.333 weak band. T1 accumulates W=0.667 (silent). The unrelated
+    // focus prompt fires (strong) and halves residual warmth to 0.333, then
+    // decays again to 0.167 before the first re-exposure: 0.167+0.667=0.833
+    // stays under θ=0.9; only the second clean re-exposure ignites
+    // (0.417+0.667=1.083). Continuous repeated prompting would have fired
+    // one turn earlier — dropped topics cool.
+    const instance = advisor();
+    const prompt = "query the results table please";
+    expect(instance.evaluate(prompt, config())).toBeUndefined();
+    expect(instance.evaluate("focus my code graph on a symbol", config())).toBeDefined();
+    expect(instance.evaluate(prompt, config())).toBeUndefined();
+    expect(instance.evaluate(prompt, config())).toBeDefined();
+  });
+
+  it("raises the weak-band ignition point after an ignored fire (smoke)", () => {
+    const instance = advisor();
+    const prompt = "query the results table please";
+    // Strong band fires instantly; no tool use this turn → smoke streak 1,
+    // ignition rises from 0.9 to 0.9·1.25=1.125. With s=1.333 the clean
+    // trajectory ignites on turn 2 (W=1.0); under smoke it needs turn 3
+    // (W: 0.667 → 1.0 → 1.167, where the final evaluates fire).
+    expect(instance.evaluate("search the web for recent news", config())).toBeDefined();
+    instance.endTurn();
+    expect(instance.evaluate(prompt, config())).toBeUndefined();
+    expect(instance.evaluate(prompt, config())).toBeUndefined();
+    expect(instance.evaluate(prompt, config())).toBeDefined();
+  });
+
+  it("resets the smoke streak when a fired hint leads to tool use", () => {
+    const instance = advisor();
+    expect(instance.evaluate("search the web for recent news", config())).toBeDefined();
+    instance.observeToolUse("extension:pi-synthetic");
+    expect(instance.evaluate("focus my code graph on a symbol", config())).toBeDefined();
+    instance.observeToolUse("extension:pi-fovea");
+    instance.endTurn(); // both fires combusted → streak reset
+    // Ignition stays at the base 0.9: weak fire arrives on exposure two.
+    expect(instance.evaluate("query the results table please", config())).toBeUndefined();
+    expect(instance.evaluate("query the results table please", config())).toBeDefined();
   });
 
   it("exports the custom type used for message injection", () => {

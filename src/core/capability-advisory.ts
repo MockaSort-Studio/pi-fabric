@@ -16,6 +16,18 @@ const MAX_ADVISORY_NAMES = 3;
 const BASE_HEADER = "[Fabric capability hint]";
 const WEAK_HEADER = "[Fabric capability hint · possible match]";
 
+// Combustion dynamics. The advisory is a finite battery: every fire spends a
+// namespace permanently (ash), so ignition is gated. The strong band ignites
+// instantly; the weak band must accumulate warmth W, an EWMA of weak-band
+// scores with retention WARM_ALPHA per turn (half-life ~1 turn), until W
+// breaches the ignition point — single-turn vocabulary collisions cool before
+// they get there. Ignored fires are smoke: each raises future weak-band
+// ignition by SMOKE_STEP × the base threshold (capped SMOKE_MAX streaks).
+const WARM_ALPHA = 0.5;
+const SMOKE_STEP = 0.25;
+const SMOKE_MAX = 4;
+const WARM_FLOOR = 1e-3;
+
 export interface CapabilityAdvisoryMatch {
   namespace: string;
   label: string;
@@ -30,6 +42,18 @@ export interface CapabilityAdvisoryResult {
   content: string;
   display: boolean;
   details: { matches: CapabilityAdvisoryMatch[] };
+}
+
+type CapabilityBurnOrigin = "fired" | "organic";
+
+// Ash record: the irreversible residue of a capability's information
+// potential. origin records how the potential was spent — a hint fired vs the
+// model discovering the namespace on its own — and the record is append-only:
+// misfires are never reclaimed (you don't unburn paper).
+export interface CapabilityBurn {
+  namespace: string;
+  origin: CapabilityBurnOrigin;
+  at?: string;
 }
 
 const STEER_LINE =
@@ -50,13 +74,13 @@ const estimateTokens = (text: string): number => Math.ceil(text.length / 4);
 const formatRef = (name: string, description: string): string =>
   `${ADVISORY_REF_PREFIX}.${name} (${truncateAdvisoryDescription(description)})`;
 
-// Fires at most once per source namespace per session — an advisory repeated
-// for an already-mentioned capability turns into noise the model learns to
-// ignore. Fire-set and per-session cap live in extension state, so compaction
-// cannot resurrect a spent advisory and a new session earns fresh hints.
 export class CapabilityAdvisor {
   #index: CapabilityIndex = buildCapabilityIndex([]);
-  #firedNamespaces = new Set<string>();
+  #ash = new Map<string, CapabilityBurn>();
+  #warmth = new Map<string, number>();
+  #pendingFire = new Set<string>();
+  #hitsThisTurn = new Set<string>();
+  #smokeStreak = 0;
   #firedTotal = 0;
 
   refresh(descriptors: FabricActionDescriptor[]): void {
@@ -64,20 +88,49 @@ export class CapabilityAdvisor {
   }
 
   reset(): void {
-    this.#firedNamespaces.clear();
+    this.#warmth.clear();
+    this.#pendingFire.clear();
+    this.#hitsThisTurn.clear();
+    this.#smokeStreak = 0;
     this.#firedTotal = 0;
   }
 
-  // Machine-global persistence: hydrate with previously fired namespaces at
-  // session start so already-hinted capabilities stay quiet across restarts.
-  // The per-session advisory cap stays session-local — only the namespace
-  // fire-set is durable.
-  hydrate(firedNamespaces: Iterable<string>): void {
-    this.#firedNamespaces = new Set(firedNamespaces);
+  // Machine-global persistence: hydrate with prior ash at session start so
+  // already-spent capabilities stay quiet across restarts. Warmth, smoke, and
+  // the per-session cap stay session-local — transients govern ignition, only
+  // the ash is durable.
+  hydrate(records: Iterable<CapabilityBurn>): void {
+    this.#ash = new Map([...records].map((record) => [record.namespace, record]));
   }
 
-  firedNamespaces(): string[] {
-    return [...this.#firedNamespaces];
+  ashRecords(): CapabilityBurn[] {
+    return [...this.#ash.values()];
+  }
+
+  // Organic poisoning: the model reached this namespace without a hint, so
+  // the capability's information potential is already spent. Burn it as ash
+  // with origin "organic". Returns true when the ash set changed (persist it).
+  observeToolUse(namespace: string): boolean {
+    if (this.#pendingFire.has(namespace)) this.#hitsThisTurn.add(namespace);
+    if (this.#ash.has(namespace)) return false;
+    this.#ash.set(namespace, {
+      namespace,
+      origin: "organic",
+      at: new Date().toISOString(),
+    });
+    return true;
+  }
+
+  // Furnace feedback, evaluated once per turn (turn_end event). A fire whose
+  // namespaces saw no tool use is smoke; a used fire is clean combustion and
+  // clears the streak. Smoke raises the weak-band ignition point.
+  endTurn(): void {
+    if (this.#pendingFire.size > 0) {
+      const combusted = [...this.#pendingFire].some((namespace) => this.#hitsThisTurn.has(namespace));
+      this.#smokeStreak = combusted ? 0 : Math.min(this.#smokeStreak + 1, SMOKE_MAX);
+      this.#pendingFire.clear();
+    }
+    this.#hitsThisTurn.clear();
   }
 
   evaluate(
@@ -86,12 +139,23 @@ export class CapabilityAdvisor {
   ): CapabilityAdvisoryResult | undefined {
     if (config.mode === "disabled") return undefined;
     if (this.#firedTotal >= config.maxPerSession) return undefined;
+
+    // Warmth retention α·W applies every evaluated turn, matched or not.
+    for (const [namespace, current] of this.#warmth) {
+      const decayed = current * WARM_ALPHA;
+      if (decayed < WARM_FLOOR) this.#warmth.delete(namespace);
+      else this.#warmth.set(namespace, decayed);
+    }
+    // Smoke raises the weak-band ignition point: the furnace demands more
+    // sustained evidence after a streak of ignored fires.
+    const ignitionPoint = config.threshold * (1 + SMOKE_STEP * this.#smokeStreak);
+
     const promptTerms = [...new Set(tokenizeCapabilityText(stripSkillRegions(prompt)))];
     if (promptTerms.length === 0 || this.#index.sourceCount === 0) return undefined;
 
     const matches: CapabilityAdvisoryMatch[] = [];
     for (const source of this.#index.sources) {
-      if (this.#firedNamespaces.has(source.namespace)) continue;
+      if (this.#ash.has(source.namespace)) continue;
       // Score with 1/df term weights, not raw idf: idf magnitude collapses on
       // small captured catalogs (ln(4/2) < 1), silently starving matches below
       // the threshold, while 1/df keeps "two distinctive terms ≈ one source"
@@ -108,6 +172,15 @@ export class CapabilityAdvisor {
       // "recent") is vocabulary collision, not intent, and single-term fires
       // are the fastest route to banner blindness.
       if (matchedTerms.length < 2 || score < config.threshold) continue;
+
+      const strong = score >= config.threshold + WEAK_MATCH_BAND;
+      if (!strong) {
+        // Weak band: accumulate warmth this turn, ignite only at saturation.
+        const warmth = (this.#warmth.get(source.namespace) ?? 0) + (1 - WARM_ALPHA) * score;
+        this.#warmth.set(source.namespace, warmth);
+        if (warmth < ignitionPoint) continue;
+      }
+
       // Rank this source's tools by their own prompt-term overlap so the most
       // relevant refs lead (e.g. openai_websearch before openai_image on a
       // web-search prompt) instead of inherited catalog order.
@@ -216,7 +289,15 @@ export class CapabilityAdvisor {
       content = `${lines[0] ?? BASE_HEADER}\n${STEER_LINE}`;
     }
 
-    for (const match of included) this.#firedNamespaces.add(match.namespace);
+    for (const match of included) {
+      this.#ash.set(match.namespace, {
+        namespace: match.namespace,
+        origin: "fired",
+        at: new Date().toISOString(),
+      });
+      this.#warmth.delete(match.namespace);
+      this.#pendingFire.add(match.namespace);
+    }
     this.#firedTotal += 1;
     return {
       content,
