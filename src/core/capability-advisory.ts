@@ -17,8 +17,10 @@ const WEAK_MATCH_BAND = SCORE_QUANTUM;
 const MAX_ADVISORY_SOURCES = 2;
 const MAX_NAMES_PER_SOURCE = 2;
 const MAX_ADVISORY_NAMES = 3;
-const BASE_HEADER = "[Fabric capability hint]";
-const WEAK_HEADER = "[Fabric capability hint · possible match]";
+// pi-fovea pattern: the text is the message — no bracket label. Provenance
+// rides the transcript entry's custom type (pi-fabric-capability, mirroring
+// fovea's pi-fovea-sync); the headline verb carries the confidence spectrum
+// instead (strong "… matched your prompt." vs. weak "… might match your prompt.").
 
 // Combustion dynamics. The advisory is a finite battery: every fire spends a
 // namespace permanently (ash), so ignition is gated. Two primitives determine
@@ -324,17 +326,18 @@ export class CapabilityAdvisor {
       (a, b) => b.score - a.score || a.namespace.localeCompare(b.namespace),
     );
     const included = matches.slice(0, MAX_ADVISORY_SOURCES);
-    const header =
-      included[0] !== undefined && included[0].score >= config.threshold + WEAK_MATCH_BAND
-        ? BASE_HEADER
-        : WEAK_HEADER;
+    const strong =
+      included[0] !== undefined &&
+      included[0].score >= config.threshold + WEAK_MATCH_BAND;
 
     // Structured like fovea's sync advisories: a compact headline naming
-    // the matched sources, flat ▪-bulletish candidate rows, a Next: action
-    // pointing at the top ref, and a Steer: directive.
+    // the matched sources, flat ▪ bullet rows, a Next: action pointing at
+    // the top ref, and a Steer: directive.
     const headerSources = included.map((match) => match.label).join(", ");
     const headerTools = included.reduce((sum, match) => sum + match.names.length, 0);
-    const headerLine = `${header} ${headerSources} · ${headerTools} tool${headerTools === 1 ? "" : "s"} matched your prompt.`;
+    const headerLine = strong
+      ? `${headerSources} · ${headerTools} tool${headerTools === 1 ? "" : "s"} matched your prompt.`
+      : `${headerSources} · ${headerTools} tool${headerTools === 1 ? "" : "s"} might match your prompt.`;
     const blocks: SourceBlock[] = [];
     let shown = 0;
     for (const match of included) {

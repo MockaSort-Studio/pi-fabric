@@ -80,7 +80,7 @@ describe("CapabilityAdvisor", () => {
       fourth?.content.indexOf("openai_image") ?? Number.POSITIVE_INFINITY,
     );
     expect(fourth?.content).toContain("extensions.openai_websearch");
-    expect(fourth?.content).toContain("possible match");
+    expect(fourth?.content).toContain("might match your prompt.");
     expect(fourth?.display).toBe(false);
     // The strong first fire names the synthetic headline and action line.
     expect(first?.content).toContain(
@@ -89,12 +89,12 @@ describe("CapabilityAdvisor", () => {
     expect(first?.content).toContain(
       "Steer: prefer these captured tools over re-implementing the capability",
     );
-    expect(first?.content).toContain("[Fabric capability hint] pi-synthetic · 1 tool matched your prompt.");
+    expect(first?.content).toContain("pi-synthetic · 1 tool matched your prompt.");
     expect(first?.content).toContain(
       "▪ extensions.synthetic_web_search — Search the web using Synthetic's zero-data-retention API.",
     );
     expect(first?.content).not.toContain("(captured from");
-    expect(first?.content).not.toContain("possible match");
+    expect(first?.content).not.toContain("might match");
     expect(first?.display).toBe(false);
     const strongNamespaces: CapabilityAdvisoryMatch["namespace"][] =
       first?.details.matches.map((match) => match.namespace) ?? [];
@@ -116,12 +116,12 @@ describe("CapabilityAdvisor", () => {
   it("marks low-confidence matches as possible matches", () => {
     // query (rare) + results (shared) land between threshold and the strong
     // band, so warmth must accumulate: first exposure stays below the
-    // ignition point, the second ignites as a "possible match".
+    // ignition point, the second ignites in the might-match register.
     const instance = advisor();
     expect(instance.evaluate("query the results table please", config())).toBeUndefined();
     const result = instance.evaluate("query the results table please", config());
     expect(result).toBeDefined();
-    expect(result?.content).toContain("possible match");
+    expect(result?.content).toContain("might match your prompt.");
     expect(result?.content).toContain("extensions.db_query");
   });
 
@@ -185,14 +185,14 @@ describe("CapabilityAdvisor", () => {
     // named in an indented "~ +N more in <source>" counter (measured 103
     // tokens).
     const rich = advisor().evaluate("send and draft mail messages", config());
-    expect(rich?.content).toContain("[Fabric capability hint] pi-mail · 3 tools matched your prompt.");
+    expect(rich?.content).toContain("pi-mail · 3 tools matched your prompt.");
     expect(rich?.content).toContain("▪ extensions.mail_send — Send and draft mail messages.");
     expect(rich?.content).toContain("▪ extensions.mail_draft — Draft mail replies.");
     expect(rich?.content).toContain("  ~ +1 more in pi-mail: mail_list");
 
-    // Rung 1: bullets survive but descriptions drop (measured 103 → 89
-    // tokens, so a 100-token budget must force this rung).
-    const lean = advisor().evaluate("send and draft mail messages", config({ budget: 100 }));
+    // Rung 1: bullets survive but descriptions drop (measured 97 → 82
+    // tokens, so a 90-token budget must force this rung).
+    const lean = advisor().evaluate("send and draft mail messages", config({ budget: 90 }));
     expect(lean?.content).toContain("\n▪ extensions.mail_send\n");
     expect(lean?.content).not.toContain("Send and draft mail messages.");
     expect(lean?.content).toContain('Next: tools.describe({ref: "extensions.mail_send"})');
@@ -244,7 +244,9 @@ describe("CapabilityAdvisor", () => {
     const tight = a.evaluate("focus search the web and mail please", config({ budget: 128, threshold: 0.1 }));
     expect(tight).toBeDefined();
     expect(Math.ceil(tight!.content.length / 4)).toBeLessThanOrEqual(128);
-    expect(tight!.content.startsWith("[Fabric capability hint")).toBe(true);
+    // No bracket label on the headline — the floor is a plain Sources
+    // sentence followed by the steer directive.
+    expect(tight!.content.split("\n")[0]).toMatch(/(matched|might match) your prompt\.$/);
     expect(tight!.content).toContain("Steer:");
     // Details keep the unsqueezed picture even when the text is squeezed.
     expect(tight!.details.matches.length).toBeGreaterThan(0);
