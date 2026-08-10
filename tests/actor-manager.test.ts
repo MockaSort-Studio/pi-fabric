@@ -12,7 +12,9 @@ const roots: string[] = [];
 const actorManagers: ActorManager[] = [];
 const agentManagers: AgentManager[] = [];
 
-const waitFor = async (predicate: () => boolean, timeoutMs = 2_000): Promise<void> => {
+const DEFAULT_WAIT_MS = process.env.CI ? 10_000 : 2_000;
+
+const waitFor = async (predicate: () => boolean, timeoutMs = DEFAULT_WAIT_MS): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error("Timed out waiting for actor state");
@@ -1071,7 +1073,7 @@ describe("ActorManager", () => {
 describe("ActorManager steering relay", () => {
   const fakeWorker = path.resolve("tests/fixtures/fake-worker.mjs");
 
-  const waitFor = async (predicate: () => boolean, timeoutMs = 2_000): Promise<void> => {
+  const waitFor = async (predicate: () => boolean, timeoutMs = DEFAULT_WAIT_MS): Promise<void> => {
     const deadline = Date.now() + timeoutMs;
     while (!predicate()) {
       if (Date.now() >= deadline) throw new Error("Timed out waiting for steer relay");
