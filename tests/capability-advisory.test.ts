@@ -87,7 +87,10 @@ describe("CapabilityAdvisor", () => {
     expect(first?.content).toContain(
       "Steer: prefer these captured tools over re-implementing the capability",
     );
-    expect(first?.content).toContain("  pi-synthetic — extensions.synthetic_web_search");
+    expect(first?.content).toContain("  pi-synthetic\n");
+    expect(first?.content).toContain(
+      "└─ extensions.synthetic_web_search — Search the web using Synthetic's zero-data-retention API.",
+    );
     expect(first?.content).not.toContain("(captured from");
     expect(first?.content).not.toContain("possible match");
     expect(first?.display).toBe(false);
@@ -173,6 +176,30 @@ describe("CapabilityAdvisor", () => {
   it("summarises large sources with a more indicator", () => {
     const result = advisor().evaluate("send a mail draft please", config());
     expect(result?.content).toContain("+1 more");
+  });
+
+  it("renders candidates as an indented tree and degrades down the squeeze ladder", () => {
+    // Rung 0: tree with one description row per shown tool; leftover tools
+    // named in a "+N more" leaf that closes the source block.
+    const rich = advisor().evaluate("send and draft mail messages", config());
+    expect(rich?.content).toContain("  pi-mail\n");
+    expect(rich?.content).toContain("    ├─ extensions.mail_send — Send and draft mail messages.");
+    expect(rich?.content).toContain("    ├─ extensions.mail_draft — Draft mail replies.");
+    expect(rich?.content).toContain("    └─ +1 more: mail_list");
+
+    // Rung 1: tree shape survives but descriptions drop (measured 104 → 90
+    // tokens, so a 100-token budget must force this rung).
+    const lean = advisor().evaluate("send and draft mail messages", config({ budget: 100 }));
+    expect(lean?.content).toContain("    ├─ extensions.mail_send\n");
+    expect(lean?.content).not.toContain("Send and draft mail messages.");
+    expect(lean?.content).toContain("Next: tools.describe('mail_send')");
+
+    // Rung 2: flat per-source line, names only, Next: dropped (61 tokens).
+    const flat = advisor().evaluate("send and draft mail messages", config({ budget: 64 }));
+    expect(flat?.content).toContain(
+      "  pi-mail — extensions.mail_send, extensions.mail_draft, +1 more: mail_list",
+    );
+    expect(flat?.content).not.toContain("Next:");
   });
 
   it("picks up new sources on refresh without clearing fired state", () => {

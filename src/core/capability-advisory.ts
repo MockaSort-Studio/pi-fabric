@@ -81,8 +81,52 @@ const stripSkillRegions = (prompt: string): string => prompt.replace(SKILL_REGIO
 
 const estimateTokens = (text: string): number => Math.ceil(text.length / 4);
 
-const formatRef = (name: string, description: string): string =>
-  `${ADVISORY_REF_PREFIX}.${name} (${truncateAdvisoryDescription(description)})`;
+interface SourceBlock {
+  label: string;
+  names: string[];
+  descriptions: string[];
+  leftoverNames: string[];
+}
+
+// One source = one tree block: the source label, then one row per shown tool
+// (name, then the truncated description after an em-dash on the rich rung),
+// then a leaf counting — and naming — the tools that didn't make the cut.
+const renderTree = (blocks: SourceBlock[], withDescriptions: boolean): string[] => {
+  const lines: string[] = [];
+  for (const block of blocks) {
+    lines.push(`  ${block.label}`);
+    const rows = block.names.map((name, index) => {
+      const ref = `${ADVISORY_REF_PREFIX}.${name}`;
+      const description = block.descriptions[index] ?? "";
+      return withDescriptions && description
+        ? `${ref} — ${truncateAdvisoryDescription(description)}`
+        : ref;
+    });
+    if (block.leftoverNames.length > 0) {
+      const listed = block.leftoverNames.slice(0, 3).join(", ");
+      rows.push(
+        `+${block.leftoverNames.length} more: ${listed}${block.leftoverNames.length > 3 ? ", …" : ""}`,
+      );
+    }
+    rows.forEach((row, index) => {
+      lines.push(`    ${index === rows.length - 1 ? "└─" : "├─"} ${row}`);
+    });
+  }
+  return lines;
+};
+
+// Leanest non-trivial rung: one line per source, bare refs with leftovers
+// inline — the actionable identity of each capability, no prose.
+const renderFlat = (blocks: SourceBlock[]): string[] =>
+  blocks.map((block) => {
+    const refs = block.names.map((name) => `${ADVISORY_REF_PREFIX}.${name}`);
+    const listed = block.leftoverNames.slice(0, 3).join(", ");
+    const leftover =
+      block.leftoverNames.length > 0
+        ? `, +${block.leftoverNames.length} more: ${listed}${block.leftoverNames.length > 3 ? ", …" : ""}`
+        : "";
+    return `  ${block.label} — ${refs.join(", ")}${leftover}`;
+  });
 
 export class CapabilityAdvisor {
   #index: CapabilityIndex = buildCapabilityIndex([]);
@@ -230,65 +274,57 @@ export class CapabilityAdvisor {
         ? BASE_HEADER
         : WEAK_HEADER;
 
-    // Structured like fovea's sync advisories: headline, grouped candidate
-    // lines, a Next: action pointing at the top ref, and a Steer: directive.
-    const lines: string[] = [`${header} prompt terms matched captured tools.`, "Candidates:"];
+    // Structured like fovea's sync advisories: headline, a tree of
+    // candidates grouped by source, a Next: action pointing at the top ref,
+    // and a Steer: directive.
+    const headerLine = `${header} prompt terms matched captured tools.`;
+    const blocks: SourceBlock[] = [];
     let shown = 0;
     for (const match of included) {
-      const total = match.names.length;
-      const refs: string[] = [];
       const cappedNames: string[] = [];
       const cappedDescriptions: string[] = [];
-      for (let index = 0; index < total; index++) {
+      for (let index = 0; index < match.names.length; index++) {
         const name = match.names[index];
         if (
           name !== undefined &&
           cappedNames.length < MAX_NAMES_PER_SOURCE &&
           shown < MAX_ADVISORY_NAMES
         ) {
-          refs.push(formatRef(name, match.descriptions[index] ?? ""));
           cappedNames.push(name);
           cappedDescriptions.push(match.descriptions[index] ?? "");
           shown++;
         }
       }
-      match.omitted = total - cappedNames.length;
+      match.omitted = match.names.length - cappedNames.length;
+      const leftoverNames = match.names.slice(cappedNames.length);
       match.names = cappedNames;
       match.descriptions = cappedDescriptions;
-      lines.push(
-        `  ${match.label} — ${refs.join(", ")}${match.omitted > 0 ? `, +${match.omitted} more` : ""}`,
-      );
+      blocks.push({
+        label: match.label,
+        names: cappedNames,
+        descriptions: cappedDescriptions,
+        leftoverNames,
+      });
     }
 
-    const topName = included[0]?.names[0];
-    let nextLine = "";
-    if (topName !== undefined) {
-      nextLine = `Next: tools.describe('${topName}') for its schema, then ${ADVISORY_REF_PREFIX}.${topName}({…}) inside fabric_exec.`;
-    }
+    const topName = blocks[0]?.names[0];
+    const nextLine =
+      topName === undefined
+        ? ""
+        : `Next: tools.describe('${topName}') for its schema, then ${ADVISORY_REF_PREFIX}.${topName}({…}) inside fabric_exec.`;
 
-    // Budget squeeze (fovea pattern): drop trailing candidate lines first,
-    // then bare-name refs, then the Next: line, always keeping the header and
-    // steer. Details keep the full (pre-squeeze) picture regardless.
-    const sourceCount = lines.length - 2; // headline + "Candidates:" at index 0-1
+    // Budget squeeze (fovea pattern): walk the ladder until a rung fits —
+    // tree with descriptions → tree, names only → flat names-only per source
+    // (dropping Next: alongside the tree) → header + steer as the floor.
+    // Details keep the full (pre-squeeze) picture regardless.
+    const rungs: string[][] = [
+      [...renderTree(blocks, true), ...(nextLine ? [nextLine] : [])],
+      [...renderTree(blocks, false), ...(nextLine ? [nextLine] : [])],
+      renderFlat(blocks),
+    ];
     let content = "";
-    for (let drop = 0; drop <= sourceCount + 1; drop++) {
-      const kept = lines.slice(0, 2 + Math.max(0, sourceCount - drop));
-      const descriptionFree = drop > sourceCount;
-      const rendered = descriptionFree
-        ? [
-            ...kept.slice(0, 2),
-            ...included.map(
-              (match) =>
-                `  ${match.label} — ${match.names
-                  .map((name) => `${ADVISORY_REF_PREFIX}.${name}`)
-                  .join(", ")}`,
-            ),
-          ]
-        : kept;
-      const parts = [...rendered];
-      if (!descriptionFree && nextLine) parts.push(nextLine);
-      parts.push(STEER_LINE);
-      const candidate = parts.join("\n");
+    for (const rung of rungs) {
+      const candidate = [headerLine, "Candidates:", ...rung, STEER_LINE].join("\n");
       if (estimateTokens(candidate) <= config.budget) {
         content = candidate;
         break;
@@ -296,7 +332,7 @@ export class CapabilityAdvisor {
     }
     if (!content) {
       // Pathological budget: header + steer only, refs survive in details.
-      content = `${lines[0] ?? BASE_HEADER}\n${STEER_LINE}`;
+      content = `${headerLine}\n${STEER_LINE}`;
     }
 
     for (const match of included) {
