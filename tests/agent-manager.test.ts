@@ -313,6 +313,45 @@ describe("AgentManager", () => {
     ).toBe("1");
   });
 
+  it("retries a child whose transport exits before producing a result", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker-transport-death.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    const result = await manager.run({ task: "Recoverable boot death", transport: "process" });
+
+    expect(result.status).toBe("completed");
+    expect(result.text).toBe("transport death retry recovered");
+    expect(
+      fs.readFileSync(path.join(manager.runDirectory(result.id)!, "startup-attempts"), "utf8"),
+    ).toBe("2");
+  },
+  30_000);
+
+  it("gives up retrying a child whose transport always exits before producing a result", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker-transport-death.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    const result = await manager.run({ task: "Terminal boot death", transport: "process" });
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("Agent transport exited without a result");
+    // AGENT_STARTUP_MAX_ATTEMPTS counts the initial launch: exactly 3 total.
+    expect(
+      fs.readFileSync(path.join(manager.runDirectory(result.id)!, "startup-attempts"), "utf8"),
+    ).toBe("3");
+  },
+  30_000);
+
   it("keeps full results in the API and compact projections for the dashboard", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
@@ -725,7 +764,8 @@ describe("AgentManager", () => {
     expect(result.error).toContain("exited without a result");
     expect(result.error).toContain("model rate limit exceeded");
     expect(result.error).toContain("worker_stderr: provider authentication failed retry required");
-  });
+  },
+  30_000);
 
   it("rejects empty tasks", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));

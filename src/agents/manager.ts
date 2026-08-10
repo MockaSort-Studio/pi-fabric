@@ -146,6 +146,11 @@ const terminalStatuses = new Set(["completed", "failed", "stopped", "timed_out"]
 const delay = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+const TRANSPORT_EXITED_WITHOUT_RESULT_PREFIX = "Agent transport exited without a result";
+
+const transportExitedWithoutResult = (error: string | undefined): boolean =>
+  typeof error === "string" && error.startsWith(TRANSPORT_EXITED_WITHOUT_RESULT_PREFIX);
+
 const retryablePiStartupError = (error: string | undefined): boolean =>
   typeof error === "string" &&
   /\b(?:no|missing)\s+(?:api key|credentials?)\b|\b(?:api key|credentials?)\s+(?:was\s+)?not found\b/i.test(
@@ -944,13 +949,15 @@ export class AgentManager {
     deadline: number,
   ): Promise<boolean> {
     if (
-      managed.runner !== "pi" ||
       managed.startupAttempts >= AGENT_STARTUP_MAX_ATTEMPTS ||
       managed.settled ||
       this.#closing ||
       managed.abortSignal?.aborted ||
       record.status !== "failed" ||
-      !retryablePiStartupError(record.error) ||
+      !(
+        (managed.runner === "pi" && retryablePiStartupError(record.error)) ||
+        transportExitedWithoutResult(record.error)
+      ) ||
       record.turns !== 0 ||
       record.toolCalls !== 0 ||
       record.usage.input !== 0 ||
@@ -1059,6 +1066,7 @@ export class AgentManager {
                 ? `Agent transport exited without a result; last run log: ${logSummary}`
                 : "Agent transport exited without a result",
             );
+            if (await this.#retryStartup(managed, failed, deadline)) continue;
             writeRecord(managed.statusFile, failed);
             this.#settle(managed, failed);
             return;
