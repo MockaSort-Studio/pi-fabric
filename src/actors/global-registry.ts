@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { writeJsonAtomic } from "../core/atomic-write.js";
 import type { FabricAgentTransport } from "../config.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
 import { resolveActorDeliveryPolicy } from "./delivery-policy.js";
@@ -33,13 +34,7 @@ interface RegistryFile {
 }
 
 const atomicWrite = (filePath: string, value: unknown): void => {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  fs.writeFileSync(temporaryPath, JSON.stringify(value, null, 2), {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  fs.renameSync(temporaryPath, filePath);
+  writeJsonAtomic(filePath, value, { space: 2 });
 };
 
 const clone = <T>(value: T): T => structuredClone(value);

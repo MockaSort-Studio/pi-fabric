@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeJsonAtomic } from "../core/atomic-write.js";
 import {
   DEFAULT_FABRIC_CONFIG,
   MAX_AGENT_TIMEOUT_MS,
@@ -270,13 +271,7 @@ const summarizeRunLog = (runDirectory: string, lines: number): string => {
 };
 
 const writeRecord = (filePath: string, record: AgentRunRecord): void => {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const temporaryPath = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(temporaryPath, JSON.stringify(record, null, 2), {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  fs.renameSync(temporaryPath, filePath);
+  writeJsonAtomic(filePath, record, { space: 2 });
 };
 
 const failedRecord = (

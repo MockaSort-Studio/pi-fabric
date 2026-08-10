@@ -330,12 +330,30 @@ describe("ParticipantDirectory", () => {
     ]);
 
     await alpha.start();
+    // Mesh writes can lag a fresh enumeration on CI-bound filesystems
+    // (Windows readdir caching): beta's first refresh relies on the occupancy
+    // guard seeing alpha's records, so wait until beta's on-disk mesh view
+    // actually contains alpha before contention starts — otherwise a blind
+    // first write can converge on the wrong owner and never self-correct.
+    await vi.waitFor(
+      () => {
+        expect(beta.mesh.listAll("topology/participants/").length).toBeGreaterThanOrEqual(2);
+      },
+      { timeout: 5_000, interval: 50 },
+    );
     await beta.start();
     expect(beta.get("actor:shared")).toMatchObject({ ownerHostId: "session:alpha" });
 
     await alpha.close();
-    await beta.refresh();
-    expect(beta.get("actor:shared")).toMatchObject({ ownerHostId: "session:beta" });
+    // The takeover itself is another write-then-readback hop: poll refresh +
+    // read until the delete propagates and beta claims the record.
+    await vi.waitFor(
+      async () => {
+        await beta.refresh();
+        expect(beta.get("actor:shared")).toMatchObject({ ownerHostId: "session:beta" });
+      },
+      { timeout: 5_000, interval: 50 },
+    );
   });
 
   it("hides every participant owned by an expired host lease", async () => {
@@ -354,7 +372,12 @@ describe("ParticipantDirectory", () => {
     ]);
     await directory.start();
 
-    expect(directory.list({ scope: "project" })).toHaveLength(2);
+    // Same filesystem readback lag: poll until the fresh enumeration shows
+    // both records instead of asserting one shot.
+    await vi.waitFor(() => expect(directory.list({ scope: "project" })).toHaveLength(2), {
+      timeout: 5_000,
+      interval: 50,
+    });
     expect(directory.list({ scope: "project" }, Date.now() + 1_000)).toEqual([]);
     const stale = directory.list(
       { scope: "project", includeStale: true },

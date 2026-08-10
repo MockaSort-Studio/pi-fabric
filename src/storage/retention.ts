@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { writeJsonAtomic } from "../core/atomic-write.js";
 
 export const FABRIC_RUN_ROOT_PREFIX = "pi-fabric-runs-";
 const RUN_ROOT_OWNER_FILE = ".fabric-owner.json";
@@ -46,15 +47,7 @@ const processAlive = (pid: number): boolean => {
 };
 
 const writeOwner = (root: string, owner: RunRootOwner): void => {
-  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
-  const target = ownerPath(root);
-  const temporary = target + "." + process.pid + ".tmp";
-  try {
-    fs.writeFileSync(temporary, JSON.stringify(owner), { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(temporary, target);
-  } finally {
-    try { fs.rmSync(temporary, { force: true }); } catch {}
-  }
+  writeJsonAtomic(ownerPath(root), owner);
 };
 
 export const markRunRootActive = (root: string, now = Date.now()): void => {

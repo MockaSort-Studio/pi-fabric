@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeJsonAtomic } from "../core/atomic-write.js";
 import type { FabricAgentLog, AgentHandleInfo, AgentRunRecord, AgentRunRequest, AgentRunResult } from "../agents/types.js";
 import { executeFile, processIsAlive, spawnDetached } from "../agents/transports/process-utils.js";
 import { readJsonlPage } from "../log-tail.js";
@@ -30,13 +31,7 @@ const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 const atomicWrite = (filePath: string, value: unknown): void => {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(value, null, 2), {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  fs.renameSync(temporary, filePath);
+  writeJsonAtomic(filePath, value, { space: 2 });
 };
 
 const readJson = <T>(filePath: string): T | undefined => {

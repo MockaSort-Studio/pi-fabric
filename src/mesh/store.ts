@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { writeFileAtomic } from "../core/atomic-write.js";
 import { readJsonlPage } from "../log-tail.js";
 
 export interface MeshIdentity {
@@ -164,17 +165,11 @@ const readState = (filePath: string, maxBytes: number): MeshStateFile => {
 };
 
 const atomicWrite = (filePath: string, value: unknown, maxBytes = Number.POSITIVE_INFINITY): void => {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   const serialized = JSON.stringify(value, null, 2);
   if (Buffer.byteLength(serialized, "utf8") > maxBytes) {
     throw new Error(`Fabric mesh state exceeds ${maxBytes} bytes`);
   }
-  fs.writeFileSync(temporaryPath, serialized, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  fs.renameSync(temporaryPath, filePath);
+  writeFileAtomic(filePath, serialized);
 };
 
 const compactStateTombstones = (state: MeshStateFile, maxTombstones: number): void => {

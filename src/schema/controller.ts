@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { writeJsonAtomic } from "../core/atomic-write.js";
 import type { FabricSchemaConfig, FabricSchemaTrustedCommand } from "../config.js";
 import type { MeshIdentity, MeshStateEntry, MeshStore } from "../mesh/store.js";
 import type { FabricInvocationContext } from "../protocol.js";
@@ -55,10 +56,7 @@ const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 const atomicJsonWrite = (filePath: string, value: unknown): void => {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(value)}\n`, { mode: 0o600 });
-  fs.renameSync(temporary, filePath);
+  writeJsonAtomic(filePath, value, { newline: true });
 };
 
 const allowedEnforceRefs = new Set([

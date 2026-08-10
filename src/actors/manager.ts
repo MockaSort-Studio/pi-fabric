@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs, { type FSWatcher } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { writeJsonAtomic } from "../core/atomic-write.js";
 import {
   DEFAULT_FABRIC_CONFIG,
   type FabricAgentRunner,
@@ -109,13 +110,7 @@ const errorCode = (error: unknown): string | undefined =>
     : undefined;
 
 const atomicWrite = (filePath: string, value: unknown): void => {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  fs.writeFileSync(temporaryPath, JSON.stringify(value, null, 2), {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  fs.renameSync(temporaryPath, filePath);
+  writeJsonAtomic(filePath, value, { space: 2 });
 };
 
 const readRunRecord = (filePath: string): AgentRunRecord | undefined => {

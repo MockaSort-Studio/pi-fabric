@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { renameAtomic } from "./core/atomic-write.js";
 import { PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
 import {
   CURRENT_FABRIC_CONFIG_VERSION,
@@ -1045,7 +1046,7 @@ const writeJsonAtomic = (
         throw new Error(`Fabric configuration changed while updating ${filePath}`);
       }
     }
-    fs.renameSync(temporaryPath, resolvedPath);
+    renameAtomic(temporaryPath, resolvedPath);
     try {
       const directoryDescriptor = fs.openSync(directory, "r");
       try {

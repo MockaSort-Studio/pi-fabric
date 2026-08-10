@@ -52,7 +52,45 @@ export const writeRunRecord = (filePath: string, record: AgentRunRecord): void =
     encoding: "utf8",
     mode: 0o600,
   });
-  fs.renameSync(temporaryPath, filePath);
+  renameWithRetry(temporaryPath, filePath);
+};
+
+// Windows transiently rejects rename() with EPERM/EACCES/EEXIST/EBUSY while
+// an antivirus scan or sibling reader probes the destination file —
+// milliseconds of contention, not policy. Retry a bounded linear backoff
+// before surfacing.
+//
+// Self-contained on purpose: this module is dynamically imported by the
+// spawned worker through plain Node with worker.ts switching the import
+// extension, so it must not depend on ../core/atomic-write.js. Keep the shared
+// implementation for the host side and this copy for the worker boundary.
+const RETRYABLE_RENAME_CODES = new Set(["EPERM", "EACCES", "EEXIST", "EBUSY"]);
+
+const syncSleep = (ms: number): void => {
+  try {
+    const buffer = new Int32Array(new SharedArrayBuffer(4));
+    Atomics.wait(buffer, 0, 0, ms);
+  } catch {
+    // Atomics.wait unavailable: retry immediately — correct, just busier.
+  }
+};
+
+const renameWithRetry = (source: string, target: string): void => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      fs.renameSync(source, target);
+      return;
+    } catch (error) {
+      const code =
+        typeof error === "object" && error !== null && "code" in error
+          ? String((error as { code?: unknown }).code)
+          : undefined;
+      if (attempt >= 8 || code === undefined || !RETRYABLE_RENAME_CODES.has(code)) {
+        throw error;
+      }
+      syncSleep(25 * attempt);
+    }
+  }
 };
 
 export const updateRunRecord = (filePath: string, record: AgentRunRecord): void => {
