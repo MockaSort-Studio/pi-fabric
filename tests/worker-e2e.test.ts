@@ -25,10 +25,10 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
   });
 
-  const run = async (task = "do it"): Promise<AgentRunResult> => {
+  const run = async (task = "do it", timeoutMs = 2_000): Promise<AgentRunResult> => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 2000, maxConcurrent: 1 };
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs, maxConcurrent: 1 };
     const manager = new AgentManager(process.cwd(), config, {
       workerPath,
       piBinary,
@@ -38,7 +38,11 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     return manager.run({ task, transport: "process" });
   };
 
-  const cases: Array<{ behavior: string; check: (r: AgentRunResult) => void }> = [
+  const cases: Array<{
+    behavior: string;
+    timeoutMs?: number;
+    check: (r: AgentRunResult) => void;
+  }> = [
     {
       behavior: "success",
       check: (r) => {
@@ -103,6 +107,11 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     },
     {
       behavior: "kill-worker",
+      // Room for attribution: on a slow CI box the spawned worker + fake-pi
+      // chain plus the retry consult can brush a 2s wall, letting the generic
+      // run deadline beat the transport-death verdict. 8s keeps "failed" vs
+      // "timed_out" deterministic while still bounded.
+      timeoutMs: 8_000,
       check: (r) => {
         // The worker was hard-killed mid-run: it died before writing a terminal
         // status, so #monitor records the generic failure (with the run-log tail
@@ -113,9 +122,9 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     },
   ];
 
-  it.each(cases)("maps child behavior $behavior to the correct run outcome", async ({ behavior, check }) => {
+  it.each(cases)("maps child behavior $behavior to the correct run outcome", async ({ behavior, timeoutMs, check }) => {
     process.env.FAKE_PI_BEHAVIOR = behavior;
-    const result = await run();
+    const result = await run("do it", timeoutMs);
     try {
       check(result);
     } catch (error) {
@@ -123,7 +132,7 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
         `${behavior}: ${(error as Error).message} (status=${result.status} error=${result.error ?? ""})`,
       );
     }
-  });
+  }, 30_000);
 
   it.each([
     { behavior: "compact-success", outcome: "completed", error: undefined },
