@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { FabricToolOwnership } from "../src/core/tool-ownership.js";
+import {
+  createToolOwnershipReassertion,
+  FabricToolOwnership,
+} from "../src/core/tool-ownership.js";
 
 const hostWith = (initial: string[]) => {
   let active = [...initial];
@@ -111,5 +114,50 @@ describe("FabricToolOwnership", () => {
     expect(state.active()).toEqual(["read", "ask_user_question", "fabric_exec"]);
 
     expect(ownership.release()).toBe(false);
+  });
+});
+
+describe("createToolOwnershipReassertion", () => {
+  it("no-ops scheduled reassertions that run before the host is ready", async () => {
+    // Registry rebuilds fire during extension load, before session_start
+    // initializes Fabric state; the deferred reassertion must not read config.
+    let ready = false;
+    const apply = vi.fn();
+    const { schedule } = createToolOwnershipReassertion({
+      ready: () => ready,
+      active: () => true,
+      hiddenNames: () => new Set(["ask_user_question"]),
+      apply,
+    });
+
+    schedule();
+    await Promise.resolve();
+    expect(apply).not.toHaveBeenCalled();
+
+    ready = true;
+    schedule();
+    await Promise.resolve();
+    expect(apply).toHaveBeenCalledOnce();
+    expect(apply).toHaveBeenCalledWith(new Set(["ask_user_question"]));
+  });
+
+  it("dedupes simultaneous schedules and skips reassertion while inactive", async () => {
+    let active = false;
+    const apply = vi.fn();
+    const { reassert, schedule } = createToolOwnershipReassertion({
+      ready: () => true,
+      active: () => active,
+      hiddenNames: () => new Set(["deploy_release"]),
+      apply,
+    });
+
+    schedule();
+    schedule();
+    await Promise.resolve();
+    expect(apply).not.toHaveBeenCalled();
+
+    active = true;
+    reassert();
+    expect(apply).toHaveBeenCalledOnce();
   });
 });

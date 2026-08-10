@@ -103,6 +103,38 @@ export class FabricToolLifecycle {
 const sameTools = (left: string[], right: string[]): boolean =>
   left.length === right.length && left.every((name, index) => name === right[index]);
 
+export interface ToolOwnershipReassertion {
+  reassert(): void;
+  schedule(): void;
+}
+
+// Re-asserts active-set ownership after registry refreshes and at turn
+// boundaries. Refresh-driven microtasks can run before the host finished
+// initializing (registry rebuilds happen before session_start), when neither
+// the live config nor the active tool set is safe to touch — `ready` guards
+// every entry point, including the deferred microtask.
+export const createToolOwnershipReassertion = (options: {
+  ready: () => boolean;
+  active: () => boolean;
+  hiddenNames: () => ReadonlySet<string>;
+  apply: (hidden: ReadonlySet<string>) => boolean;
+}): ToolOwnershipReassertion => {
+  let queued = false;
+  const reassert = (): void => {
+    queued = false;
+    if (!options.ready() || !options.active()) return;
+    options.apply(options.hiddenNames());
+  };
+  return {
+    reassert,
+    schedule: () => {
+      if (queued) return;
+      queued = true;
+      queueMicrotask(reassert);
+    },
+  };
+};
+
 export class FabricToolOwnership {
   #savedNativeCoreTools: Array<{ name: string; index: number }> | undefined;
   // Captured extension tools stay registered so host extensions (permission

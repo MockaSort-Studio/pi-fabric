@@ -25,6 +25,7 @@ import {
 import { registerCompactionHook } from "./compaction/hook.js";
 import { compactAtConfiguredThreshold } from "./compaction/threshold.js";
 import {
+  createToolOwnershipReassertion,
   FabricToolLifecycle,
   FabricToolOwnership,
   ownsFabricToolSource,
@@ -119,19 +120,19 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   };
   // Pi auto-activates tools that newly appear in the registry on every tool
   // refresh; re-assert ownership afterwards so captured tools stay hidden from
-  // the model even when a late-loading extension triggers a refresh.
-  let ownershipReassertQueued = false;
-  const reassertToolOwnership = (): void => {
-    ownershipReassertQueued = false;
-    const policy = capturePolicy();
-    if (!policy.enabled || !policy.hideFromModel || !fabricOwnsModelTools()) return;
-    toolOwnership.apply(true, hiddenCapturedToolNames());
-  };
-  const scheduleOwnershipReassert = (): void => {
-    if (ownershipReassertQueued) return;
-    ownershipReassertQueued = true;
-    queueMicrotask(reassertToolOwnership);
-  };
+  // the model even when a late-loading extension triggers a refresh. Refresh
+  // callbacks arrive before session initialization too, so reassertion waits
+  // for state to be ready rather than reading an uninitialized config.
+  const { reassert: reassertToolOwnership, schedule: scheduleOwnershipReassert } =
+    createToolOwnershipReassertion({
+      ready: () => state.initialized,
+      active: () => {
+        const policy = capturePolicy();
+        return policy.enabled && policy.hideFromModel && fabricOwnsModelTools();
+      },
+      hiddenNames: hiddenCapturedToolNames,
+      apply: (hidden) => toolOwnership.apply(true, hidden),
+    });
 
   const unsubscribeProviderRegistration = pi.events.on(
     FABRIC_PROVIDER_REGISTER_EVENT,
