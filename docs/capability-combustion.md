@@ -1,68 +1,67 @@
-# Capability combustion — the math behind fabric's advisory hints
+# Capability combustion: the math behind fabric's advisory hints
 
-This document walks the advisory model: the tf-idf scoring under the matches, the
-ignition bands, the warmth accumulation that gates weak evidence, the ash record
-that makes fires permanent, organic poisoning when the model self-discovers a
-capability, and the furnace feedback that raises ignition after ignored fires.
-Implementation references point at `src/core/capability-advisory.ts`.
+This document walks through the advisory model: term scoring, ignition bands,
+the warmth accumulator that gates weak evidence, the ash record, organic
+poisoning when the model finds a capability on its own, and the furnace
+feedback that raises the ignition point after ignored hints. The
+implementation lives in `src/core/capability-advisory.ts`.
 
-## Why a battery, not a sensor
+## A finite reservoir per capability
 
-[pi-fovea](https://github.com/monotykamary/pi-fovea) is a *sensor*: it watches the repo continuously and must filter
-frame-rate noise from a high-throughput signal (every edit is an event). Its heat
-dynamics exist to stop bad steers from cascading.
+[pi-fovea](https://github.com/monotykamary/pi-fovea) is a sensor. It watches the repo
+continuously, so it filters frame-rate noise out of a high-throughput signal.
+Its heat dynamics stop bad steers from cascading.
 
-pi-fabric's capability advisory faces the opposite regime. Emission is tightly
-bounded (`maxPerSession`, default 3 per session), and — since fire-once state
-persists — every hint burns a capability's namespace *permanently*. The advisory
-is a battery: it holds a finite reservoir of information value, one spot per
-capability, that only depletes. The cost of a false fire isn't noise; it's
-potential-information irrecoverably spent. So the system is engineered around one
-invariant: **never waste a burn.**
+The capability advisory faces the opposite regime. Emission is bounded
+(`maxPerSession`, default 3 per session), and every hint spends a namespace
+for the rest of the session. Each capability is a single battery cell of
+information value, and it only drains. A false fire spends information the
+model never gets back. One invariant drives the whole design: fire a hint only
+when the available evidence says it will be used.
 
 ## Scoring: 1/df term weighting
 
-Captured tools are fingerprinted by source namespace (the plugin they belong to):
-each source's corpus is its tools' names plus descriptions. A prompt scores
-against each unburned source as the sum of matched-term weights:
+Captured tools are fingerprinted by source namespace. Each source's corpus is
+its tools' names plus descriptions. A prompt scores against each unburned
+source as the sum of matched-term weights:
 
 $$
 s(p, j) = \sum_{t \in T(p) \cap T(j)} \frac{1}{\mathrm{df}(t)}, \qquad \mathrm{df}(t) = \Bigl|\{ j : t \in T(j) \}\Bigr|
 $$
 
-The weight is *plain* $1/\mathrm{df}$, not $\ln(N/\mathrm{df})$ tf-idf. Classic idf
-collapses on tiny captured catalogs: with four sources, $\ln(4/2) < 1$, so rare
-terms score less than common ones below the threshold and matches starve
-silently. $1/\mathrm{df}$ keeps "two distinctive terms ≈ one source" meaningful at
-any catalog size.
+The weight is plain $1/\mathrm{df}$, with no logarithm. The catalog is too
+small for classic idf: with four sources, $\ln(4/2) < 1$, so a rare term would
+score below a common one and matches would starve. Weight $1/\mathrm{df}$
+keeps "two distinctive terms about equal to one source" true at any catalog
+size.
 
 Pre-ignition filters:
 
 - **Skill-envelope strip.** Pi expands loaded skills into the prompt as XML
-  (`<available_skills>…</available_skills>`, `<skill>…</skill>`). That's ambient
-  context, not intent; letting it through poisons the fingerprint with the
-  skill's own vocabulary. Regions are removed before tokenization (unclosed
-  trailing tags count as stripped too).
-- **≥2 matched terms.** A lone distinctive word ("project", "recent") is
-  vocabulary collision, not intent.
-- **Stopword filtering** at tokenization (see `capability-fingerprint.ts`).
+  (`<available_skills>…</available_skills>`, `<skill>…</skill>`). That is
+  ambient context rather than user intent, and its vocabulary would poison the
+  fingerprint. The matcher removes those regions before tokenization. An
+  unclosed trailing tag counts as stripped too.
+- **At least two matched terms.** A single distinctive word such as "project"
+  or "recent" is a vocabulary coincidence. It is not intent.
+- **Stopword filtering** during tokenization (see `capability-fingerprint.ts`).
 
 ## Ignition bands and warmth
 
 ### Two primitives generate everything
 
-The dynamics look parameter-heavy — band width, retention, smoke step, streak
-cap, session cap — but they all project from **two primitives**, plus the
+The dynamics hold several constants: band width, retention, smoke step, streak
+cap, session cap. Every one of them projects from two primitives plus the
 user-facing $\theta$:
 
-1. **The score quantum $q = 1$.** Under $1/\mathrm{df}$ scoring a *source-unique*
-   term weighs exactly $1/1 = 1$: the smallest unit of unambiguous evidence the
-   scorer can express. The weak band is exactly one quantum wide, $B = q = 1$ —
-   strong = weak + one quantum of certainty. A weak match that gains even a
-   single truly-unique term crosses into instant ignition.
-2. **The memory scale $\tau = 2$ turns.** Every temporal behavior below is one
-   exponential integrator with retention $1 - 1/\tau$. All other constants
-   derive from it:
+1. **The score quantum $q = 1$.** Under $1/\mathrm{df}$ scoring, a term found
+   in exactly one source weighs $1/1 = 1$. That is the smallest unit of
+   unambiguous evidence the scorer can express. The weak band is one quantum
+   wide, $B = q = 1$, so a weak match gains instant ignition as soon as one
+   more source-unique term appears.
+2. **The memory scale $\tau = 2$ turns.** Every temporal behavior below is the
+   same exponential integrator with retention $1 - 1/\tau$. The table shows
+   how the remaining constants come out:
 
 | Constant | Value | Projection |
 |---|---|---|
@@ -71,119 +70,116 @@ user-facing $\theta$:
 | weak band $B$ | 1.0 | $q = 1$ |
 | smoke step | $0.25\theta$ | $\theta/\tau^2$ |
 | smoke streak cap | 4 | $\tau^2$ |
-| max furnace raise | $\theta$ | $(\theta/\tau^2)\cdot\tau^2$ — $\tau$-invariant |
+| max furnace raise | $\theta$ | $(\theta/\tau^2)\cdot\tau^2$, equal to $\theta$ for every $\tau$ |
 | default session cap | 3 | $2\tau - 1$ |
 
-The second-to-last row is the point of the lift: total furnace authority is
-bounded at exactly $\theta$ *no matter what $\tau$ is* — patience changes how
-quickly the furnace responds, never how hot it may run. And the $\tau$ vs
-$\tau^2$ split has a statistical reading: **first-order signals average over
-$\tau$ samples; second-order feedback calibrates over $\tau^2$.** Warmth tracks
-a mean ("is the user on this topic") and O($\tau$) turns suffice; smoke
-estimates a bias ("do this namespace's hints get used") whose variance
-converges like $1/n$, so the thermostat needs the squared budget.
+Two rows justify the lift. The furnace's total authority comes out at exactly
+$\theta$ no matter which value $\tau$ takes, so more patience slows the
+response and leaves the ceiling in place. The split between $\tau$ and
+$\tau^2$ has a statistical reading. Warmth estimates a mean, and O($\tau$)
+turns of signal suffice for that. Smoke estimates a usage bias whose variance
+falls like $1/n$; a convergent estimate of bias wants the squared budget
+before the thermostat hardens against a namespace.
 
-Let $\theta$ be the configured `threshold` (default 0.9) and $B = q = 1$ the weak
-match band. Each turn, each unburned source with $s \geq \theta$ falls into one of
-two bands:
+Let $\theta$ be the configured `threshold` (default 0.9) and $B = q = 1$ the
+weak-band width. Each turn, every unburned source with $s \geq \theta$ falls
+into one of two bands:
 
 | Band | Condition | Behavior |
 |---|---|---|
-| Strong | $s \geq \theta + B$ | **Ignites instantly.** Multi-term overlap is strong evidence; delay would hurt real use. |
-| Weak | $\theta \leq s < \theta + B$ | Must accumulate **warmth** until it exceeds the ignition point $\theta_i$. |
+| Strong | $s \geq \theta + B$ | **Ignites at once.** Multi-term overlap is strong evidence, and any delay would hurt real use. |
+| Weak | $\theta \leq s < \theta + B$ | Must accumulate **warmth** until it passes the ignition point $\theta_i$. |
 
 Warmth convolves the per-turn score signal with the unit-mass exponential
 kernel $K_\tau(j) = \tfrac{1}{\tau}\bigl(1 - \tfrac{1}{\tau}\bigr)^j$ over
-*evaluated turns* (advisory-eligible prompts) — a first-order low-pass filter,
-$\alpha = 1 - 1/\tau = 0.5$ at the default (half-life one turn):
+evaluated turns, meaning prompts the advisory processed. That is a first-order
+low-pass filter with $\alpha = 1 - 1/\tau = 0.5$ at the default, a half-life
+of one turn:
 
 $$
 W_k = (1-\alpha)\, s_k + \alpha\, W_{k-1} = (K_\tau * s)_k, \qquad s_k =
 \begin{cases} s \geq \theta & \text{weak-band score this turn} \\ 0 & \text{otherwise} \end{cases}
 $$
 
-Weak ignition fires when $W_k \geq \theta_i$ (the ignition point; by default
-$\theta_i = \theta$). Interpretation: sustained exposure asymptotes W to $s$:
-$W_k \to s\,(1 - \alpha^k)$, so a sustained weak signal crossing time is
+Weak ignition fires when $W_k \geq \theta_i$, with $\theta_i = \theta$ by
+default. Sustained exposure pushes W towards s: $W_k \to s\,(1 - \alpha^k)$.
+The crossing time for a held weak signal works out to
 $k_{\text{ignite}} = \big\lceil \ln(1 - \theta_i/s)\,/\,\ln(1 - 1/\tau) \big\rceil$.
-At $\tau = 2$, $\theta = 0.9$: the floor of the band ($s = 1.0$) needs 4 turns,
-the upper band ($s \geq 1.25$) needs 2, and the strong band needs 0 — one
-formula, three regimes. A one-off vocabulary collision spikes once and cools
-before crossing. Dropping the topic mid-decay halves W per turn; returning to
-it re-warms from the residue rather than restarting.
+With $\tau = 2$ and $\theta = 0.9$ the formula gives 4 turns for a signal at
+the band floor ($s = 1.0$), 2 turns for the upper band ($s \geq 1.25$), and 0
+for a strong match. A single vocabulary coincidence spikes once and cools
+before it crosses. Dropping the topic mid-decay halves W each turn, and
+picking the topic back up continues from the residue.
 
-τ interpolates between regimes: $\tau \to 1$ is memoryless (no gating, warmth
-just re-reads the last score); large $\tau$ never ignites on anything transient.
-The mean of $K_\tau$ spans $\tau$ turns, so $\tau = 2$ says: trust a mean taken
-over roughly the last two turns.
+$\tau$ slides between two behaviors. At $\tau \to 1$ the scheme is memoryless
+and warmth just re-reads the last score. A large $\tau$ refuses anything
+transient. The kernel's mean spans $\tau$ turns, so $\tau = 2$ reads as: trust
+a mean taken over roughly the last two turns.
 
 With the default fixture terms, "query the results table please" scores
-$s = 1.333$ (weak band): the EWMA crosses $0.9$ only on the second tidy prompt,
-and cool-off while the user edits code delays the fire as intended.
+$s = 1.333$ (weak band). The EWMA crosses $0.9$ only on the second tidy
+prompt, and a cool-off while the user edits code delays the fire the way the
+design intends.
 
-## Ash: session-scoped suppression — the transcript is the ledger
+## Ash: session-scoped suppression, with the transcript as the ledger
 
-Fired namespaces are burned, and the burn record lives in the session's own
-transcript — there is no side store:
+Fired namespaces burn. The burn record lives in the session transcript and in
+no other file:
 
-- `fired` — the hint itself is the record: every advisory is emitted as a
-  `pi-fabric-capability` custom-message entry whose `details` name the
-  namespaces shown. Burning happened *when the paper entered the fire*, and
-  the transcript is the fire.
-- `organic` — the model invoked a captured tool from that namespace *without
-  a hint*. The tool call is already a transcript entry; the capability's
-  information potential was spent by discovery, so we burn it preemptively
-  (organic-discovery poisoning: the same one-way door, entered from the other
-  side).
+- `fired`: the hint itself is the record. Every advisory goes out as a
+  `pi-fabric-capability` custom-message entry whose `details` list the shown
+  namespaces.
+- `organic`: the model invoked a captured tool from that namespace before any
+  hint. The tool call is already a transcript entry, and the capability has
+  been introduced. The advisor marks the namespace burned so a later hint
+  cannot spend a turn on it (organic-discovery poisoning).
 
-Ash is *derived*, never stored: on `session_start` and on every branch switch
-(`session_tree`) the advisor replays the current branch's entries
-(`ctx.sessionManager.getBranch()`) and re-marks both burn kinds, with
-provenance (`origin`) and wall time (`at`, taken from the entry's own
-timestamp) rebuilt from the transcript:
+Nothing stores the ash separately. On `session_start` and on each branch
+switch (`session_tree`) the advisor replays the current branch's entries
+(`ctx.sessionManager.getBranch()`) and rebuilds both kinds of burn. The
+provenance (`origin`) reflects which kind of evidence matched. The wall clock
+(`at`) comes from the entry's own timestamp:
 
 ```json
 { "namespace": "extension:pi-websearch", "origin": "fired", "at": "2026-08-10T16:00:00.000Z" }
 { "namespace": "extension:pi-fovea",    "origin": "organic", "at": "2026-08-10T16:12:11.000Z" }
 ```
 
-Thermodynamic consequence: the ash set is exactly "burns that happened up to
-the current point in this branch's history." Fork a session and the fork
-replays ashes up to the fork point; rewind with `/tree` and capabilities whose
-burns live only in the abandoned future burn *back into paper* — you don't
-unburn paper, but undoing time restores what hadn't happened yet. A new
-session is a fresh urn: nothing carries across sessions, because the learner
-the hint was meant for (the model's context) doesn't either. Within a session
-there's still no release path: no expires, no defrost knob — `reset()` clears
-only what is inherently transient (warmth, smoke streak, per-session cap),
-never ash.
+The replay runs up to the branch's current leaf, so the ash set follows the
+history exactly. A fork sees the burns that happened before the fork point. A
+`/tree` rewind re-exposes capabilities whose only burns sat in the abandoned
+part of the tree. A fresh session starts with an empty urn, on the grounds
+that the one who learned from the hint arrives with a fresh context anyway.
+
+Inside one session a burn stays burned, without expiry or release. `reset()`
+clears the transient state (warmth, smoke streak, per-session cap) and leaves
+ash alone.
 
 ## Furnace feedback
 
-Combustion quality regulates the furnace. Each turn (at `turn_end`) the advisor
-checks pending fires: did any matched namespace see a captured-tool invocation
-before the turn closed? A fire that the model ignored is smoke; a streak of
-smoke raises the weak-band ignition point:
+Combustion quality regulates the furnace. At each `turn_end` the advisor
+checks the pending fires: did any matched namespace see a captured-tool call
+before the turn closed? A fire that produced no tool call counts as smoke, and
+a streak of smoke lifts the weak-band ignition point:
 
 $$
 \theta_i = \theta \cdot \bigl(1 + n / \tau^2\bigr), \qquad 0 \leq n \leq \tau^2
 $$
 
-where $n$ is the consecutive no-use streak (capped at 4, so ignition never
-exceeds $2\theta$). Any fire whose hint led to a tool call clears the streak to
-zero — clean combustion keeps the furnace responsive. Smoke feedback only raises
-the *weak-band* ignition bar; strong matches still ignite instantly, because if
-the evidence is that unambiguous the furnace's skepticism isn't invited.
+The streak $n$ caps at 4, so the ignition point stays at or below $2\theta$.
+The first hint the model follows clears the streak, and the furnace responds
+fast again. Smoke feedback applies to the weak band alone. Strong matches
+ignite at once, since the thermostat's skepticism has no standing when the
+evidence is unambiguous.
 
-Transient feedback lives session-locally too: smoke is lifted by the first
-clean burn. Like everything else in this model, it does not cross sessions —
-the new session brings a fresh transcript, hence a fresh urn.
+Smoke stays session-local as well. A new session starts from a fresh
+transcript, and with it a fresh furnace reading.
 
 ## Per-session cap
 
-$\leq$ `maxPerSession` fires per session regardless of model behavior (default
-3). Unchanged from the pre-combustion design; the cap guards against prompt
-storms in a single session, and ash guards against repetition within it.
+At most `maxPerSession` hints fire per session, whatever the model does
+(default 3). The cap guards against prompt storms inside one session, and ash
+guards against repeat hints.
 
 ## Summary
 
@@ -194,9 +190,7 @@ storms in a single session, and ash guards against repetition within it.
 | `capture.advisory.maxPerSession` | config | session fire cap |
 | `capture.advisory.budget` | config | token ceiling for the advisory text (chars/4, 128–8192, same range as [pi-fovea](https://github.com/monotykamary/pi-fovea)'s `sync.budget`) |
 
-Internal constants (not user-facing): the two primitives $q = 1$ (score
-quantum) and $\tau = 2$ (memory scale); every manifest constant projects from
-them — retention $\alpha = 1 - 1/\tau$, weak band $B = q$, smoke step
-$\theta/\tau^2$, streak cap $\tau^2$, default `maxPerSession` $= 2\tau - 1$.
-Mispredicting $\tau$ costs responsiveness, never authority: the maximum furnace
-raise stays at $\theta$ for any $\tau$.
+Everything else derives from the primitives $q = 1$ and $\tau = 2$: retention
+$\alpha = 1 - 1/\tau$, weak band $B = q$, smoke step $\theta/\tau^2$, streak
+cap $\tau^2$, and the default session cap $2\tau - 1$. Getting $\tau$ wrong
+costs some responsiveness. The furnace ceiling stays at $\theta$ either way.
