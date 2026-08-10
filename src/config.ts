@@ -298,6 +298,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     advisory: {
       mode: "enabled",
       threshold: 0.9,
+      // 2τ − 1 with the advisory's patience scale τ = 2 (see docs/capability-combustion.md).
       maxPerSession: 3,
       budget: 512,
     },

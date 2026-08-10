@@ -49,7 +49,41 @@ Pre-ignition filters:
 
 ## Ignition bands and warmth
 
-Let $\theta$ be the configured `threshold` (default 0.9) and $B = 1.0$ the weak
+### Two primitives generate everything
+
+The dynamics look parameter-heavy — band width, retention, smoke step, streak
+cap, session cap — but they all project from **two primitives**, plus the
+user-facing $\theta$:
+
+1. **The score quantum $q = 1$.** Under $1/\mathrm{df}$ scoring a *source-unique*
+   term weighs exactly $1/1 = 1$: the smallest unit of unambiguous evidence the
+   scorer can express. The weak band is exactly one quantum wide, $B = q = 1$ —
+   strong = weak + one quantum of certainty. A weak match that gains even a
+   single truly-unique term crosses into instant ignition.
+2. **The memory scale $\tau = 2$ turns.** Every temporal behavior below is one
+   exponential integrator with retention $1 - 1/\tau$. All other constants
+   derive from it:
+
+| Constant | Value | Projection |
+|---|---|---|
+| warmth retention $\alpha$ | 0.5 | $1 - 1/\tau$ |
+| cool half-life | 1 turn | $\ln \tfrac{1}{2}\,/\,\ln(1 - 1/\tau)$ |
+| weak band $B$ | 1.0 | $q = 1$ |
+| smoke step | $0.25\theta$ | $\theta/\tau^2$ |
+| smoke streak cap | 4 | $\tau^2$ |
+| max furnace raise | $\theta$ | $(\theta/\tau^2)\cdot\tau^2$ — $\tau$-invariant |
+| default session cap | 3 | $2\tau - 1$ |
+
+The second-to-last row is the point of the lift: total furnace authority is
+bounded at exactly $\theta$ *no matter what $\tau$ is* — patience changes how
+quickly the furnace responds, never how hot it may run. And the $\tau$ vs
+$\tau^2$ split has a statistical reading: **first-order signals average over
+$\tau$ samples; second-order feedback calibrates over $\tau^2$.** Warmth tracks
+a mean ("is the user on this topic") and O($\tau$) turns suffice; smoke
+estimates a bias ("do this namespace's hints get used") whose variance
+converges like $1/n$, so the thermostat needs the squared budget.
+
+Let $\theta$ be the configured `threshold` (default 0.9) and $B = q = 1$ the weak
 match band. Each turn, each unburned source with $s \geq \theta$ falls into one of
 two bands:
 
@@ -58,19 +92,30 @@ two bands:
 | Strong | $s \geq \theta + B$ | **Ignites instantly.** Multi-term overlap is strong evidence; delay would hurt real use. |
 | Weak | $\theta \leq s < \theta + B$ | Must accumulate **warmth** until it exceeds the ignition point $\theta_i$. |
 
-Warmth is an exponential moving average over *evaluated turns* (advisory-eligible
-prompts), with retention $\alpha = 0.5$ (half-life one turn):
+Warmth convolves the per-turn score signal with the unit-mass exponential
+kernel $K_\tau(j) = \tfrac{1}{\tau}\bigl(1 - \tfrac{1}{\tau}\bigr)^j$ over
+*evaluated turns* (advisory-eligible prompts) — a first-order low-pass filter,
+$\alpha = 1 - 1/\tau = 0.5$ at the default (half-life one turn):
 
 $$
-W_k = \alpha\, W_{k-1} + (1 - \alpha)\, s_k, \qquad s_k =
+W_k = (1-\alpha)\, s_k + \alpha\, W_{k-1} = (K_\tau * s)_k, \qquad s_k =
 \begin{cases} s \geq \theta & \text{weak-band score this turn} \\ 0 & \text{otherwise} \end{cases}
 $$
 
 Weak ignition fires when $W_k \geq \theta_i$ (the ignition point; by default
 $\theta_i = \theta$). Interpretation: sustained exposure asymptotes W to $s$:
-$W_k \to s\,(1 - \alpha^k)$. A one-off vocabulary collision spikes once and cools
-before crossing. Dropping the topic mid-decay halves W per turn; returning to it
-re-warms from the residue rather than restarting.
+$W_k \to s\,(1 - \alpha^k)$, so a sustained weak signal crossing time is
+$k_{\text{ignite}} = \big\lceil \ln(1 - \theta_i/s)\,/\,\ln(1 - 1/\tau) \big\rceil$.
+At $\tau = 2$, $\theta = 0.9$: the floor of the band ($s = 1.0$) needs 4 turns,
+the upper band ($s \geq 1.25$) needs 2, and the strong band needs 0 — one
+formula, three regimes. A one-off vocabulary collision spikes once and cools
+before crossing. Dropping the topic mid-decay halves W per turn; returning to
+it re-warms from the residue rather than restarting.
+
+τ interpolates between regimes: $\tau \to 1$ is memoryless (no gating, warmth
+just re-reads the last score); large $\tau$ never ignites on anything transient.
+The mean of $K_\tau$ spans $\tau$ turns, so $\tau = 2$ says: trust a mean taken
+over roughly the last two turns.
 
 With the default fixture terms, "query the results table please" scores
 $s = 1.333$ (weak band): the EWMA crosses $0.9$ only on the second tidy prompt,
@@ -108,7 +153,7 @@ before the turn closed? A fire that the model ignored is smoke; a streak of
 smoke raises the weak-band ignition point:
 
 $$
-\theta_i = \theta \cdot (1 + 0.25\, n), \qquad 0 \leq n \leq 4
+\theta_i = \theta \cdot \bigl(1 + \tfrac{n}{\tau^2}\bigr), \qquad 0 \leq n \leq \tau^2 \quad (\tau = 2: \\ \text{step } 0.25\theta,\ \text{cap } 4)
 $$
 
 where $n$ is the consecutive no-use streak (capped at 4, so ignition never
@@ -127,7 +172,7 @@ $\leq$ `maxPerSession` fires per session regardless of model behavior (default
 3). Unchanged from the pre-combustion design; the cap guards against prompt
 storms in a single session, ash guards against repetition across sessions.
 
-## Summary of knobs
+## Summary
 
 | Knob | Where | Effect |
 |---|---|---|
@@ -136,5 +181,9 @@ storms in a single session, ash guards against repetition across sessions.
 | `capture.advisory.maxPerSession` | config | session fire cap |
 | `capture.advisory.budget` | config | token ceiling for the advisory text (chars/4, 128–8192, same range as [pi-fovea](https://github.com/monotykamary/pi-fovea)'s `sync.budget`) |
 
-Internal constants (not user-facing): $B = 1.0$ (weak band), retention
-$\alpha = 0.5$, smoke step $0.25\theta$ per streak, streak cap 4.
+Internal constants (not user-facing): the two primitives $q = 1$ (score
+quantum) and $\tau = 2$ (memory scale); every manifest constant projects from
+them — retention $\alpha = 1 - 1/\tau$, weak band $B = q$, smoke step
+$\theta/\tau^2$, streak cap $\tau^2$, default `maxPerSession` $= 2\tau - 1$.
+Mispredicting $\tau$ costs responsiveness, never authority: the maximum furnace
+raise stays at $\theta$ for any $\tau$.

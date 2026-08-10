@@ -9,7 +9,11 @@ import {
 
 export const CAPABILITY_ADVISORY_CUSTOM_TYPE = "pi-fabric-capability";
 const ADVISORY_REF_PREFIX = "extensions";
-const WEAK_MATCH_BAND = 1.0;
+// Score quantum: the weight of a source-unique term (df = 1 → 1/df = 1) — the
+// smallest unit of unambiguous evidence the 1/df scorer can express. The weak
+// band is exactly one quantum wide: strong = weak + one quantum of certainty.
+const SCORE_QUANTUM = 1;
+const WEAK_MATCH_BAND = SCORE_QUANTUM;
 const MAX_ADVISORY_SOURCES = 2;
 const MAX_NAMES_PER_SOURCE = 2;
 const MAX_ADVISORY_NAMES = 3;
@@ -17,15 +21,21 @@ const BASE_HEADER = "[Fabric capability hint]";
 const WEAK_HEADER = "[Fabric capability hint · possible match]";
 
 // Combustion dynamics. The advisory is a finite battery: every fire spends a
-// namespace permanently (ash), so ignition is gated. The strong band ignites
-// instantly; the weak band must accumulate warmth W, an EWMA of weak-band
-// scores with retention WARM_ALPHA per turn (half-life ~1 turn), until W
-// breaches the ignition point — single-turn vocabulary collisions cool before
-// they get there. Ignored fires are smoke: each raises future weak-band
-// ignition by SMOKE_STEP × the base threshold (capped SMOKE_MAX streaks).
-const WARM_ALPHA = 0.5;
-const SMOKE_STEP = 0.25;
-const SMOKE_MAX = 4;
+// namespace permanently (ash), so ignition is gated. Two primitives determine
+// everything (see docs/capability-combustion.md):
+//   q   = 1 — the score quantum above.
+//   τ   = 2 turns — the patience/memory scale. Warmth W is the convolution of
+//   the score signal with the exponential kernel K_τ (an EWMA with retention
+//   1 − 1/τ, half-life one turn at τ=2): first-order evidence averages over
+//   τ turns. Smoke feedback estimates a bias, a second-order signal, so it
+//   calibrates over τ² events: step θ/τ², ceiling τ² — keeping the maximum
+//   furnace raise at exactly θ regardless of τ.
+// Strong band ignites instantly; weak band fires when W breaches the ignition
+// point, so single-turn collisions cool before they get there.
+const TAU = 2;
+const WARM_ALPHA = 1 - 1 / TAU; // 0.5
+const SMOKE_STEP = 1 / (TAU * TAU); // 0.25
+const SMOKE_MAX = TAU * TAU; // 4
 const WARM_FLOOR = 1e-3;
 
 export interface CapabilityAdvisoryMatch {
