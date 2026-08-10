@@ -88,34 +88,36 @@ interface SourceBlock {
   leftoverNames: string[];
 }
 
-// One source = one tree block: the source label, then one row per shown tool
-// (name, then the truncated description after an em-dash on the rich rung),
-// then a leaf counting — and naming — the tools that didn't make the cut.
-const renderTree = (blocks: SourceBlock[], withDescriptions: boolean): string[] => {
+// pi-fovea icon/indent pattern: one flat ▪ bullet per shown tool with the
+// fully-qualified ref, a source tag in parentheses when more than one source
+// is in play, and the truncated description after an em dash on the rich
+// rung. Leftover tools collapse into an indented "~ +N more in <source>"
+// counter line, mirroring fovea's "~ +N more in <file>".
+const renderCandidates = (blocks: SourceBlock[], withDescriptions: boolean): string[] => {
+  const multiSource = blocks.length > 1;
   const lines: string[] = [];
   for (const block of blocks) {
-    lines.push(`  ${block.label}`);
-    const rows = block.names.map((name, index) => {
+    block.names.forEach((name, index) => {
       const ref = `${ADVISORY_REF_PREFIX}.${name}`;
+      const sourceTag = multiSource ? ` (${block.label})` : "";
       const description = block.descriptions[index] ?? "";
-      return withDescriptions && description
-        ? `${ref} — ${truncateAdvisoryDescription(description)}`
-        : ref;
+      const tail =
+        withDescriptions && description
+          ? ` — ${truncateAdvisoryDescription(description)}`
+          : "";
+      lines.push(`▪ ${ref}${sourceTag}${tail}`);
     });
     if (block.leftoverNames.length > 0) {
       const listed = block.leftoverNames.slice(0, 3).join(", ");
-      rows.push(
-        `+${block.leftoverNames.length} more: ${listed}${block.leftoverNames.length > 3 ? ", …" : ""}`,
+      lines.push(
+        `  ~ +${block.leftoverNames.length} more in ${block.label}: ${listed}${block.leftoverNames.length > 3 ? ", …" : ""}`,
       );
     }
-    rows.forEach((row, index) => {
-      lines.push(`    ${index === rows.length - 1 ? "└─" : "├─"} ${row}`);
-    });
   }
   return lines;
 };
 
-// Leanest non-trivial rung: one line per source, bare refs with leftovers
+// Leanest non-trivial rung: one bullet per source, bare refs with leftovers
 // inline — the actionable identity of each capability, no prose.
 const renderFlat = (blocks: SourceBlock[]): string[] =>
   blocks.map((block) => {
@@ -123,9 +125,9 @@ const renderFlat = (blocks: SourceBlock[]): string[] =>
     const listed = block.leftoverNames.slice(0, 3).join(", ");
     const leftover =
       block.leftoverNames.length > 0
-        ? `, +${block.leftoverNames.length} more: ${listed}${block.leftoverNames.length > 3 ? ", …" : ""}`
+        ? `, ~ +${block.leftoverNames.length} more: ${listed}${block.leftoverNames.length > 3 ? ", …" : ""}`
         : "";
-    return `  ${block.label} — ${refs.join(", ")}${leftover}`;
+    return `▪ ${block.label} · ${refs.join(", ")}${leftover}`;
   });
 
 export class CapabilityAdvisor {
@@ -327,10 +329,12 @@ export class CapabilityAdvisor {
         ? BASE_HEADER
         : WEAK_HEADER;
 
-    // Structured like fovea's sync advisories: headline, a tree of
-    // candidates grouped by source, a Next: action pointing at the top ref,
-    // and a Steer: directive.
-    const headerLine = `${header} prompt terms matched captured tools.`;
+    // Structured like fovea's sync advisories: a compact headline naming
+    // the matched sources, flat ▪-bulletish candidate rows, a Next: action
+    // pointing at the top ref, and a Steer: directive.
+    const headerSources = included.map((match) => match.label).join(", ");
+    const headerTools = included.reduce((sum, match) => sum + match.names.length, 0);
+    const headerLine = `${header} ${headerSources} · ${headerTools} tool${headerTools === 1 ? "" : "s"} matched your prompt.`;
     const blocks: SourceBlock[] = [];
     let shown = 0;
     for (const match of included) {
@@ -364,20 +368,20 @@ export class CapabilityAdvisor {
     const nextLine =
       topName === undefined
         ? ""
-        : `Next: tools.describe('${topName}') for its schema, then ${ADVISORY_REF_PREFIX}.${topName}({…}) inside fabric_exec.`;
+        : `Next: tools.describe({ref: "${ADVISORY_REF_PREFIX}.${topName}"}) for its schema, then ${ADVISORY_REF_PREFIX}.${topName}({…}) inside fabric_exec.`;
 
     // Budget squeeze (fovea pattern): walk the ladder until a rung fits —
-    // tree with descriptions → tree, names only → flat names-only per source
-    // (dropping Next: alongside the tree) → header + steer as the floor.
-    // Details keep the full (pre-squeeze) picture regardless.
+    // bullets with descriptions → bullets, names only → one bullet per
+    // source (dropping Next: alongside the collapse) → header + steer as the
+    // floor. Details keep the full (pre-squeeze) picture regardless.
     const rungs: string[][] = [
-      [...renderTree(blocks, true), ...(nextLine ? [nextLine] : [])],
-      [...renderTree(blocks, false), ...(nextLine ? [nextLine] : [])],
+      [...renderCandidates(blocks, true), ...(nextLine ? [nextLine] : [])],
+      [...renderCandidates(blocks, false), ...(nextLine ? [nextLine] : [])],
       renderFlat(blocks),
     ];
     let content = "";
     for (const rung of rungs) {
-      const candidate = [headerLine, "Candidates:", ...rung, STEER_LINE].join("\n");
+      const candidate = [headerLine, ...rung, STEER_LINE].join("\n");
       if (estimateTokens(candidate) <= config.budget) {
         content = candidate;
         break;

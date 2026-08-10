@@ -83,13 +83,15 @@ describe("CapabilityAdvisor", () => {
     expect(fourth?.content).toContain("possible match");
     expect(fourth?.display).toBe(false);
     // The strong first fire names the synthetic headline and action line.
-    expect(first?.content).toContain("Next: tools.describe('synthetic_web_search')");
+    expect(first?.content).toContain(
+      'Next: tools.describe({ref: "extensions.synthetic_web_search"}) for its schema, then extensions.synthetic_web_search({…}) inside fabric_exec.',
+    );
     expect(first?.content).toContain(
       "Steer: prefer these captured tools over re-implementing the capability",
     );
-    expect(first?.content).toContain("  pi-synthetic\n");
+    expect(first?.content).toContain("[Fabric capability hint] pi-synthetic · 1 tool matched your prompt.");
     expect(first?.content).toContain(
-      "└─ extensions.synthetic_web_search — Search the web using Synthetic's zero-data-retention API.",
+      "▪ extensions.synthetic_web_search — Search the web using Synthetic's zero-data-retention API.",
     );
     expect(first?.content).not.toContain("(captured from");
     expect(first?.content).not.toContain("possible match");
@@ -178,26 +180,27 @@ describe("CapabilityAdvisor", () => {
     expect(result?.content).toContain("+1 more");
   });
 
-  it("renders candidates as an indented tree and degrades down the squeeze ladder", () => {
-    // Rung 0: tree with one description row per shown tool; leftover tools
-    // named in a "+N more" leaf that closes the source block.
+  it("renders candidates as fovea-style icon bullets and degrades down the squeeze ladder", () => {
+    // Rung 0: one ▪ bullet per shown tool with its description; leftover tools
+    // named in an indented "~ +N more in <source>" counter (measured 103
+    // tokens).
     const rich = advisor().evaluate("send and draft mail messages", config());
-    expect(rich?.content).toContain("  pi-mail\n");
-    expect(rich?.content).toContain("    ├─ extensions.mail_send — Send and draft mail messages.");
-    expect(rich?.content).toContain("    ├─ extensions.mail_draft — Draft mail replies.");
-    expect(rich?.content).toContain("    └─ +1 more: mail_list");
+    expect(rich?.content).toContain("[Fabric capability hint] pi-mail · 3 tools matched your prompt.");
+    expect(rich?.content).toContain("▪ extensions.mail_send — Send and draft mail messages.");
+    expect(rich?.content).toContain("▪ extensions.mail_draft — Draft mail replies.");
+    expect(rich?.content).toContain("  ~ +1 more in pi-mail: mail_list");
 
-    // Rung 1: tree shape survives but descriptions drop (measured 104 → 90
+    // Rung 1: bullets survive but descriptions drop (measured 103 → 89
     // tokens, so a 100-token budget must force this rung).
     const lean = advisor().evaluate("send and draft mail messages", config({ budget: 100 }));
-    expect(lean?.content).toContain("    ├─ extensions.mail_send\n");
+    expect(lean?.content).toContain("\n▪ extensions.mail_send\n");
     expect(lean?.content).not.toContain("Send and draft mail messages.");
-    expect(lean?.content).toContain("Next: tools.describe('mail_send')");
+    expect(lean?.content).toContain('Next: tools.describe({ref: "extensions.mail_send"})');
 
-    // Rung 2: flat per-source line, names only, Next: dropped (61 tokens).
+    // Rung 2: one ▪ bullet per source, names only, Next: dropped (59 tokens).
     const flat = advisor().evaluate("send and draft mail messages", config({ budget: 64 }));
     expect(flat?.content).toContain(
-      "  pi-mail — extensions.mail_send, extensions.mail_draft, +1 more: mail_list",
+      "▪ pi-mail · extensions.mail_send, extensions.mail_draft, ~ +1 more: mail_list",
     );
     expect(flat?.content).not.toContain("Next:");
   });

@@ -427,10 +427,35 @@ export class ActionRegistry {
   }
 
   async describe(ref: string, context: FabricInvocationContext): Promise<ResolvedFabricAction> {
-    const { provider, actionName } = this.#parseRef(ref);
-    const descriptor = await provider.describe(actionName, context);
-    if (!descriptor) throw new Error(`Unknown Fabric action: ${ref}`);
-    return resolveDescriptor(provider, descriptor);
+    if (ref.includes(".")) {
+      const { provider, actionName } = this.#parseRef(ref);
+      const descriptor = await provider.describe(actionName, context);
+      if (!descriptor) throw new Error(`Unknown Fabric action: ${ref}`);
+      return resolveDescriptor(provider, descriptor);
+    }
+    // Bare action names (what the capability advisory prints in its Next:
+    // line and what typed calls pragmatically use): walk every provider for
+    // a unique action-name match.
+    const matches: ResolvedFabricAction[] = [];
+    for (const provider of this.#providers.values()) {
+      let descriptors: FabricActionDescriptor[];
+      try {
+        descriptors = await provider.list({}, context);
+      } catch {
+        continue;
+      }
+      for (const descriptor of descriptors) {
+        if (descriptor.name === ref) matches.push(resolveDescriptor(provider, descriptor));
+      }
+    }
+    if (matches.length === 1) return matches[0]!;
+    if (matches.length > 1) {
+      throw new Error(
+        `"${ref}" matches ${matches.length} Fabric actions; qualify with provider.action: ` +
+          matches.map((match) => match.ref).sort().join(", "),
+      );
+    }
+    throw new Error(`Unknown Fabric action: ${ref}`);
   }
 
   async invoke(

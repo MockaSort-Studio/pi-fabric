@@ -81,6 +81,25 @@ describe("ActionRegistry", () => {
     ]);
   });
 
+  it("describes a bare action name through the unique-name fallback", async () => {
+    const registry = new ActionRegistry();
+    registry.register(provider());
+    const described = await registry.describe("echo", context);
+    expect(described.ref).toBe("demo.echo");
+    expect(described.risk).toBe("read");
+  });
+
+  it("rejects a bare action name that matches more than one provider", async () => {
+    const registry = new ActionRegistry();
+    registry.register(provider());
+    registry.register({ ...provider(), name: "demo-two" });
+    await expect(registry.describe("echo", context)).rejects.toThrow(
+      /qualify with provider\.action: demo-two\.echo, demo\.echo/,
+    );
+    await expect(registry.describe("missing", context)).rejects.toThrow(
+      "Unknown Fabric action: missing",
+    );
+  });
 
   it("builds deterministic provider/action heads and searches the complete catalog before ranking", async () => {
     const registry = new ActionRegistry();
