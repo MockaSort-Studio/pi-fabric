@@ -27,7 +27,7 @@ each source's corpus is its tools' names plus descriptions. A prompt scores
 against each unburned source as the sum of matched-term weights:
 
 $$
-s(p, j) = \sum_{t \in T(p) \cap T(j)} \frac{1}{\mathrm{df}(t)}, \qquad \mathrm{df}(t) = \bigl|\{ j : t \in T(j) \bigr\|
+s(p, j) = \sum_{t \in T(p) \cap T(j)} \frac{1}{\mathrm{df}(t)}, \qquad \mathrm{df}(t) = \Bigl|\{ j : t \in T(j) \}\Bigr|
 $$
 
 The weight is *plain* $1/\mathrm{df}$, not $\ln(N/\mathrm{df})$ tf-idf. Classic idf
@@ -153,7 +153,7 @@ before the turn closed? A fire that the model ignored is smoke; a streak of
 smoke raises the weak-band ignition point:
 
 $$
-\theta_i = \theta \cdot \bigl(1 + \tfrac{n}{\tau^2}\bigr), \qquad 0 \leq n \leq \tau^2 \quad (\tau = 2: \\ \text{step } 0.25\theta,\ \text{cap } 4)
+\theta_i = \theta \cdot \bigl(1 + n / \tau^2\bigr), \qquad 0 \leq n \leq \tau^2
 $$
 
 where $n$ is the consecutive no-use streak (capped at 4, so ignition never
