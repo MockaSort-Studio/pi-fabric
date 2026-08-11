@@ -168,15 +168,31 @@ export class PrewalkController {
     return this.status();
   }
 
+  // A settle without a handoff is not consumption: the arm survives until a
+  // matching mutation actually claims it (or the user runs `/fabric prewalk
+  // --off`). Only handoff completion goes through completeTask / alwaysRearm.
+  // The captured task text belongs to the settled turn, so drop it and let the
+  // next input recapture — otherwise tomorrow's unrelated prompt would ride on
+  // yesterday's task.
   settleTask(sessionId: string): boolean {
     if (
       this.#status.state !== "armed" ||
-      this.#status.sessionId !== sessionId ||
-      !this.#status.task
+      this.#status.sessionId !== sessionId
     ) {
       return false;
     }
-    this.completeTask();
+    const armed = this.#status;
+    if (armed.task !== undefined) {
+      this.#status = {
+        state: "armed",
+        mode: armed.mode,
+        model: armed.model,
+        sessionId: armed.sessionId,
+        armedAt: armed.armedAt,
+        alwaysRearm: armed.alwaysRearm,
+        ...(armed.thinking ? { thinking: armed.thinking } : {}),
+      };
+    }
     return true;
   }
 

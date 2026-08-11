@@ -31,15 +31,37 @@ describe("PrewalkController", () => {
     });
   });
 
-  it("disarms an observed task when it settles without a mutation", () => {
+  it("keeps the arm across read-only settles, dropping only the settled task", () => {
     const controller = new PrewalkController();
     controller.arm({ model: "anthropic/executor", sessionId: "session-1" });
 
-    expect(controller.settleTask("session-1")).toBe(false);
+    expect(controller.settleTask("session-1")).toBe(true);
+    expect(controller.status().state).toBe("armed");
     controller.observeTask("session-1", "Inspect without changing anything");
     expect(controller.settleTask("session-2")).toBe(false);
     expect(controller.settleTask("session-1")).toBe(true);
-    expect(controller.status()).toEqual({ state: "idle" });
+    expect(controller.status()).toMatchObject({ state: "armed", sessionId: "session-1" });
+    expect(controller.status()).not.toHaveProperty("task");
+  });
+
+  // Regression: a plan-first turn (reads only) must not burn the arm — the
+  // next matching mutation boundary still claims the handoff.
+  it("claims a mutation that lands after earlier read-only settles", () => {
+    const controller = new PrewalkController();
+    controller.arm({ model: "anthropic/executor", sessionId: "session-1" });
+
+    controller.observeTask("session-1", "Survey the module");
+    expect(controller.settleTask("session-1")).toBe(true);
+    controller.observeTask("session-1", "Implement it now");
+    expect(
+      controller.claim(
+        [audit("pi.read", true), audit("pi.write", true, 2)],
+        "session-1",
+      ),
+    ).toMatchObject({
+      arm: { model: "anthropic/executor", task: "Implement it now" },
+      mutation: { ref: "pi.write" },
+    });
   });
 
   it("re-arms without leaking the previous task when always re-arm is enabled", () => {

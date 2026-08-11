@@ -1092,7 +1092,7 @@ export const buildFabricSettingsItems = (
             config.prewalk.alwaysRearm ? "true" : "false",
             {
               description:
-                "After a task settles or continues, arm prewalk again for the next user task until explicitly cancelled.",
+                "After a completed prewalk handoff, arm prewalk again for the next user task until explicitly cancelled. Read-only turns never disarm prewalk.",
               values: BOOLEANS,
             },
           ),
