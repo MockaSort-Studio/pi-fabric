@@ -4,6 +4,7 @@ import {
   buildCapabilityIndex,
   capabilitySourceLabel,
   capabilityWordCandidates,
+  isMostlyNonLatinPrompt,
   type CapabilitySourceFingerprint,
   splitCapabilityWords,
   tokenizeCapabilityText,
@@ -60,6 +61,33 @@ describe("capabilityWordCandidates", () => {
   it("holds the joined reading to the same token rules", () => {
     expect(capabilityWordCandidates("the")).toEqual([]);
     expect(capabilityWordCandidates("v2")).toEqual(["v2"]);
+  });
+});
+
+describe("isMostlyNonLatinPrompt", () => {
+  // The script-boundary exception keys on prose, not any single language:
+  // script by script, non-latin letters must outnumber the latin words.
+  it.each([
+    ["Chinese", "看看 GitHub 仓库"],
+    ["Japanese", "GitHub のリポジトリを見せて"],
+    ["Korean", "GitHub 저장소를 열어줘"],
+    ["Russian", "Открой репозиторий GitHub в браузере"],
+    ["Arabic", "افتح مستودع GitHub من فضلك"],
+    ["Thai", "เปิดรีโพ GitHub ให้หน่อย"],
+    ["Hebrew", "תפתח את המאגר של GitHub"],
+    ["digit-bearing", "2024 年度 GitHub 总结"],
+  ])("reads %s prose as mostly non-latin", (_script, prompt) => {
+    expect(isMostlyNonLatinPrompt(prompt)).toBe(true);
+  });
+
+  it.each([
+    ["plain english", "check the GitHub repo please"],
+    ["accented latin", "résumé café français"],
+    ["Vietnamese (latin script)", "mở repo GitHub giúp tôi"],
+    ["latin words not outnumbered", "GitHub v2 仓库"],
+    ["pure latin-with-digit", "wait 60 seconds then retry"],
+  ])("reads %s as latin-dominant", (_script, prompt) => {
+    expect(isMostlyNonLatinPrompt(prompt)).toBe(false);
   });
 });
 

@@ -443,9 +443,11 @@ describe("CapabilityAdvisor", () => {
 
   it("scores one written word as one unit of evidence in any casing", () => {
     // Issue #26: CJK characters atomize to nothing, so the brand word is the
-    // only surviving latin token. Every casing of it must score and gate
-    // identically — one source-unique word (s = 1.0, weak band, igniting on
-    // the fourth sustained prompt).
+    // only surviving latin token. Every casing of it scores and gates
+    // identically — one source-unique word, one quantum (s = 1.0) — and in
+    // non-latin prose the word is a deliberate reach across a script
+    // boundary, so it ignites on the first turn in the weak might-match
+    // register, whichever the casing.
     const catalog = [
       descriptor("github_repo", "Read GitHub repository metadata", "extension:pi-integrations"),
       descriptor("github_issue", "List GitHub issues", "extension:pi-integrations"),
@@ -453,14 +455,22 @@ describe("CapabilityAdvisor", () => {
     for (const prompt of ["看看 github 仓库", "看看 GitHub 仓库", "看看 GITHUB 仓库"]) {
       const instance = new CapabilityAdvisor();
       instance.refresh(catalog);
-      expect(instance.evaluate(prompt, config())).toBeUndefined();
-      expect(instance.evaluate(prompt, config())).toBeUndefined();
-      expect(instance.evaluate(prompt, config())).toBeUndefined();
       const fire = instance.evaluate(prompt, config());
       expect(fire?.details.matches[0]?.score).toBe(1);
       expect(fire?.content).toContain("might match your prompt.");
       expect(fire?.content).toContain("extensions.github_repo");
+      // Ash still applies across scripts: the second ask stays silent.
+      expect(instance.evaluate(prompt, config())).toBeUndefined();
     }
+    // Latin prose gives no such signal: the same lone word is ambient
+    // vocabulary there and stays on the slow warmth path, igniting on the
+    // fourth sustained prompt, never the first three.
+    const latinProse = new CapabilityAdvisor();
+    latinProse.refresh(catalog);
+    expect(latinProse.evaluate("github", config())).toBeUndefined();
+    expect(latinProse.evaluate("github", config())).toBeUndefined();
+    expect(latinProse.evaluate("github", config())).toBeUndefined();
+    expect(latinProse.evaluate("github", config())).toBeDefined();
     // Ordinary multi-word overlap still reaches the strong band at once, and
     // camelCase spelling of the brand word earns no extra evidence.
     for (const prompt of ["check github repo", "check GitHub repo"]) {
@@ -471,6 +481,61 @@ describe("CapabilityAdvisor", () => {
       expect(fire?.content).toContain("matched your prompt.");
       expect(fire?.content).not.toContain("might match");
     }
+  });
+
+  const MULTI_SOURCE_CATALOG: FabricActionDescriptor[] = [
+    descriptor("github_repo", "Read GitHub repository files and metadata.", "extension:github"),
+    descriptor("github_issue", "List and create GitHub issues.", "extension:github"),
+    descriptor("perplexity_search", "Ask an AI search engine for sourced answers.", "extension:perplexity"),
+    descriptor("db_query", "Query rows and files from database tables.", "extension:db"),
+    descriptor("mail_send", "Send rows of batched mail messages.", "extension:mail"),
+    descriptor("browser_open", "Open a page in the headless browser.", "extension:browser"),
+  ];
+
+  it("ignites a deliberate brand word across non-latin scripts on the first turn", () => {
+    // Issue #26, round 2 — non-latin prose starves the two-term gate, so the
+    // exception must not overfit any one language. In every non-latin script
+    // a latin brand word is a deliberate reach across the script boundary:
+    // first-turn fire, weak register, one quantum of score, then ash.
+    const scriptPrompts: [script: string, prompt: string][] = [
+      ["Chinese", "看看 GitHub 仓库"],
+      ["Japanese", "GitHub のリポジトリを見せて"],
+      ["Korean", "GitHub 저장소를 열어줘"],
+      ["Russian", "Открой репозиторий GitHub в браузере"],
+      ["Arabic", "افتح مستودع GitHub من فضلك"],
+      ["Thai", "เปิดรีโพ GitHub ให้หน่อย"],
+      ["Hebrew", "תפתח את המאגר של GitHub"],
+    ];
+    for (const [script, prompt] of scriptPrompts) {
+      const instance = new CapabilityAdvisor();
+      instance.refresh(MULTI_SOURCE_CATALOG);
+      const fire = instance.evaluate(prompt, config());
+      expect(fire, script).toBeDefined();
+      expect(fire?.details.matches, script).toHaveLength(1);
+      expect(fire?.details.matches[0]?.namespace, script).toBe("extension:github");
+      expect(fire?.details.matches[0]?.score, script).toBe(1);
+      expect(fire?.content, script).toContain("might match your prompt.");
+      expect(fire?.content, script).toContain("extensions.github_repo");
+    }
+  });
+
+  it("keeps shared vocabulary on the warmth path even in non-latin prose", () => {
+    // "files" and "rows" each live in two sources (df = 2 → half a quantum
+    // apiece): they reach the weak band by accumulated count, and uniqueness
+    // is what the script boundary certifies. Latin and non-latin prose see
+    // the same slow path — silent for three turns, firing on the fourth.
+    for (const prompt of ["files 和 rows 一起处理", "process the files and rows"]) {
+      const instance = new CapabilityAdvisor();
+      instance.refresh(MULTI_SOURCE_CATALOG);
+      expect(instance.evaluate(prompt, config())).toBeUndefined();
+      expect(instance.evaluate(prompt, config())).toBeUndefined();
+      expect(instance.evaluate(prompt, config())).toBeUndefined();
+      expect(instance.evaluate(prompt, config())).toBeDefined();
+    }
+    // Non-latin prose that names no latin word has nothing to match at all.
+    const noLatin = new CapabilityAdvisor();
+    noLatin.refresh(MULTI_SOURCE_CATALOG);
+    expect(noLatin.evaluate("仓库 在哪里", config())).toBeUndefined();
   });
 
   it("exports the custom type used for message injection", () => {

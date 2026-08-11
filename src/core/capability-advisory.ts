@@ -3,6 +3,7 @@ import type { FabricActionDescriptor } from "../protocol.js";
 import {
   buildCapabilityIndex,
   capabilityWordCandidates,
+  isMostlyNonLatinPrompt,
   splitCapabilityWords,
   truncateAdvisoryDescription,
   type CapabilityIndex,
@@ -263,6 +264,7 @@ export class CapabilityAdvisor {
     const ignitionPoint = config.threshold * (1 + SMOKE_STEP * this.#smokeStreak);
 
     const stripped = stripSkillRegions(prompt);
+    const mostlyNonLatin = isMostlyNonLatinPrompt(stripped);
     // Written words before camelCase atomization, each with its corpus
     // candidate readings (camelCase atoms plus the word itself). One written
     // word is one unit of intent and of evidence: the scorer and the overlap
@@ -317,14 +319,22 @@ export class CapabilityAdvisor {
       // full score quantum, the smallest unit of unambiguous evidence the
       // scorer expresses, so a single source-unique word earns the weak band,
       // where sustained warmth — not instant ignition — does the transience
-      // filtering.
+      // filtering, except across a script boundary (see below).
       const hasSourceUniqueMatch = unit.contributingTerms.some(
         (term) => this.#index.docFrequency(term) === 1,
       );
       if ((unit.matchedWords < 2 && !hasSourceUniqueMatch) || score < config.threshold) continue;
 
       const strong = score >= config.threshold + WEAK_MATCH_BAND;
-      if (!strong) {
+      // Script-boundary exception: inside non-latin prose a lone latin word
+      // cannot be a vocabulary collision — the writer had to leave their
+      // input method to type the brand name. The unambiguous evidence the
+      // weak band asks sustained warmth to establish is already present, so
+      // it ignites on the first turn. Only the gate moves; the score (and
+      // the might-match register it draws) stays as computed.
+      const scriptSwitched =
+        mostlyNonLatin && unit.matchedWords === 1 && hasSourceUniqueMatch;
+      if (!strong && !scriptSwitched) {
         // Weak band: accumulate warmth this turn, ignite only at saturation.
         const warmth = (this.#warmth.get(source.namespace) ?? 0) + (1 - WARM_ALPHA) * score;
         this.#warmth.set(source.namespace, warmth);

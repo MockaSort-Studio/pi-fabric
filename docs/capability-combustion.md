@@ -57,10 +57,22 @@ Pre-ignition filters:
   reading is found in exactly one source (df = 1) already weighs a full
   score quantum, the smallest unit of unambiguous evidence the scorer can
   express, so a single source-unique word earns the weak band on its own,
-  with sustained warmth doing the transience filtering.
+  with sustained warmth doing the transience filtering. A second exception,
+  fire-once ignition across a script boundary, is the last entry here.
+- **Script-boundary ignition.** When a prompt's non-latin letters
+  outnumber its latin written words, the prose itself is not latin — Chinese,
+  Japanese, Korean, Cyrillic, Arabic, Hebrew, Thai — and the collision the
+  two-term gate prices into single latin words cannot occur there: reaching
+  across the script boundary to type a brand name is deliberate. A lone
+  source-unique word inside such prose ignites on the first turn instead of
+  warming for up to $k_{\text{ignite}}$ turns (4 at the defaults for a
+  band-floor signal, $s = 1$ at $\theta = 0.9$). Its score is unchanged, so
+  the fire still reads in the weak "might match" register, and ash, smoke,
+  and the session cap all apply as usual.
 - **Latin-only tokenization.** Matching keeps latin alphanumerics of two or
-  more characters; CJK scripts atomize to nothing, so a CJK prompt matches
-  through the latin brand words it contains.
+  more characters; non-latin scripts atomize to nothing, so a non-latin
+  prompt matches through the latin brand words it contains — the gap that
+  script-boundary ignition closes.
 - **Stopword filtering** during tokenization (see `capability-fingerprint.ts`).
 
 ## Ignition bands and warmth

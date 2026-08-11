@@ -75,6 +75,20 @@ export const splitCapabilityWords = (text: string): string[] => {
   return result;
 };
 
+// Script profile in word units: one per latin letter-run, one per non-latin
+// letter (digits and punctuation are script-neutral). A prompt whose non-latin
+// letters outnumber its latin words is non-latin prose, where latin
+// vocabulary-collision odds collapse: reaching for a latin brand word inside
+// it means crossing a script boundary on purpose.
+export const isMostlyNonLatinPrompt = (text: string): boolean => {
+  const latinWords = text.match(/[A-Za-z]+/g)?.length ?? 0;
+  const nonLatinLetters = (text.match(/\p{L}/gu) ?? []).reduce(
+    (count, ch) => (/\p{Script=Latin}/u.test(ch) ? count : count + 1),
+    0,
+  );
+  return nonLatinLetters > latinWords;
+};
+
 const SOURCE_LABEL_PREFIX = "extension:";
 
 export const capabilitySourceLabel = (namespace: string | undefined): string =>
