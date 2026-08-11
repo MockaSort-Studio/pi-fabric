@@ -131,6 +131,334 @@ describe("ActorManager", () => {
     expect(other.owns(actor.id)).toBe(false);
   });
 
+  it("adopts orphaned project actors after the creating root is gone", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({
+      name: "orphaned",
+      instructions: "Survive the creating session.",
+      events: ["agent_settled"],
+      residency: "session",
+    });
+    expect(actor.rootId).toBe(state.identity.id);
+    await state.actors.close();
+
+    // No live participant-directory owner (undefined) and a dead lineage root:
+    // a Main-shaped manager with claimResidency + directory hooks must adopt
+    // through the fenced registry write and rebind rootId.
+    const successorIdentity: MeshIdentity = {
+      id: "session:successor",
+      name: "main",
+      kind: "main",
+      sessionId: "successor",
+    };
+    const liveOwners = new Map<string, string>();
+    const liveRoots = new Set<string>();
+    const successor = new ActorManager(
+      "successor",
+      successorIdentity,
+      state.mesh,
+      state.meshConfig,
+      state.agents,
+      () => {},
+      {
+        actorRoot: path.join(state.root, "actors"),
+        persistent: true,
+        claimResidency: "session",
+        rootId: successorIdentity.id,
+        canManageActor: (id) => {
+          const owner = liveOwners.get(id);
+          if (!owner) return undefined;
+          return owner === successorIdentity.id;
+        },
+        lineageAlive: (rootId) => liveRoots.has(rootId),
+      },
+    );
+    actorManagers.push(successor);
+
+    // Adoption completes through the fenced registry write; ownership only
+    // holds once the rebound rootId is persisted.
+    await waitFor(() => successor.owns(actor.id));
+    expect(successor.status(actor.id).rootId).toBe(successorIdentity.id);
+    expect(successor.tell(actor.id, "run after orphan takeover")).toMatchObject({
+      queued: true,
+    });
+    await successor.setModel(actor.id, "provider/after-takeover");
+    expect(successor.status(actor.id).model).toBe("provider/after-takeover");
+
+    // create/import must not be bricked by the orphaned row
+    const imported = await successor.create({
+      name: "fresh",
+      instructions: "Created after orphan takeover.",
+      residency: "session",
+    });
+    expect(imported.rootId).toBe(successorIdentity.id);
+
+    const registry = JSON.parse(
+      fs.readFileSync(path.join(state.root, "actors", "actors.json"), "utf8"),
+    ) as { actors: Array<{ id: string; rootId: string; model?: string; adoptedAt?: number }> };
+    const saved = registry.actors.find((row) => row.id === actor.id);
+    expect(saved?.rootId).toBe(successorIdentity.id);
+    expect(saved?.model).toBe("provider/after-takeover");
+    expect(typeof saved?.adoptedAt).toBe("number");
+  });
+
+  it("still refuses takeover while another host live-owns the actor", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({
+      name: "live-owned",
+      instructions: "Stay with the live owner.",
+      residency: "session",
+    });
+    const peerIdentity: MeshIdentity = {
+      id: "session:peer",
+      name: "main",
+      kind: "main",
+      sessionId: "peer",
+    };
+    const peer = new ActorManager(
+      "peer",
+      peerIdentity,
+      state.mesh,
+      state.meshConfig,
+      state.agents,
+      () => {},
+      {
+        actorRoot: path.join(state.root, "actors"),
+        persistent: true,
+        claimResidency: "session",
+        rootId: peerIdentity.id,
+        // Live foreign owner advertised by the participant directory.
+        canManageActor: () => false,
+      },
+    );
+    actorManagers.push(peer);
+
+    expect(peer.owns(actor.id)).toBe(false);
+    expect(() => peer.tell(actor.id, "blocked")).toThrow("owned by another host");
+    await expect(
+      peer.create({ name: "blocked-create", instructions: "Should fail." }),
+    ).rejects.toThrow("registry is owned by another host");
+  });
+
+  it("settles exactly one adopter when concurrent starters race an orphan", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({
+      name: "raced",
+      instructions: "Only one host may win.",
+      residency: "session",
+    });
+    await state.actors.close();
+
+    // Worst case: neither starter ever sees the other in the directory.
+    // Ownership must still converge through the fenced registry write alone.
+    const makeRacer = (name: string) => {
+      const identity: MeshIdentity = {
+        id: `session:${name}`,
+        name: "main",
+        kind: "main",
+        sessionId: name,
+      };
+      const manager = new ActorManager(
+        name,
+        identity,
+        state.mesh,
+        state.meshConfig,
+        state.agents,
+        () => {},
+        {
+          actorRoot: path.join(state.root, "actors"),
+          persistent: true,
+          claimResidency: "session",
+          rootId: identity.id,
+          canManageActor: () => undefined,
+          lineageAlive: () => false,
+        },
+      );
+      actorManagers.push(manager);
+      return { manager, identity };
+    };
+    const first = makeRacer("racer-a");
+    const second = makeRacer("racer-b");
+
+    await waitFor(
+      () => [first, second].filter(({ manager }) => manager.owns(actor.id)).length === 1,
+    );
+    const winner = first.manager.owns(actor.id) ? first : second;
+    const loser = winner === first ? second : first;
+
+    // The loser resyncs to the winner's persisted lineage and stays passive.
+    await waitFor(() => loser.manager.status(actor.id).rootId === winner.identity.id);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect([first, second].filter(({ manager }) => manager.owns(actor.id))).toHaveLength(1);
+    expect(() => loser.manager.tell(actor.id, "not yours")).toThrow("owned by another host");
+
+    const registry = JSON.parse(
+      fs.readFileSync(path.join(state.root, "actors", "actors.json"), "utf8"),
+    ) as { actors: Array<{ id: string; rootId: string; adoptedAt?: number }> };
+    const rows = registry.actors.filter((row) => row.id === actor.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.rootId).toBe(winner.identity.id);
+    expect(typeof rows[0]?.adoptedAt).toBe("number");
+  });
+
+  it("refuses a late starter while the adopter's lineage root is live", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({
+      name: "claimed",
+      instructions: "Stay with the live adopter.",
+      residency: "session",
+    });
+    await state.actors.close();
+
+    const liveRoots = new Set<string>();
+    const makeRacer = (name: string) => {
+      const identity: MeshIdentity = {
+        id: `session:${name}`,
+        name: "main",
+        kind: "main",
+        sessionId: name,
+      };
+      const manager = new ActorManager(
+        name,
+        identity,
+        state.mesh,
+        state.meshConfig,
+        state.agents,
+        () => {},
+        {
+          actorRoot: path.join(state.root, "actors"),
+          persistent: true,
+          claimResidency: "session",
+          rootId: identity.id,
+          canManageActor: () => undefined,
+          lineageAlive: (rootId) => liveRoots.has(rootId),
+        },
+      );
+      actorManagers.push(manager);
+      return { manager, identity };
+    };
+    const winner = makeRacer("racer-live-a");
+    await waitFor(() => winner.manager.owns(actor.id));
+
+    // The adopter advertises a live lineage root; a later starter loading the
+    // rebound registry must not attempt adoption at all.
+    liveRoots.add(winner.identity.id);
+    const late = makeRacer("racer-live-b");
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(late.manager.owns(actor.id)).toBe(false);
+    expect(() => late.manager.tell(actor.id, "not yours")).toThrow("owned by another host");
+
+    const registry = JSON.parse(
+      fs.readFileSync(path.join(state.root, "actors", "actors.json"), "utf8"),
+    ) as { actors: Array<{ id: string; rootId: string }> };
+    expect(registry.actors.find((row) => row.id === actor.id)?.rootId).toBe(winner.identity.id);
+  });
+
+  it("adopts durable orphans for a resident host while Main stays create-guarded", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({
+      name: "durable-orphan",
+      instructions: "Belong to the resident host.",
+      events: ["agent_settled"],
+      residency: "durable",
+    });
+    await state.actors.close();
+
+    const makeSuccessor = (name: string, claimResidency: "session" | "durable") => {
+      const identity: MeshIdentity = {
+        id: `session:${name}`,
+        name: "main",
+        kind: "main",
+        sessionId: name,
+      };
+      const manager = new ActorManager(
+        name,
+        identity,
+        state.mesh,
+        state.meshConfig,
+        state.agents,
+        () => {},
+        {
+          actorRoot: path.join(state.root, "actors"),
+          persistent: true,
+          claimResidency,
+          rootId: identity.id,
+          canManageActor: () => undefined,
+          lineageAlive: () => false,
+        },
+      );
+      actorManagers.push(manager);
+      return { manager, identity };
+    };
+
+    // Main's claim never matches a durable row: no adoption, and with no
+    // manageable rows at all the create/import guard stays up until the
+    // resident host takes over.
+    const main = makeSuccessor("main-successor", "session");
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(main.manager.owns(actor.id)).toBe(false);
+    await expect(
+      main.manager.create({ name: "blocked", instructions: "No shared rows are manageable." }),
+    ).rejects.toThrow("registry is owned by another host");
+
+    const resident = makeSuccessor("resident-successor", "durable");
+    await waitFor(() => resident.manager.owns(actor.id));
+    expect(resident.manager.status(actor.id).rootId).toBe(resident.identity.id);
+    expect(main.manager.owns(actor.id)).toBe(false);
+    const registry = JSON.parse(
+      fs.readFileSync(path.join(state.root, "actors", "actors.json"), "utf8"),
+    ) as { actors: Array<{ id: string; rootId: string }> };
+    expect(registry.actors.find((row) => row.id === actor.id)?.rootId).toBe(resident.identity.id);
+  });
+
+  it("re-adopts once a dead adopter's grace window has elapsed", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({
+      name: "rehome",
+      instructions: "Accept a new root after the previous adopter dies.",
+      residency: "session",
+    });
+    await state.actors.close();
+
+    const makeRacer = (name: string) => {
+      const identity: MeshIdentity = {
+        id: `session:${name}`,
+        name: "main",
+        kind: "main",
+        sessionId: name,
+      };
+      const manager = new ActorManager(
+        name,
+        identity,
+        state.mesh,
+        state.meshConfig,
+        state.agents,
+        () => {},
+        {
+          actorRoot: path.join(state.root, "actors"),
+          persistent: true,
+          claimResidency: "session",
+          rootId: identity.id,
+          canManageActor: () => undefined,
+          lineageAlive: () => false,
+          adoptionGraceMs: 50,
+        },
+      );
+      actorManagers.push(manager);
+      return { manager, identity };
+    };
+    const first = makeRacer("racer-grace-a");
+    await waitFor(() => first.manager.owns(actor.id));
+    await first.manager.close();
+
+    // The first adopter vanished before any directory advertisement healed;
+    // after the grace window the next starter re-adopts the lineage.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const second = makeRacer("racer-grace-b");
+    await waitFor(() => second.manager.owns(actor.id));
+    expect(second.manager.status(actor.id).rootId).toBe(second.identity.id);
+  });
+
   it("preserves current remote actor records when saving a locally owned actor", async () => {
     let localId: string | undefined;
     const state = setup(true, (id) => localId === undefined || id === localId);
