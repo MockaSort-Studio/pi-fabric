@@ -94,10 +94,11 @@ if (task.includes("HANG")) {
   }));
 } else {
   const fail = task.includes("FAIL_DIRECTIVE");
+  const stopDirective = task.includes("STOP_DIRECTIVE");
   const directive = schema?.properties?.action
     ? {
-        action: "message",
-        message: "fake actor advice",
+        action: stopDirective ? "stop" : "message",
+        message: stopDirective ? "fake actor role complete" : "fake actor advice",
         ...(images.length > 0 ? { data: { imageCount: images.length } } : {}),
       }
     : undefined;

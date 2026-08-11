@@ -801,6 +801,66 @@ describe("ActorManager", () => {
     expect(reply.text).toBe("fake worker complete");
   });
 
+  it("stop rejects queued asks with the actor identity and cause", async () => {
+    const { actors } = setup();
+    const actor = await actors.create({
+      name: "snapshotter",
+      instructions: "Snapshot on demand.",
+      responseMode: "text",
+    });
+
+    const inFlight = actors.ask(actor.id, "HANG");
+    await waitFor(() => actors.status(actor.id).status === "running");
+    const queued = actors.ask(actor.id, "queued behind the hanging run");
+    expect(actors.status(actor.id).queued).toBe(1);
+
+    await actors.stop(actor.id);
+
+    // The queued ask names the actor and that it was stopped externally; the
+    // rejected promise settles synchronously out of stop()'s queue drain.
+    await expect(queued).rejects.toThrow(
+      `Fabric actor snapshotter (${actor.id}) was stopped while messages were queued`,
+    );
+    // The in-flight run instead settles with the runner's abort error.
+    await inFlight.catch(() => undefined);
+    expect(actors.status(actor.id)).toMatchObject({ status: "stopped" });
+  });
+
+  it("a self-issued stop directive rejects queued asks with the actor identity and cause", async () => {
+    const { actors } = setup();
+    const actor = await actors.create({
+      name: "one-shot",
+      instructions: "Stop when your role is complete.",
+      responseMode: "directive",
+    });
+
+    const first = actors.ask(actor.id, "STOP_DIRECTIVE");
+    const queued = actors.ask(actor.id, "queued behind the stop");
+
+    await expect(first).resolves.toMatchObject({ action: "stop" });
+    await expect(queued).rejects.toThrow(
+      `Fabric actor one-shot (${actor.id}) stopped itself with a stop directive while messages were queued`,
+    );
+    await waitFor(() => actors.status(actor.id).status === "stopped");
+  });
+
+  it("identifies the actor when messaging a stopped actor", async () => {
+    const { actors } = setup();
+    const actor = await actors.create({
+      name: "gone",
+      instructions: "Leave when finished.",
+      responseMode: "text",
+    });
+    await actors.stop(actor.id);
+
+    expect(() => actors.tell(actor.id, "hello")).toThrow(
+      `Fabric actor gone (${actor.id}) is stopped`,
+    );
+    expect(() => actors.ask(actor.id, "hello")).toThrow(
+      `Fabric actor gone (${actor.id}) is stopped`,
+    );
+  });
+
   it("haltAll arms a stop-the-world that suppresses host events until the user resumes", async () => {
     const { actors } = setup();
     const actor = await actors.create({

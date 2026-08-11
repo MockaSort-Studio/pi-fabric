@@ -340,7 +340,11 @@ export class ActorManager {
     this.#ownership.set(actor.id, false);
     actor.abortController?.abort();
     for (const item of actor.queue.splice(0)) {
-      item.reject?.(new Error("Fabric actor residency transferred to another host"));
+      item.reject?.(
+        new Error(
+          `Fabric actor ${actor.name} (${actor.id}) residency transferred to another host`,
+        ),
+      );
     }
     if (actor.status !== "stopped") actor.status = "idle";
     actor.updatedAt = Date.now();
@@ -542,7 +546,11 @@ export class ActorManager {
   ): Promise<FabricActorMessage> {
     this.#validateDirectMessage(message, data);
     const actor = this.#requireOwnedActiveActor(id);
-    if (signal?.aborted) return Promise.reject(new Error("Actor request cancelled"));
+    if (signal?.aborted) {
+      return Promise.reject(
+        new Error(`Fabric actor ${actor.name} (${actor.id}) request cancelled`),
+      );
+    }
     return new Promise<FabricActorMessage>((resolve, reject) => {
       const item = this.#enqueue(
         actor,
@@ -554,7 +562,7 @@ export class ActorManager {
         const index = actor.queue.findIndex((queued) => queued.id === item.id);
         if (index >= 0) {
           actor.queue.splice(index, 1);
-          reject(new Error("Actor request cancelled"));
+          reject(new Error(`Fabric actor ${actor.name} (${actor.id}) request cancelled`));
           return;
         }
         actor.abortController?.abort();
@@ -864,7 +872,13 @@ export class ActorManager {
     actor.status = "stopped";
     actor.updatedAt = Date.now();
     actor.abortController?.abort();
-    for (const item of actor.queue.splice(0)) item.reject?.(new Error("Actor stopped"));
+    for (const item of actor.queue.splice(0)) {
+      item.reject?.(
+        new Error(
+          `Fabric actor ${actor.name} (${actor.id}) was stopped while messages were queued`,
+        ),
+      );
+    }
     await this.#publishPresence(actor);
     await this.mesh
       .publish({
@@ -915,7 +929,9 @@ export class ActorManager {
       actor.abortController?.abort();
       // Reject every queued item so subsequent execution is cancelled.
       for (const item of actor.queue.splice(0)) {
-        item.reject?.(new Error("Fabric actor halted by user interrupt"));
+        item.reject?.(
+          new Error(`Fabric actor ${actor.name} (${actor.id}) halted by user interrupt`),
+        );
       }
       actor.updatedAt = Date.now();
       // If no run is in flight, settle the status now; otherwise the drain
@@ -959,7 +975,11 @@ export class ActorManager {
       for (const actor of owned) {
         actor.abortController?.abort();
         for (const item of actor.queue.splice(0)) {
-          item.reject?.(new Error("Actor suspended with its Fabric session"));
+          item.reject?.(
+            new Error(
+              `Fabric actor ${actor.name} (${actor.id}) suspended with its Fabric session`,
+            ),
+          );
         }
       }
       await Promise.allSettled(
@@ -997,7 +1017,9 @@ export class ActorManager {
     if (!canManage) {
       throw new Error(`Fabric actor is owned by another host: ${actor.id}`);
     }
-    if (actor.status === "stopped") throw new Error(`Fabric actor is stopped: ${actor.id}`);
+    if (actor.status === "stopped") {
+      throw new Error(`Fabric actor ${actor.name} (${actor.id}) is stopped`);
+    }
     const createdAt = Date.now();
     const sequence = ++actor.latestActivationSequence;
     if (options.coalesceKey) {
@@ -1182,7 +1204,13 @@ export class ActorManager {
           item.resolve?.(structuredClone(message));
           if (message.action === "stop") {
             actor.status = "stopped";
-            actor.queue.splice(0).forEach((queued) => queued.reject?.(new Error("Actor stopped")));
+            actor.queue.splice(0).forEach((queued) =>
+              queued.reject?.(
+                new Error(
+                  `Fabric actor ${actor.name} (${actor.id}) stopped itself with a stop directive while messages were queued`,
+                ),
+              ),
+            );
           }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -1958,7 +1986,11 @@ export class ActorManager {
       if (previous && !next) {
         actor.abortController?.abort();
         for (const item of actor.queue.splice(0)) {
-          item.reject?.(new Error("Fabric actor ownership moved to another host"));
+          item.reject?.(
+            new Error(
+              `Fabric actor ${actor.name} (${actor.id}) ownership moved to another host`,
+            ),
+          );
         }
         if (actor.status !== "stopped") actor.status = "idle";
       } else if (!previous && next) {
@@ -2002,7 +2034,9 @@ export class ActorManager {
 
   #requireOwnedActiveActor(id: string): ManagedActor {
     const actor = this.#requireOwnedActor(id);
-    if (actor.status === "stopped") throw new Error(`Fabric actor is stopped: ${id}`);
+    if (actor.status === "stopped") {
+      throw new Error(`Fabric actor ${actor.name} (${actor.id}) is stopped`);
+    }
     return actor;
   }
 
