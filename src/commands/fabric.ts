@@ -242,6 +242,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         const option = argumentsList[0];
         if (option === "--off" || option === "--cancel") {
           state.prewalk.cancel();
+          state.prewalkDrift.drop(context.sessionManager.getSessionId());
           context.ui.setStatus("fabric-prewalk", undefined);
           context.ui.notify("Fabric prewalk cancelled", "info");
           return;
@@ -283,6 +284,15 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
             : {}),
           alwaysRearm: state.config.prewalk.alwaysRearm,
         });
+        // Anchor the shell-write drift window at arm time so the first
+        // bash-running boundary diffs against the pre-task tree state; only
+        // snapshot when the fs fallback can actually claim.
+        if (state.config.prewalk.detectShellWrites) {
+          await state.prewalkDrift.captureBaseline(
+            context.sessionManager.getSessionId(),
+            context.cwd,
+          );
+        }
         // Hidden advisory framing, queued for the next prompt (rules before
         // the task when one is submitted below). nextTurn never triggers a
         // turn; custom messages never fire `input`, so observeTask ignores it.

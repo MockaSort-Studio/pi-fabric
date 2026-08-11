@@ -9,6 +9,7 @@ import type { FabricExecutionResult } from "../src/execution-service.js";
 import { PrewalkController } from "../src/prewalk/controller.js";
 import {
   PREWALK_ARMED_MESSAGE_TYPE,
+  claimFabricFsDriftHandoff,
   claimFabricHandoff,
   filterPrewalkContinuationMessages,
   hasPrewalkArmedPrompt,
@@ -144,6 +145,21 @@ const extension = () => {
 };
 
 const unusedRunner = () => ({ executeHandoff: vi.fn() });
+
+const bashExecution = (): FabricExecutionResult => ({
+  ...execution(),
+  audits: [
+    {
+      ref: "pi.bash",
+      nestedToolCallId: "bash-one",
+      startedAt: 1,
+      endedAt: 2,
+      success: true,
+      args: { cmd: "sed -i '' s/old/new/ src/guard.ts" },
+      result: { ok: true },
+    },
+  ],
+});
 
 describe("outer-boundary Prewalk", () => {
   it("switches Main in place and queues a hidden follow-up by default", async () => {
@@ -1097,7 +1113,7 @@ describe("withTrajectoryRearmDirective", () => {
     const text = withTrajectoryRearmDirective("OUTPUT", pending, { completed: true }, controller, "session-1");
     expect(text.startsWith("OUTPUT\n\n")).toBe(true);
     expect(text).toContain("result above is final");
-    expect(text).toContain("pi.edit / pi.write in fabric_exec to hand off again");
+    expect(text).toContain("pi.edit / pi.write or shell file changes in fabric_exec to hand off again");
     expect(text).toContain("keep any fixes scoped to what verification fails.");
   });
 
@@ -1127,5 +1143,106 @@ describe("withTrajectoryRearmDirective", () => {
     const { controller, pending } = trajectoryPending(true);
     controller.completeTask();
     expect(withTrajectoryRearmDirective("OUTPUT", pending, { completed: true }, controller, "session-2")).toBe("OUTPUT");
+  });
+});
+
+describe("filesystem-drift prewalk claims", () => {
+  it("claims shell-write drift with trigger files for an in-place continuation", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+    });
+    const run = bashExecution();
+    const pending = claimFabricFsDriftHandoff(
+      controller,
+      run,
+      "session-1",
+      { files: ["src/guard.ts", "docs/guard.md"], truncated: 3, added: 1, modified: 1, deleted: 0 },
+      "json",
+    );
+
+    expect(run.audits.map((audit) => audit.ref)).toEqual(["pi.bash", "fabric.prewalk"]);
+    expect(pending).toMatchObject({
+      kind: "prewalk-in-place",
+      args: { model: "anthropic/executor", task: "Implement the guard" },
+      triggerRef: "fs.drift",
+      triggerFiles: ["src/guard.ts", "docs/guard.md"],
+      triggerFilesTruncated: 3,
+    });
+
+    const ctx = context();
+    const ext = extension();
+    const result = await runFabricHandoffAtBoundary(
+      controller,
+      unusedRunner(),
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+
+    expect(result).toMatchObject({
+      prewalk: true,
+      mode: "in-place",
+      continued: true,
+      trigger: {
+        ref: "fs.drift",
+        files: ["src/guard.ts", "docs/guard.md"],
+        truncated: 3,
+      },
+    });
+    expect(controller.status()).toMatchObject({ state: "continuation_pending" });
+  });
+
+  it("claims shell-write drift as a trajectory child in trajectory mode", () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      mode: "trajectory",
+      sessionId: "session-1",
+    });
+    const run = bashExecution();
+    const pending = claimFabricFsDriftHandoff(
+      controller,
+      run,
+      "session-1",
+      { files: ["src/guard.ts"], truncated: 0, added: 0, modified: 1, deleted: 0 },
+      "json",
+    );
+
+    expect(pending).toMatchObject({
+      kind: "prewalk-trajectory",
+      audit: { ref: "agents.handoff" },
+      triggerRef: "fs.drift",
+      triggerFiles: ["src/guard.ts"],
+    });
+    expect(controller.status()).toMatchObject({ state: "handing_off", mode: "trajectory" });
+  });
+
+  it("refuses drift claims for a disarmed or foreign session", () => {
+    const controller = new PrewalkController();
+    expect(
+      claimFabricFsDriftHandoff(
+        controller,
+        bashExecution(),
+        "session-1",
+        { files: ["a.ts"], truncated: 0, added: 0, modified: 1, deleted: 0 },
+        "json",
+      ),
+    ).toBeUndefined();
+
+    controller.arm({ model: "anthropic/executor", sessionId: "session-1" });
+    expect(
+      claimFabricFsDriftHandoff(
+        controller,
+        bashExecution(),
+        "session-2",
+        { files: ["a.ts"], truncated: 0, added: 0, modified: 1, deleted: 0 },
+        "json",
+      ),
+    ).toBeUndefined();
+    expect(controller.status()).toMatchObject({ state: "armed" });
   });
 });

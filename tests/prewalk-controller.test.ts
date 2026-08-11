@@ -111,4 +111,42 @@ describe("PrewalkController", () => {
     ).toBeUndefined();
     expect(controller.status()).toEqual({ state: "idle" });
   });
+
+  it("claims filesystem drift with a synthesized fs.drift mutation audit", () => {
+    const controller = new PrewalkController();
+    controller.arm({ model: "anthropic/executor", sessionId: "session-1", task: "Implement" });
+
+    const claim = controller.claimFsDrift("session-1", ["src/a.ts", "src/b.ts"]);
+
+    expect(claim).toMatchObject({
+      arm: { model: "anthropic/executor", task: "Implement", mode: "in-place" },
+      mutation: {
+        ref: "fs.drift",
+        success: true,
+        args: { files: ["src/a.ts", "src/b.ts"] },
+      },
+    });
+    expect(controller.status()).toMatchObject({ state: "handing_off" });
+    expect(controller.claimFsDrift("session-1", ["src/c.ts"])).toBeUndefined();
+  });
+
+  it("refuses filesystem claims when idle, busy, or across sessions", () => {
+    const controller = new PrewalkController();
+    expect(controller.claimFsDrift("session-1", ["a.ts"])).toBeUndefined();
+
+    controller.arm({ model: "anthropic/executor", sessionId: "session-1" });
+    expect(controller.claimFsDrift("session-2", ["a.ts"])).toBeUndefined();
+
+    controller.claimFsDrift("session-1", []);
+    expect(controller.status()).toMatchObject({ state: "handing_off" });
+    expect(controller.claimFsDrift("session-1", ["a.ts"])).toBeUndefined();
+  });
+
+  it("falls back to armed after a failed filesystem handoff", () => {
+    const controller = new PrewalkController();
+    controller.arm({ model: "anthropic/executor", sessionId: "session-1" });
+
+    controller.claimFsDrift("session-1", ["a.ts"]);
+    expect(controller.failHandoff()).toMatchObject({ state: "armed" });
+  });
 });

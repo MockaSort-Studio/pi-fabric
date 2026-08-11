@@ -8,6 +8,11 @@ const PREWALK_TRIGGER_REFS = new Set([
   "schema.commit",
 ]);
 
+// Synthesized audit ref for filesystem-drift claims: writes made through
+// pi.bash (or any call whose file effects audits cannot see) detected by the
+// stat-manifest fallback while armed. Never a real call; trigger ref only.
+const PREWALK_FS_DRIFT_REF = "fs.drift";
+
 interface FabricPrewalkArm {
   mode: FabricPrewalkMode;
   model: string;
@@ -203,17 +208,43 @@ export class PrewalkController {
       (audit) => PREWALK_TRIGGER_REFS.has(audit.ref) && audit.success === true,
     );
     if (!mutation) return undefined;
-    const arm: FabricPrewalkArm = {
-      mode: this.#status.mode,
-      model: this.#status.model,
-      sessionId: this.#status.sessionId,
-      armedAt: this.#status.armedAt,
-      alwaysRearm: this.#status.alwaysRearm,
-      ...(this.#status.task ? { task: this.#status.task } : {}),
-      ...(this.#status.thinking ? { thinking: this.#status.thinking } : {}),
+    const arm = this.#snapshotArm();
+    if (!arm) return undefined;
+    this.#status = { state: "handing_off", ...arm };
+    return { arm, mutation };
+  }
+
+  // Filesystem-fallback claim for writes audits cannot attribute (shell
+  // heredocs, sed -i, formatter binaries). The drift file list rides on the
+  // synthesized mutation audit for dashboard/debug visibility and is already
+  // caller-bounded.
+  claimFsDrift(sessionId: string, files: readonly string[]): FabricPrewalkClaim | undefined {
+    if (!this.isArmed(sessionId)) return undefined;
+    const arm = this.#snapshotArm();
+    if (!arm) return undefined;
+    const mutation: FabricCallAudit = {
+      ref: PREWALK_FS_DRIFT_REF,
+      nestedToolCallId: "fs-drift",
+      startedAt: Date.now(),
+      success: true,
+      ...(files.length > 0 ? { args: { files: [...files] } } : {}),
     };
     this.#status = { state: "handing_off", ...arm };
     return { arm, mutation };
+  }
+
+  #snapshotArm(): FabricPrewalkArm | undefined {
+    if (this.#status.state !== "armed") return undefined;
+    const armed = this.#status;
+    return {
+      mode: armed.mode,
+      model: armed.model,
+      sessionId: armed.sessionId,
+      armedAt: armed.armedAt,
+      alwaysRearm: armed.alwaysRearm,
+      ...(armed.task ? { task: armed.task } : {}),
+      ...(armed.thinking ? { thinking: armed.thinking } : {}),
+    };
   }
 
   cancel(): void {

@@ -61,7 +61,8 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
   },
   "prewalk": {
     "mode": "in-place",
-    "alwaysRearm": false
+    "alwaysRearm": false,
+    "detectShellWrites": true
   },
   "agents": {
     "enabled": true,
@@ -134,6 +135,8 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
 `prewalk.thinking` is the optional reasoning effort (`off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`) for the trajectory child executor, clamped to each model's supported levels. When unset, the executor inherits `agents.thinking`; in-place mode keeps Main's session level.
 
 `prewalk.alwaysRearm` defaults to `false`. When enabled, prewalk returns to an armed, taskless state after each continuation or settled task. The settings UI labels an unset model **Ask each time**; non-interactive sessions must configure a model. In-place mode does not require child agents. Trajectory mode requires `agents.enabled` and exposes child spawn, progress, nested tools, metrics, and completion in Main's Fabric activity UI.
+
+`prewalk.detectShellWrites` defaults to `true`. When armed, a `fabric_exec` boundary that ran a successful `pi.bash` without an audited `pi.edit` / `pi.write` / `schema.commit` claims the handoff if file size/mtime stats drifted from the arm-time baseline, so shell heredocs and formatter binaries also reach the executor. The report's `trigger.files` lists the bounded drifted paths. Set to `false` to require audited mutations only.
 
 `prewalk.compactOnReturn` defaults to `true`. When an in-place continuation settles, Fabric requests a compaction with the configured `compaction.engine` and commits it while the executor is still the active model, so Main's restored model re-ingests the compacted transcript rather than the executor's full scratch work. Set to `false` to keep the complete transcript on Main's return.
 

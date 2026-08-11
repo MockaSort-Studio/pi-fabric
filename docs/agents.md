@@ -116,7 +116,7 @@ With a task, Fabric arms prewalk and submits it to Main immediately. Without one
 
 The default `prewalk.mode` is `"in-place"`:
 
-1. Fabric observes a successful `pi.edit`, `pi.write`, or `schema.commit` and lets the complete outer program settle.
+1. Fabric observes a successful `pi.edit`, `pi.write`, or `schema.commit` and lets the complete outer program settle. When the program ran a successful `pi.bash` instead and no audited mutation fired, a stat-baseline diff of the work tree claims shell writes — heredocs, `sed -i`, formatter binaries — as a filesystem trigger (`fs.drift`) unless `prewalk.detectShellWrites` is `false`.
 2. At the finalized outer result boundary, it selects `prewalk.model` on Main.
 3. It queues a hidden follow-up telling Main to continue the existing task, finish remaining implementation, check matching call sites, and run verification.
 4. The terminating outer tool suppresses an automatic turn on the old model; Pi drains the queued follow-up and continues the same Main session on the executor model.
@@ -129,6 +129,8 @@ Set `prewalk.mode` to `"trajectory"` to opt into the child-based behavior. Fabri
 **Thinking transfer across models.** Stored thinking blocks are provider-shaped (Codex rides as encrypted reasoning items, Anthropic requires valid signatures). Replayed to a different provider they land in unusable request fields or fail outright, so Fabric applies a family policy when writing the trajectory child session: `preserved` when the executor shares the source model's provider and API family; `re-signed` for openai-completions reasoning targets, where thinking text is kept and the signature normalized to `reasoning_content` so preserve-thinking servers receive prior reasoning; `stripped` otherwise, dropping thinking blocks and foreign thought signatures while appending a bounded, entry-id-cited digest custom message (deliberation, not commitments) for continuity. The policy and counts are recorded on the child's `pi-fabric-handoff` custom entry under `thinkingTransfer`. In-place prewalk cannot rewrite Pi's session log, so it sends the same digest as a hidden follow-up whenever channels are incompatible. The source session is never modified.
 
 Prewalk adds no system-prompt instructions. Its hidden continuation is queued only after a matching mutation boundary; it is not an open-ended per-turn nudge. If a captured task settles without a monitored trigger, prewalk disarms instead of leaking into the next task. An explicit successful `agents.handoff()` takes precedence over automatic prewalk. Both modes require full code mode and are unavailable in Schema enforce mode.
+
+The filesystem fallback tracks size/mtime per file against a baseline captured at arm time, refreshed after every considered boundary and every settle. Git work trees list via the index, so ignored build output never registers; git-less trees fall back to a walk skipping only `.git` and `node_modules`, where artifact writes count as drift. The diff cannot attribute authorship, so an external editor save inside a bash-running window also counts; because the fallback only scans programs that ran `pi.bash`, read-only turns never pay or trigger it. Stat drift without content change (rare `touch` churn) still triggers — the report lists the drifted files under `trigger.files`.
 
 ### Claude Code runner
 

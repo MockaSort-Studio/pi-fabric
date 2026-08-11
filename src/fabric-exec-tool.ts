@@ -704,7 +704,7 @@ export const createFabricExecTool = (
 
       const selectedResultFormat =
         params.resultFormat ?? state.config.executor.resultFormat;
-      const pendingHandoff = state.claimHandoff(
+      const pendingHandoff = await state.claimHandoff(
         result,
         context.sessionManager.getSessionId(),
         selectedResultFormat,

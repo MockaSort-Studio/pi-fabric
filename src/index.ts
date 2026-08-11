@@ -373,6 +373,14 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         status.state === "armed" ? `armed → ${status.model}` : undefined,
       );
     }
+    // Drift baselines track armed windows: re-anchor when still armed (a
+    // re-arm starts each new window from the just-settled tree state), drop
+    // once prewalk is no longer armed for this session.
+    if (state.prewalk.status().state === "armed") {
+      void state.prewalkDrift.captureBaseline(sessionId, context.cwd);
+    } else {
+      state.prewalkDrift.drop(sessionId);
+    }
     // Keep the completed widget mounted until a newer Fabric run replaces it.
     // Removing rows at settle would pull the editor and latest chat content upward.
     // Pi's compact API is callback-based. Await the controller's Promise here

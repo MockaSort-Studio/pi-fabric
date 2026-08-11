@@ -25,7 +25,8 @@ import {
   thinkingTransferPolicy,
   type ThinkingTransferInput,
 } from "../agents/thinking-transfer.js";
-import type { PrewalkController } from "./controller.js";
+import type { FabricPrewalkClaim, PrewalkController } from "./controller.js";
+import type { PrewalkFsDrift } from "./fs-drift.js";
 
 const PREWALK_CONTINUE_PROMPT = [
   "Continue the existing task in this same session under the new executor model.",
@@ -44,6 +45,20 @@ const PREWALK_TRAJECTORY_VERIFY_PROMPT = [
 
 export const PREWALK_ARMED_MESSAGE_TYPE = "pi-fabric-prewalk-armed";
 const PREWALK_CONTINUE_MESSAGE_TYPE = "pi-fabric-prewalk-continue";
+
+const prewalkTriggerField = (
+  pending: PendingFabricHandoff,
+): Record<string, unknown> => ({
+  ref: pending.triggerRef,
+  ...(pending.triggerFiles && pending.triggerFiles.length > 0
+    ? {
+        files: pending.triggerFiles,
+        ...(pending.triggerFilesTruncated
+          ? { truncated: pending.triggerFilesTruncated }
+          : {}),
+      }
+    : {}),
+});
 
 const prewalkContinuationId = (message: unknown): string | undefined => {
   if (typeof message !== "object" || message === null) return undefined;
@@ -80,7 +95,7 @@ export const filterPrewalkContinuationMessages = <Message>(
 // be captured as the next prewalk task and never triggers a turn by itself.
 export const prewalkArmedPrompt = (mode: FabricPrewalkMode, model: string): string =>
   [
-    `Prewalk armed → ${model} (${mode}): the first successful pi.edit / pi.write / schema.commit inside fabric_exec hands off to the executor automatically; ${
+    `Prewalk armed → ${model} (${mode}): the first successful pi.edit / pi.write / schema.commit — or file changes produced by shell commands — inside fabric_exec hands off to the executor automatically; ${
       mode === "trajectory"
         ? "the executor takes over the implementation there, and a hidden follow-up asks you to verify its work and summarize when it finishes."
         : `this session switches to ${model} and keeps working.`
@@ -135,14 +150,19 @@ export interface PendingFabricHandoff {
   audit: FabricCallAudit;
   resultFormat: FabricResultFormat;
   triggerRef?: string;
+  // Filesystem-drift trigger evidence, bounded by the drift tracker's report
+  // cap; absent for audited mutation triggers.
+  triggerFiles?: string[];
+  triggerFilesTruncated?: number;
 }
 
 // Appended to the replaced boundary tool result so the framing persists with
 // what Main keeps seeing, anchoring every later turn. Advisory only: prewalk
-// cannot gate the next claim on a plan, and bash edits stay invisible to it.
+// cannot gate the next claim on a plan. Shell writes DO count as triggers when
+// prewalk.detectShellWrites is enabled (the fs-drift fallback claims them).
 const TRAJECTORY_REARM_DIRECTIVE = [
   "Prewalk handoff completed — the executor's result above is final; don't redo it.",
-  "Prewalk re-armed: on the next request, restate remaining steps (skip if trivial), then make changes via pi.edit / pi.write in fabric_exec to hand off again.",
+  "Prewalk re-armed: on the next request, restate remaining steps (skip if trivial), then make changes via pi.edit / pi.write or shell file changes in fabric_exec to hand off again.",
   "A hidden follow-up turn verifies the executor's work and summarizes; keep any fixes scoped to what verification fails.",
 ].join("\n");
 
@@ -188,6 +208,38 @@ export const claimFabricHandoff = (
 
   const claim = controller.claim(execution.audits, sessionId);
   if (!claim) return undefined;
+  const pending = buildPrewalkPending(claim, resultFormat);
+  execution.audits.push(pending.audit);
+  return pending;
+};
+
+// Filesystem-fallback claim path (PREWALK_FS_DRIFT_REF): reached when an armed
+// session ran a successful pi.bash inside the program but no audited pi.edit /
+// pi.write / schema.commit fired — heredocs, sed -i, formatter binaries. The
+// rest of the boundary pipeline (in-place switch or trajectory fork) is
+// identical; only the trigger evidence differs.
+export const claimFabricFsDriftHandoff = (
+  controller: PrewalkController,
+  execution: FabricExecutionResult,
+  sessionId: string,
+  drift: PrewalkFsDrift,
+  resultFormat: FabricResultFormat,
+): PendingFabricHandoff | undefined => {
+  const claim = controller.claimFsDrift(sessionId, drift.files);
+  if (!claim) return undefined;
+  const pending = buildPrewalkPending(claim, resultFormat);
+  if (drift.files.length > 0) {
+    pending.triggerFiles = drift.files;
+    if (drift.truncated > 0) pending.triggerFilesTruncated = drift.truncated;
+  }
+  execution.audits.push(pending.audit);
+  return pending;
+};
+
+const buildPrewalkPending = (
+  claim: FabricPrewalkClaim,
+  resultFormat: FabricResultFormat,
+): PendingFabricHandoff => {
   const inPlace = claim.arm.mode === "in-place";
   const nestedToolCallId = `${NESTED_TOOL_CALL_ID_PREFIX}prewalk_${randomUUID()}`;
   const args = {
@@ -205,7 +257,6 @@ export const claimFabricHandoff = (
     provider: inPlace ? "fabric" : "agents",
     args,
   };
-  execution.audits.push(audit);
   return {
     kind: inPlace ? "prewalk-in-place" : "prewalk-trajectory",
     args,
@@ -333,7 +384,7 @@ const runInPlacePrewalk = async (
     continued: true,
     status: "continued",
     model: modelKey,
-    trigger: { ref: pending.triggerRef },
+    trigger: prewalkTriggerField(pending),
   };
 };
 
@@ -507,7 +558,7 @@ export const runFabricHandoffAtBoundary = async (
     );
     return {
       ...(pending.kind === "prewalk-trajectory"
-        ? { prewalk: true, mode: "trajectory", trigger: { ref: pending.triggerRef } }
+        ? { prewalk: true, mode: "trajectory", trigger: prewalkTriggerField(pending) }
         : {}),
       ...result,
     };
@@ -523,7 +574,7 @@ export const runFabricHandoffAtBoundary = async (
         ? {
             prewalk: true,
             mode: inPlace ? "in-place" : "trajectory",
-            trigger: { ref: pending.triggerRef },
+            trigger: prewalkTriggerField(pending),
           }
         : {}),
       handedOff: false,

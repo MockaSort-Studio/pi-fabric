@@ -1097,6 +1097,16 @@ export const buildFabricSettingsItems = (
             },
           ),
           setting(
+            "prewalk.detectShellWrites",
+            "Detect shell writes",
+            config.prewalk.detectShellWrites ? "true" : "false",
+            {
+              description:
+                "Filesystem fallback trigger: when an armed task ran a successful pi.bash in fabric_exec without an audited pi.edit / pi.write / schema.commit, claim the handoff if file stats drifted from baseline, so shell heredocs, sed -i, or formatter-binary writes also reach the executor.",
+              values: BOOLEANS,
+            },
+          ),
+          setting(
             "prewalk.compactOnReturn",
             "Compact on return",
             config.prewalk.compactOnReturn ? "true" : "false",

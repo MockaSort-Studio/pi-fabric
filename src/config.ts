@@ -70,6 +70,10 @@ interface FabricPrewalkConfig {
   // Compact with the configured engine just before restoring Main's boundary
   // model after an in-place continuation settles.
   compactOnReturn: boolean;
+  // Filesystem fallback trigger: when an armed boundary ran a successful
+  // pi.bash without an audited mutation, claim on stat-manifest drift so
+  // shell heredocs / sed -i / formatter writes also hand off.
+  detectShellWrites: boolean;
   // Reasoning effort for the trajectory executor; unset inherits agents.thinking.
   thinking?: FabricThinking;
 }
@@ -260,6 +264,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     mode: "in-place",
     alwaysRearm: false,
     compactOnReturn: true,
+    detectShellWrites: true,
   },
   agents: {
     enabled: true,
@@ -667,6 +672,10 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       compactOnReturn: booleanValue(
         prewalk.compactOnReturn,
         DEFAULT_FABRIC_CONFIG.prewalk.compactOnReturn,
+      ),
+      detectShellWrites: booleanValue(
+        prewalk.detectShellWrites,
+        DEFAULT_FABRIC_CONFIG.prewalk.detectShellWrites,
       ),
     },
     agents: {

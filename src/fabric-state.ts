@@ -32,7 +32,9 @@ import type {
 } from "./topology/types.js";
 import { actorParticipantRecord, agentParticipantRecords } from "./topology/records.js";
 import { PrewalkController } from "./prewalk/controller.js";
+import { PrewalkDriftTracker } from "./prewalk/fs-drift.js";
 import {
+  claimFabricFsDriftHandoff,
   claimFabricHandoff,
   runFabricHandoffAtBoundary,
   type PendingFabricHandoff,
@@ -92,6 +94,7 @@ export class FabricState {
   readonly #externalProviders = new Map<string, FabricProvider>();
   readonly activity = new FabricActivityStore();
   readonly prewalk = new PrewalkController();
+  readonly prewalkDrift = new PrewalkDriftTracker();
   readonly sessionApprovals = new FabricSessionApprovals();
   #widgetDismissedAt = 0;
 
@@ -196,6 +199,7 @@ export class FabricState {
   async initialize(context: ExtensionContext): Promise<void> {
     await this.#closeInternal();
     this.prewalk.cancel();
+    this.prewalkDrift.clear();
     context.ui.setStatus("fabric-prewalk", undefined);
     this.activity.reset();
     this.sessionApprovals.approvedRisks.clear();
@@ -538,13 +542,16 @@ export class FabricState {
     deepAssign(this.#config as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>);
   }
 
-  claimHandoff(
+  async claimHandoff(
     execution: FabricExecutionResult,
     sessionId: string,
     resultFormat: FabricResultFormat,
     outerToolCallId: string,
-  ): PendingFabricHandoff | undefined {
-    const pending = claimFabricHandoff(this.prewalk, execution, sessionId, resultFormat);
+  ): Promise<PendingFabricHandoff | undefined> {
+    let pending = claimFabricHandoff(this.prewalk, execution, sessionId, resultFormat);
+    if (!pending && this.#config?.prewalk.detectShellWrites) {
+      pending = await this.#claimShellWriteHandoff(execution, sessionId, resultFormat);
+    }
     if (pending) {
       this.activity.resume(outerToolCallId);
       this.activity.beginCall(outerToolCallId, {
@@ -554,6 +561,25 @@ export class FabricState {
       });
     }
     return pending;
+  }
+
+  // Filesystem fallback for writes audits cannot attribute (shell heredocs,
+  // sed -i, formatter binaries). Gated on a successful pi.bash in the program
+  // so read-only scans never pay the stat walk, and external saves can only
+  // mis-fire inside a bash-running window. The tracker refreshes its baseline
+  // on every evaluation, claimed or not, so one change never fires twice.
+  async #claimShellWriteHandoff(
+    execution: FabricExecutionResult,
+    sessionId: string,
+    resultFormat: FabricResultFormat,
+  ): Promise<PendingFabricHandoff | undefined> {
+    if (!this.prewalk.isArmed(sessionId) || !this.#cwd) return undefined;
+    if (!execution.audits.some((audit) => audit.ref === "pi.bash" && audit.success === true)) {
+      return undefined;
+    }
+    const drift = await this.prewalkDrift.evaluate(sessionId, this.#cwd);
+    if (!drift || drift.files.length === 0) return undefined;
+    return claimFabricFsDriftHandoff(this.prewalk, execution, sessionId, drift, resultFormat);
   }
 
   async runHandoffAtBoundary(
@@ -720,6 +746,7 @@ export class FabricState {
     this.#widgetDismissedAt = 0;
     this.#externalProviders.clear();
     this.prewalk.cancel();
+    this.prewalkDrift.clear();
   }
 
   // Publish a best-effort mesh event to the durable `fabric.compact` topic so

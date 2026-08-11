@@ -643,7 +643,7 @@ describe("FabricSettingsComponent", () => {
   it("exposes a dedicated prewalk executor model picker", () => {
     const config = {
       ...DEFAULT_FABRIC_CONFIG,
-      prewalk: { mode: "in-place" as const, model: "anthropic/claude-sonnet-4-5", alwaysRearm: false, compactOnReturn: true },
+      prewalk: { mode: "in-place" as const, model: "anthropic/claude-sonnet-4-5", alwaysRearm: false, compactOnReturn: true, detectShellWrites: true },
     };
     const items = buildFabricSettingsItems(theme, config, () => {}, {
       keepVisibleCandidates: ["fabric_exec"],
@@ -966,12 +966,13 @@ describe("FabricSettingsComponent", () => {
         reloadConfig: vi.fn(() => {
           const saved = JSON.parse(
             fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8"),
-          ) as { prewalk?: { mode?: "in-place" | "trajectory"; model?: string; alwaysRearm?: boolean; compactOnReturn?: boolean } };
+          ) as { prewalk?: { mode?: "in-place" | "trajectory"; model?: string; alwaysRearm?: boolean; compactOnReturn?: boolean; detectShellWrites?: boolean } };
           config.prewalk = {
             mode: saved.prewalk?.mode ?? "in-place",
             ...(saved.prewalk?.model ? { model: saved.prewalk.model } : {}),
             alwaysRearm: saved.prewalk?.alwaysRearm === true,
             compactOnReturn: saved.prewalk?.compactOnReturn !== false,
+            detectShellWrites: saved.prewalk?.detectShellWrites !== false,
           };
         }),
         agents: { claudeModels: vi.fn().mockResolvedValue([]) },
