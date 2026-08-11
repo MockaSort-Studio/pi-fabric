@@ -45,7 +45,15 @@ import { FabricModelSelector } from "./fabric-model-selector.js";
 import { coreToolTitle, renderCoreToolBody } from "./core-tool-render.js";
 import { nestedEditDiff, renderBoundedLines } from "./fabric-render.js";
 import { FabricThinkingSelector } from "./fabric-thinking-selector.js";
-import { formatClock, formatDuration, formatTokens, padToWidth, safeText, wrapPlainText } from "./format.js";
+import {
+  formatActorDataPreview,
+  formatClock,
+  formatDuration,
+  formatTokens,
+  padToWidth,
+  safeText,
+  wrapPlainText,
+} from "./format.js";
 import { highlightCode } from "./highlight.js";
 import { INHERIT_VALUE, type ModelSource } from "./model-picker.js";
 import { formatJsonAsYaml } from "./structured.js";
@@ -2475,7 +2483,12 @@ export class FabricDashboard implements Component, Focusable {
         lines.push("");
         lines.push(this.theme.fg("accent", "Recent mailbox"));
         for (const message of actor.recentMessages) {
-          const text = message.text ?? message.error ?? message.action ?? "data";
+          const text =
+            message.text ??
+            message.error ??
+            message.action ??
+            formatActorDataPreview(message.data) ??
+            "data";
           field(
             `${message.direction === "in" ? "→" : "←"} ${formatClock(message.createdAt)} ${message.source}`,
             text,

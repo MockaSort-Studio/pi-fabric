@@ -14,7 +14,7 @@ import {
   topologyTreeRouteNodeIds,
 } from "../src/ui/dashboard-fabric-graph.js";
 import { configureHighlighting } from "../src/ui/highlight.js";
-import { wrapPlainText } from "../src/ui/format.js";
+import { formatActorDataPreview, wrapPlainText } from "../src/ui/format.js";
 import type { ModelSource } from "../src/ui/model-picker.js";
 import type { FabricThinking } from "../src/thinking.js";
 import type { FabricDashboardSnapshot } from "../src/ui/types.js";
@@ -1036,6 +1036,58 @@ describe("Fabric dynamic UI", () => {
     dashboard.handleInput("l");
     dashboard.handleInput("\r");
   };
+
+  it("previews recent mailbox data payloads instead of the data placeholder", () => {
+    const current = snapshot();
+    const actor = current.actors[0]!;
+    const stamp = Date.now();
+    actor.recentMessages = [
+      {
+        id: "msg-data",
+        actorId: actor.id,
+        actorName: actor.name,
+        direction: "in",
+        source: "mesh:team.review",
+        createdAt: stamp,
+        data: { kind: "finding", path: "src/actors/manager.ts" },
+      },
+      {
+        id: "msg-truncated",
+        actorId: actor.id,
+        actorName: actor.name,
+        direction: "in",
+        source: "mesh:team.review",
+        createdAt: stamp,
+        data: { fabricTruncated: true, originalBytes: 4096, preview: '{"blob":"abcdef' },
+      },
+      {
+        id: "msg-empty",
+        actorId: actor.id,
+        actorName: actor.name,
+        direction: "out",
+        source: "direct",
+        createdAt: stamp,
+      },
+    ];
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      openActorDetail(dashboard);
+      const detail = dashboard.render(200).join("\n");
+      expect(detail).toContain("Recent mailbox");
+      expect(detail).toContain('{"kind":"finding","path":"src/actors/manager.ts"}');
+      expect(detail).toContain('[truncated from 4096 bytes]');
+      expect(detail).not.toContain("mesh:team.review: data");
+      expect(detail).toContain("direct: data");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
 
   it("offers a per-actor model picker from the actor detail view", () => {
     const tui = { requestRender: vi.fn() } as unknown as TUI;
@@ -2220,6 +2272,27 @@ describe("Fabric dynamic UI", () => {
     expect(wrapPlainText("界", 1)).toEqual(["…"]);
     expect(wrapPlainText("👩‍💻x", 2)).toEqual(["👩‍💻", "x"]);
   });
+
+  it("formats actor mailbox data payloads for preview", () => {
+    expect(formatActorDataPreview(undefined)).toBeUndefined();
+    expect(formatActorDataPreview("plain text")).toBe("plain text");
+    expect(formatActorDataPreview({ topic: "team.review" })).toBe('{"topic":"team.review"}');
+    expect(formatActorDataPreview([1, 2, 3])).toBe("[1,2,3]");
+    expect(formatActorDataPreview(42)).toBe("42");
+    expect(
+      formatActorDataPreview({ fabricTruncated: true, originalBytes: 4096, preview: '{"blob":"abc' }),
+    ).toBe('{"blob":"abc [truncated from 4096 bytes]');
+    expect(formatActorDataPreview({ fabricTruncated: true, preview: '{"blob":"abc' })).toBe(
+      '{"blob":"abc [truncated]',
+    );
+    expect(formatActorDataPreview({ fabricTruncated: true, originalBytes: 10 })).toBe(
+      "[truncated from 10 bytes]",
+    );
+    const clipped = formatActorDataPreview("x".repeat(500), 100);
+    expect(clipped).toHaveLength(100);
+    expect(clipped?.endsWith("…")).toBe(true);
+  });
+
 
   it("keeps Main available in Activity and the unified topology without children", () => {
     const current = snapshot();

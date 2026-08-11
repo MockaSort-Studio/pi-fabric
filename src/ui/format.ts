@@ -8,6 +8,37 @@ export const safeText = (value: unknown): string =>
     .replace(/\s+/g, " ")
     .trim();
 
+
+export const formatActorDataPreview = (data: unknown, maxChars = 200): string | undefined => {
+  if (data === undefined) return undefined;
+  const clip = (value: string): string => {
+    const safe = safeText(value);
+    return safe.length > maxChars ? `${safe.slice(0, Math.max(1, maxChars - 1))}…` : safe;
+  };
+  if (typeof data === "string") return clip(data);
+  if (
+    typeof data === "object" &&
+    data !== null &&
+    !Array.isArray(data) &&
+    (data as { fabricTruncated?: unknown }).fabricTruncated === true
+  ) {
+    const wrapper = data as { preview?: unknown; originalBytes?: unknown };
+    const preview = clip(String(wrapper.preview ?? ""));
+    const suffix =
+      typeof wrapper.originalBytes === "number"
+        ? `[truncated from ${wrapper.originalBytes} bytes]`
+        : "[truncated]";
+    return preview ? `${preview} ${suffix}` : suffix;
+  }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(data) ?? String(data);
+  } catch {
+    serialized = String(data);
+  }
+  return clip(serialized);
+};
+
 export const formatDuration = (milliseconds: number): string => {
   const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
   if (seconds < 60) return `${seconds}s`;
