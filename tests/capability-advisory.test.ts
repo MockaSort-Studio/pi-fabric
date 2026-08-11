@@ -404,6 +404,75 @@ describe("CapabilityAdvisor", () => {
     expect(instance.evaluate("query the results table please", config())).toBeDefined();
   });
 
+  it("cannot be gamed by camelCase: one written word is one gate word", () => {
+    // "git"/"hub" live in two sources (df = 2 each), so the source-unique
+    // exemption never applies: a lone "GitHub" is one written word and never
+    // ignites, while the same atoms typed as two words are genuine overlap
+    // (s = 1.0 weak band; warmth crosses θ = 0.9 on the fourth exposure).
+    const splitCorpus = [
+      descriptor("alpha_notes", "Hub notes for git archaeology.", "extension:alpha"),
+      descriptor("beta_metrics", "git sums hub metrics.", "extension:beta"),
+    ];
+    const lone = new CapabilityAdvisor();
+    lone.refresh(splitCorpus);
+    for (let attempt = 0; attempt < 6; attempt++) {
+      expect(lone.evaluate("GitHub", config())).toBeUndefined();
+    }
+    const twoWords = new CapabilityAdvisor();
+    twoWords.refresh(splitCorpus);
+    expect(twoWords.evaluate("git hub", config())).toBeUndefined();
+    expect(twoWords.evaluate("git hub", config())).toBeUndefined();
+    expect(twoWords.evaluate("git hub", config())).toBeUndefined();
+    expect(twoWords.evaluate("git hub", config())).toBeDefined();
+  });
+
+  it("admits a source-unique word into the weak band through sustained warmth", () => {
+    // "project" matches only pi-better-openai (df = 1 → one full score
+    // quantum, s = 1.0 ≥ θ). A lone word used to be void; now it ignites like
+    // any weak match — on the fourth identical prompt, never the first.
+    const instance = advisor();
+    expect(instance.evaluate("the project", config())).toBeUndefined();
+    expect(instance.evaluate("the project", config())).toBeUndefined();
+    expect(instance.evaluate("the project", config())).toBeUndefined();
+    const ignited = instance.evaluate("the project", config());
+    expect(ignited?.content).toContain("might match your prompt.");
+    expect(ignited?.details.matches.map((match) => match.namespace)).toContain(
+      "extension:pi-better-openai",
+    );
+  });
+
+  it("scores one written word as one unit of evidence in any casing", () => {
+    // Issue #26: CJK characters atomize to nothing, so the brand word is the
+    // only surviving latin token. Every casing of it must score and gate
+    // identically — one source-unique word (s = 1.0, weak band, igniting on
+    // the fourth sustained prompt).
+    const catalog = [
+      descriptor("github_repo", "Read GitHub repository metadata", "extension:pi-integrations"),
+      descriptor("github_issue", "List GitHub issues", "extension:pi-integrations"),
+    ];
+    for (const prompt of ["看看 github 仓库", "看看 GitHub 仓库", "看看 GITHUB 仓库"]) {
+      const instance = new CapabilityAdvisor();
+      instance.refresh(catalog);
+      expect(instance.evaluate(prompt, config())).toBeUndefined();
+      expect(instance.evaluate(prompt, config())).toBeUndefined();
+      expect(instance.evaluate(prompt, config())).toBeUndefined();
+      const fire = instance.evaluate(prompt, config());
+      expect(fire?.details.matches[0]?.score).toBe(1);
+      expect(fire?.content).toContain("might match your prompt.");
+      expect(fire?.content).toContain("extensions.github_repo");
+    }
+    // Ordinary multi-word overlap still reaches the strong band at once, and
+    // camelCase spelling of the brand word earns no extra evidence.
+    for (const prompt of ["check github repo", "check GitHub repo"]) {
+      const instance = new CapabilityAdvisor();
+      instance.refresh(catalog);
+      const fire = instance.evaluate(prompt, config());
+      expect(fire?.details.matches[0]?.score).toBe(2);
+      expect(fire?.content).toContain("matched your prompt.");
+      expect(fire?.content).not.toContain("might match");
+    }
+  });
+
   it("exports the custom type used for message injection", () => {
     expect(CAPABILITY_ADVISORY_CUSTOM_TYPE).toBe("pi-fabric-capability");
   });

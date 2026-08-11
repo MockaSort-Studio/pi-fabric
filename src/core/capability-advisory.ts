@@ -2,7 +2,8 @@ import type { FabricCapabilityAdvisoryConfig } from "../config.js";
 import type { FabricActionDescriptor } from "../protocol.js";
 import {
   buildCapabilityIndex,
-  tokenizeCapabilityText,
+  capabilityWordCandidates,
+  splitCapabilityWords,
   truncateAdvisoryDescription,
   type CapabilityIndex,
 } from "./capability-fingerprint.js";
@@ -261,28 +262,66 @@ export class CapabilityAdvisor {
     // sustained evidence after a streak of ignored fires.
     const ignitionPoint = config.threshold * (1 + SMOKE_STEP * this.#smokeStreak);
 
-    const promptTerms = [...new Set(tokenizeCapabilityText(stripSkillRegions(prompt)))];
-    if (promptTerms.length === 0 || this.#index.sourceCount === 0) return undefined;
+    const stripped = stripSkillRegions(prompt);
+    // Written words before camelCase atomization, each with its corpus
+    // candidate readings (camelCase atoms plus the word itself). One written
+    // word is one unit of intent and of evidence: the scorer and the overlap
+    // gate below both count these, so casing a word differently never changes
+    // either count. Words with no surviving candidates drop out.
+    const promptWords = splitCapabilityWords(stripped)
+      .map((word) => new Set(capabilityWordCandidates(word)))
+      .filter((candidates) => candidates.size > 0);
+    if (promptWords.length === 0 || this.#index.sourceCount === 0) return undefined;
+
+    // Each matched written word contributes the rarity of its rarest matched
+    // reading (weight = 1/df is monotone, so max weight = min df): exactly
+    // one quantum per word, whichever way the word was cased.
+    const scoreWords = (hasTerm: (term: string) => boolean) => {
+      let score = 0;
+      let matchedWords = 0;
+      const contributingTerms: string[] = [];
+      for (const candidates of promptWords) {
+        let bestWeight = 0;
+        let bestTerm: string | undefined;
+        for (const term of candidates) {
+          if (!hasTerm(term)) continue;
+          const frequency = this.#index.docFrequency(term);
+          if (frequency === 0) continue;
+          const weight = 1 / frequency;
+          if (weight > bestWeight) {
+            bestWeight = weight;
+            bestTerm = term;
+          }
+        }
+        if (bestTerm === undefined) continue;
+        matchedWords += 1;
+        score += bestWeight;
+        contributingTerms.push(bestTerm);
+      }
+      return { score, matchedWords, contributingTerms };
+    };
 
     const matches: CapabilityAdvisoryMatch[] = [];
     for (const source of this.#index.sources) {
       if (this.#ash.has(source.namespace)) continue;
       // Score with 1/df term weights, not raw idf: idf magnitude collapses on
       // small captured catalogs (ln(4/2) < 1), silently starving matches below
-      // the threshold, while 1/df keeps "two distinctive terms ≈ one source"
+      // the threshold, while 1/df keeps "two distinctive words ≈ one source"
       // meaningful at any catalog size.
-      const matchedTerms: string[] = [];
-      let score = 0;
-      for (const term of promptTerms) {
-        if (!source.tf.has(term)) continue;
-        matchedTerms.push(term);
-        const frequency = this.#index.docFrequency(term);
-        if (frequency > 0) score += 1 / frequency;
-      }
-      // Require at least two shared terms: a lone distinctive word ("project",
-      // "recent") is vocabulary collision, not intent, and single-term fires
-      // are the fastest route to banner blindness.
-      if (matchedTerms.length < 2 || score < config.threshold) continue;
+      const unit = scoreWords((term) => source.tf.has(term));
+      const { score } = unit;
+      // Vocabulary-overlap gate: the match needs at least two matched
+      // written words, so a lone distinctive word ("project", "recent") stays
+      // what it is — vocabulary collision, not intent. The exception: a word
+      // whose rarest reading is unique to this source (df = 1) contributes a
+      // full score quantum, the smallest unit of unambiguous evidence the
+      // scorer expresses, so a single source-unique word earns the weak band,
+      // where sustained warmth — not instant ignition — does the transience
+      // filtering.
+      const hasSourceUniqueMatch = unit.contributingTerms.some(
+        (term) => this.#index.docFrequency(term) === 1,
+      );
+      if ((unit.matchedWords < 2 && !hasSourceUniqueMatch) || score < config.threshold) continue;
 
       const strong = score >= config.threshold + WEAK_MATCH_BAND;
       if (!strong) {
@@ -292,20 +331,13 @@ export class CapabilityAdvisor {
         if (warmth < ignitionPoint) continue;
       }
 
-      // Rank this source's tools by their own prompt-term overlap so the most
-      // relevant refs lead (e.g. openai_websearch before openai_image on a
-      // web-search prompt) instead of inherited catalog order.
+      // Rank this source's tools by their own prompt-word overlap so the
+      // most relevant refs lead (e.g. openai_websearch before openai_image on
+      // a web-search prompt) instead of inherited catalog order.
       const order = source.names.map((_, index) => index).sort((a, b) => {
         const scoreAt = (index: number): number => {
-          let toolScore = 0;
           const terms = source.toolTerms[index];
-          if (!terms) return 0;
-          for (const term of promptTerms) {
-            if (!terms.has(term)) continue;
-            const frequency = this.#index.docFrequency(term);
-            if (frequency > 0) toolScore += 1 / frequency;
-          }
-          return toolScore;
+          return terms === undefined ? 0 : scoreWords((term) => terms.has(term)).score;
         };
         return scoreAt(b) - scoreAt(a) || a - b;
       });
@@ -313,7 +345,7 @@ export class CapabilityAdvisor {
         namespace: source.namespace,
         label: source.label,
         score,
-        matchedTerms: matchedTerms.sort(
+        matchedTerms: unit.contributingTerms.sort(
           (a, b) => this.#index.docFrequency(a) - this.#index.docFrequency(b),
         ),
         names: order.map((index) => source.names[index] ?? "").filter((name) => name !== ""),

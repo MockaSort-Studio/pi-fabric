@@ -3,7 +3,9 @@ import type { FabricActionDescriptor } from "../src/protocol.js";
 import {
   buildCapabilityIndex,
   capabilitySourceLabel,
+  capabilityWordCandidates,
   type CapabilitySourceFingerprint,
+  splitCapabilityWords,
   tokenizeCapabilityText,
   truncateAdvisoryDescription,
 } from "../src/core/capability-fingerprint.js";
@@ -35,6 +37,29 @@ describe("tokenizeCapabilityText", () => {
 
   it("drops stopwords and single-character tokens", () => {
     expect(tokenizeCapabilityText("a run with the B tool")).toEqual(["run", "tool"]);
+  });
+});
+
+describe("splitCapabilityWords", () => {
+  it("keeps written words whole and dedupes them case-insensitively", () => {
+    expect(splitCapabilityWords("GitHub github deepWiki")).toEqual(["GitHub", "deepWiki"]);
+  });
+
+  it("splits on non-alphanumerics and drops non-latin text", () => {
+    expect(splitCapabilityWords("看看 github_repo.run 仓库 v2")).toEqual(["github", "repo", "run", "v2"]);
+    expect(splitCapabilityWords("看看仓库")).toEqual([]);
+  });
+});
+
+describe("capabilityWordCandidates", () => {
+  it("exposes camelCase atoms plus the written word itself", () => {
+    expect(new Set(capabilityWordCandidates("GitHub"))).toEqual(new Set(["git", "hub", "github"]));
+    expect(new Set(capabilityWordCandidates("deepWiki"))).toEqual(new Set(["deep", "wiki", "deepwiki"]));
+  });
+
+  it("holds the joined reading to the same token rules", () => {
+    expect(capabilityWordCandidates("the")).toEqual([]);
+    expect(capabilityWordCandidates("v2")).toEqual(["v2"]);
   });
 });
 

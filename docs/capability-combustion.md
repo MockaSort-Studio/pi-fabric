@@ -23,16 +23,24 @@ when the available evidence says it will be used.
 
 Captured tools are fingerprinted by source namespace. Each source's corpus is
 its tools' names plus descriptions. A prompt scores against each unburned
-source as the sum of matched-term weights:
+source as the sum of per-word evidence:
 
 $$
-s(p, j) = \sum_{t \in T(p) \cap T(j)} \frac{1}{\mathrm{df}(t)}, \qquad \mathrm{df}(t) = \Bigl|\{ j : t \in T(j) \}\Bigr|
+s(p, j) = \sum_{w \in W(p)} \max_{t \in R(w) \cap T(j)} \frac{1}{\mathrm{df}(t)}, \qquad \mathrm{df}(t) = \Bigl|\{ j : t \in T(j) \}\Bigr|
 $$
+
+where $W(p)$ is the prompt's written words and $R(w)$ the readings of one
+word — its camelCase atoms plus the word itself, both held to the corpus
+token rules. One written word therefore contributes exactly one unit of
+evidence: the rarity of its rarest matched reading. Casing is just spelling:
+every casing of a word has the same reading set, so a camelCase brand word
+("GitHub" vs "github" vs "GITHUB") can never earn more quanta than any other
+spelling of itself.
 
 The weight is plain $1/\mathrm{df}$, with no logarithm. The catalog is too
 small for classic idf: with four sources, $\ln(4/2) < 1$, so a rare term would
 score below a common one and matches would starve. Weight $1/\mathrm{df}$
-keeps "two distinctive terms about equal to one source" true at any catalog
+keeps "two distinctive words about equal to one source" true at any catalog
 size.
 
 Pre-ignition filters:
@@ -42,8 +50,17 @@ Pre-ignition filters:
   ambient context rather than user intent, and its vocabulary would poison the
   fingerprint. The matcher removes those regions before tokenization. An
   unclosed trailing tag counts as stripped too.
-- **At least two matched terms.** A single distinctive word such as "project"
-  or "recent" is a vocabulary coincidence. It is not intent.
+- **At least two matched written words.** A lone distinctive word such as
+  "project" or "recent" is a vocabulary coincidence, not intent. The gate
+  and the scorer share one unit — the written word — so casing can inflate
+  neither the count nor the score. One exception: a word whose rarest
+  reading is found in exactly one source (df = 1) already weighs a full
+  score quantum, the smallest unit of unambiguous evidence the scorer can
+  express, so a single source-unique word earns the weak band on its own,
+  with sustained warmth doing the transience filtering.
+- **Latin-only tokenization.** Matching keeps latin alphanumerics of two or
+  more characters; CJK scripts atomize to nothing, so a CJK prompt matches
+  through the latin brand words it contains.
 - **Stopword filtering** during tokenization (see `capability-fingerprint.ts`).
 
 ## Ignition bands and warmth
@@ -54,11 +71,12 @@ The dynamics hold several constants: band width, retention, smoke step, streak
 cap, session cap. Every one of them projects from two primitives plus the
 user-facing $\theta$:
 
-1. **The score quantum $q = 1$.** Under $1/\mathrm{df}$ scoring, a term found
-   in exactly one source weighs $1/1 = 1$. That is the smallest unit of
-   unambiguous evidence the scorer can express. The weak band is one quantum
-   wide, $B = q = 1$, so a weak match gains instant ignition as soon as one
-   more source-unique term appears.
+1. **The score quantum $q = 1$.** Under $1/\mathrm{df}$ scoring, a written
+   word whose rarest matched reading lives in exactly one source weighs
+   $1/1 = 1$. That is the smallest unit of unambiguous evidence the scorer
+   can express. The weak band is one quantum wide, $B = q = 1$, so a weak
+   match gains instant ignition as soon as one more source-unique word
+   appears.
 2. **The memory scale $\tau = 2$ turns.** Every temporal behavior below is the
    same exponential integrator with retention $1 - 1/\tau$. The table shows
    how the remaining constants come out:

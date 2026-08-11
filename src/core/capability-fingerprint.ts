@@ -30,6 +30,9 @@ export interface CapabilityIndex {
   docFrequency(term: string): number;
 }
 
+// Matching is latin-alphanumeric only: anything else (notably CJK scripts)
+// atomizes to nothing, so a non-latin prompt matches through the latin brand
+// words it contains.
 export const tokenizeCapabilityText = (text: string): string[] => {
   const matches = text
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -38,6 +41,38 @@ export const tokenizeCapabilityText = (text: string): string[] => {
     .match(/[a-z][a-z0-9]{1,}/g);
   if (!matches) return [];
   return matches.filter((token) => !CAPABILITY_STOPWORDS.has(token));
+};
+
+// Written words as typed, before any camelCase atomization: original casing
+// preserved, deduped case-insensitively in first-seen order. The advisory
+// counts these for its vocabulary-overlap gate, so one word is one unit of
+// intent regardless of casing ("GitHub" and "github" are each a single word)
+// — camelCase atomization must not inflate real vocabulary overlap.
+// Corpus candidates for one written word: its camelCase atoms plus the word
+// itself, held to the same token rules as the corpus. Both readings mean the
+// same vocabulary, so a word's spelling pattern — "GitHub", "github",
+// "GITHUB" — never changes what it can match or how much it can weigh.
+export const capabilityWordCandidates = (word: string): string[] => {
+  const candidates = new Set(tokenizeCapabilityText(word));
+  const joined = word.toLowerCase();
+  if (/^[a-z][a-z0-9]{1,}$/.test(joined) && !CAPABILITY_STOPWORDS.has(joined)) {
+    candidates.add(joined);
+  }
+  return [...candidates];
+};
+
+export const splitCapabilityWords = (text: string): string[] => {
+  const words = text.match(/[A-Za-z0-9]+/g);
+  if (!words) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const word of words) {
+    const key = word.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(word);
+  }
+  return result;
 };
 
 const SOURCE_LABEL_PREFIX = "extension:";
