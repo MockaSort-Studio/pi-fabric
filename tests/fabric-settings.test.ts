@@ -153,6 +153,7 @@ describe("FabricSettingsComponent", () => {
       "Prewalk",
       "Agents",
       "Capture",
+      "Surprise",
       "UI",
       "Compaction",
       "Retention",
@@ -161,7 +162,7 @@ describe("FabricSettingsComponent", () => {
     ]) {
       expect(labels).toContain(label);
     }
-    expect(items.length).toBe(12);
+    expect(items.length).toBe(13);
   });
 
   it("marks submenu rows with a drill-in marker and leaves inline toggles plain", () => {

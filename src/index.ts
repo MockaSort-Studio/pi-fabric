@@ -21,6 +21,7 @@ import type { PendingFabricHandoff } from "./prewalk/handoff.js";
 import {
   DEFAULT_FABRIC_CONFIG,
   effectiveToolCaptureConfig,
+  type FabricSurpriseConfig,
 } from "./config.js";
 import { registerCompactionHook } from "./compaction/hook.js";
 import { compactAtConfiguredThreshold } from "./compaction/threshold.js";
@@ -40,6 +41,9 @@ import {
   mergeFabricApprovalUsage,
 } from "./core/direct-tool-approval.js";
 import { buildSkillReferenceGuidance } from "./core/skill-references.js";
+import { SurpriseDetector } from "./core/surprise.js";
+import { SurpriseTrace } from "./core/surprise-trace.js";
+import { SurpriseTuning } from "./core/surprise-tuning.js";
 import {
   CAPABILITY_ADVISORY_CUSTOM_TYPE,
   CapabilityAdvisor,
@@ -106,6 +110,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   );
   const capturedTools = new CapturedToolCatalog();
   const capabilityAdvisor = new CapabilityAdvisor();
+  const surpriseDetector = new SurpriseDetector();
+  const surpriseTracer = new SurpriseTrace();
+  const surpriseTuning = new SurpriseTuning();
   const state = new FabricState(pi, capturedTools, (entry) => {
     // Organic discovery: the model found and used the namespace on its own —
     // burn it as ash so no future hint wastes the fire. Nothing to persist:
@@ -126,6 +133,12 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   const fabricUi = new FabricUiController(state, codePreviewSettings);
 
   const capturePolicy = () => effectiveToolCaptureConfig(state.config);
+  // Surprise sensor gate: trace/notify modes run the detector; "off" leaves
+  // the host byte-identical to pre-sensor behavior.
+  const surprisePolicy = (): FabricSurpriseConfig | undefined =>
+    state.initialized && state.config.surprise.mode !== "off"
+      ? state.config.surprise
+      : undefined;
   const fabricOwnsModelTools = (): boolean =>
     state.config.fullCodeMode || state.config.schema.mode === "enforce";
   // Captured tools that must stay out of the model's active set in full code
@@ -303,6 +316,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     fabricUi.stop();
     suspendToolCapture();
     capabilityAdvisor.reset();
+    surpriseDetector.reset();
+    surpriseTuning.reset();
+    surpriseTracer.reset();
     refreshAdvisorAsh(context);
     if (!compatibilityWarningShown) {
       compatibilityWarningShown = true;
@@ -313,6 +329,13 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       }
     }
     await state.initialize(context);
+    if (surprisePolicy()) {
+      surpriseTuning.configure(context.cwd, state.config.surprise);
+      surpriseTracer.configure(
+        context.cwd,
+        context.sessionManager.getSessionId(),
+      );
+    }
     try {
       refreshCodePreviewSettings();
       Object.assign(
@@ -331,6 +354,8 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   // rewind re-exposes capabilities whose burns live only in abandoned paths.
   pi.on("session_tree", async (_event, context) => {
     capabilityAdvisor.reset();
+    surpriseDetector.reset();
+    surpriseTuning.reset();
     refreshAdvisorAsh(context);
     return undefined;
   });
@@ -341,6 +366,12 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       context.sessionManager.getSessionId(),
       event.text,
     );
+    // Human input only: programmatic (rpc/extension) input carries no
+    // "someone is watching" signal for the surprise features.
+    if (event.source === "interactive" && surprisePolicy()) {
+      surpriseDetector.observeInput(event.streamingBehavior !== undefined);
+      surpriseTuning.noteHumanActivity();
+    }
     await state.publishHostLifecycle("pi.input", event);
   });
 
@@ -356,6 +387,39 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     if (!state.initialized) return;
     // Furnace feedback: did the just-fired advisory lead to captured tool use?
     capabilityAdvisor.endTurn();
+    const surprise = surprisePolicy();
+    if (surprise) {
+      const tuning = surpriseTuning.parameters(surprise);
+      const verdict = surpriseDetector.endTurn(event.turnIndex, { ...surprise, ...tuning });
+      surpriseTracer.append(verdict, surprise.mode);
+      // Outcome windows close here: a fire from `cooldown` turns ago is
+      // confirmed if any fabric.surprise subscriber received it or a human
+      // engaged after it; audience-free sessions abstain from judgment.
+      const resolutions = surpriseTuning.resolveOutcomes(event.turnIndex, (sinceMs) =>
+        state.lifecycleEventEngagement("fabric.surprise", sinceMs),
+      );
+      for (const resolution of resolutions) {
+        surpriseTracer.note({ kind: "outcome", ...resolution });
+      }
+      if (verdict.fire) {
+        // Publisher posture: publish is a no-op when nobody subscribes, so an
+        // unconsumed alarm costs nothing anywhere. The sensor invites nobody.
+        surpriseTuning.registerFire(event.turnIndex, surprise.cooldown);
+        await state.publishHostLifecycle("fabric.surprise", {
+          ...verdict,
+          reasonText: verdict.reasons.join("; "),
+        });
+        if (surprise.mode === "notify" && context.hasUI) {
+          // Notify mode surfaces the evidence; extending an invitation stays
+          // the human's (or a subscribing skill's) call.
+          context.ui.notify(
+            `fabric: surprise S=${verdict.cusum.toFixed(2)} ≥ h=${verdict.threshold.toFixed(2)} (${verdict.reasons.join("; ") || "no dominant feature"}) — /skill:fabric-advisor engages a peer advisor`,
+            "info",
+          );
+        }
+      }
+      surpriseTuning.observeTurn(verdict.score, verdict.fire);
+    }
     await state.publishHostLifecycle("pi.turn_end", event);
   });
 
@@ -480,9 +544,14 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     };
   });
 
+  pi.on("tool_execution_start", (event) => {
+    if (surprisePolicy()) surpriseDetector.observeToolStart(event.toolName, event.args);
+  });
+
   pi.on("tool_execution_end", async (event, context) => {
     if (!state.initialized) return;
     state.noteMainActivity(context);
+    if (surprisePolicy()) surpriseDetector.observeToolEnd(event.isError);
     if (event.isError) {
       state.dispatchHostEvent("tool_error", event, context);
       await state.publishHostLifecycle("pi.tool_error", event);

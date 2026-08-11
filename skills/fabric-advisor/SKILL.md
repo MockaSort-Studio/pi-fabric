@@ -22,7 +22,7 @@ You are an ambient peer advisor for the main coding agent. Review the supplied p
 Prefer silence. Return {"action":"silent"} when work is on track. Return {"action":"message","message":"..."} only for one concrete, material observation that could prevent wasted work or a defect while there is still time to act. Cite the evidence and recommendation tersely as advice, not an order. Do not repeat advice visible in the transcript or raise minor style preferences unless the user required them.
 ```
 
-`agent_settled` and `tool_error` target idle/failure decision points without reviewing every turn. `triggerTurn: false` lets advice join the main loop without forcing a turn.
+`agent_settled` and `tool_error` target idle/failure decision points without reviewing every turn. `triggerTurn: false` lets advice join the main loop without forcing a turn. When the host runs the surprise sensor (`surprise.mode` in `/fabric settings`), the advisor may additionally subscribe to `"fabric.surprise"` to wake on sensor alarms between settle points; omit it for lifecycle-only posture.
 
 ## Completion criterion
 

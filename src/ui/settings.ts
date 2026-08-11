@@ -39,6 +39,7 @@ import {
   MIN_COMPACTION_TOKEN_THRESHOLD,
   QUICKJS_MAX_MEMORY_LIMIT_BYTES,
   saveFabricConfig,
+  type FabricSurpriseMode,
   type FabricCapabilityAdvisoryMode,
   type FabricConfig,
   type FabricConfigScope,
@@ -61,6 +62,13 @@ const ADVISORY_MODES = ["hidden", "enabled", "disabled"] as const satisfies read
 const ADVISORY_THRESHOLDS = ["0.6", "0.9", "1.4", "2.0"] as const;
 const ADVISORY_SESSION_CAPS = ["1", "3", "5", "10"] as const;
 const ADVISORY_BUDGETS = ["256", "512", "1024", "2048"] as const;
+const SURPRISE_MODES = ["off", "trace", "notify"] as const satisfies readonly FabricSurpriseMode[];
+const SURPRISE_WINDOWS = ["8", "16", "24", "32"] as const;
+const SURPRISE_DRIFTS = ["0.15", "0.3", "0.5", "0.8"] as const;
+const SURPRISE_THRESHOLDS = ["1", "2", "3", "5"] as const;
+const SURPRISE_COOLDOWNS = ["2", "3", "5", "8"] as const;
+const SURPRISE_SESSION_CAPS = ["2", "5", "8", "12"] as const;
+const SURPRISE_BUDGETS = ["0.5", "1", "2", "5"] as const;
 const RESULT_FORMATS = ["auto", "yaml", "json", "text"] as const;
 const EXECUTOR_RUNTIMES = ["quickjs", "node-process"] as const;
 const COMPACTION_ENGINES = ["fabric", "pi"] as const;
@@ -349,6 +357,12 @@ const summaryFor = (id: string, config: FabricConfig): string => {
       return `${config.agents.runner}/${config.agents.transport}`;
     case "capture":
       return config.capture.enabled ? "enabled" : "disabled";
+    case "surprise": {
+      if (config.surprise.mode === "off") return "off";
+      return config.surprise.learn
+        ? `${config.surprise.mode} · ${config.surprise.budget}/100t`
+        : `${config.surprise.mode} · h ${config.surprise.threshold}`;
+    }
     case "ui":
       return config.ui.widget;
     case "compaction":
@@ -1337,6 +1351,49 @@ export const buildFabricSettingsItems = (
               values: RISKS,
             }),
           ),
+        ],
+        persist,
+      ),
+    }),
+    setting("surprise", "Surprise", summaryFor("surprise", config), {
+      description: "Turn-level surprise sensor: CUSUM evidence that a human observer would speak up.",
+      submenu: sectionSubmenu(
+        theme,
+        "Surprise",
+        "Session surprise sensor: behavioral features against their own baselines, CUSUM-accumulated per turn (docs/surprise.md).",
+        [
+          setting("surprise.mode", "Mode", config.surprise.mode, {
+            description: "notify (default): one session-capped notification when the accumulator crosses h. trace: log only, for calibration. off: disabled. The sensor never invites anyone itself.",
+            values: SURPRISE_MODES,
+          }),
+          setting("surprise.learn", "Self-tuning", config.surprise.learn ? "true" : "false", {
+            description: "Adapt h and d toward the alert budget with stochastic approximation; observed alarm outcomes float the budget. Off pins h and d below as exact values.",
+            values: BOOLEANS,
+          }),
+          setting("surprise.budget", "Alert budget per 100 turns", String(config.surprise.budget), {
+            description: "Target fires per 100 turns while learning; floats with observed alarm outcomes between 0.2 and 5.",
+            values: SURPRISE_BUDGETS,
+          }),
+          setting("surprise.threshold", "Alarm threshold h", String(config.surprise.threshold), {
+            description: "CUSUM alarm level in z-weighted surprise quanta. Higher means rarer fires.",
+            values: SURPRISE_THRESHOLDS,
+          }),
+          setting("surprise.drift", "Drift allowance d", String(config.surprise.drift), {
+            description: "Per-turn evidence required just to hold the accumulator level; churn below this cools away.",
+            values: SURPRISE_DRIFTS,
+          }),
+          setting("surprise.window", "Baseline window", String(config.surprise.window), {
+            description: "Turns of feature history in the EWMA baselines (alpha = 1/window).",
+            values: SURPRISE_WINDOWS,
+          }),
+          setting("surprise.cooldown", "Cooldown turns", String(config.surprise.cooldown), {
+            description: "Silent turns after a fire; the accumulator holds at zero while cooling.",
+            values: SURPRISE_COOLDOWNS,
+          }),
+          setting("surprise.maxPerSession", "Fires per session", String(config.surprise.maxPerSession), {
+            description: "Session cap on fires.",
+            values: SURPRISE_SESSION_CAPS,
+          }),
         ],
         persist,
       ),

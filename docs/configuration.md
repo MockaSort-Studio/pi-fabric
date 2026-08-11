@@ -53,6 +53,16 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
       "fovea_impact": "read"
     }
   },
+  "surprise": {
+    "mode": "notify",
+    "learn": true,
+    "budget": 1,
+    "window": 16,
+    "drift": 0.3,
+    "threshold": 2,
+    "cooldown": 3,
+    "maxPerSession": 5
+  },
   "mcp": {
     "enabled": true,
     "disableOAuth": true,
@@ -272,6 +282,23 @@ Fabric clears inactive run artifacts by age rather than truncating active JSONL 
 - `retention.actorRunArchiveMs` — retain terminal actor run archives for seven days. The latest run for each actor is always preserved.
 
 Cleanup runs during active Fabric sessions and when a new top-level run manager starts. It never truncates active run logs or actor `session.jsonl` files. `/fabric settings` exposes all three values under **Retention**; changing them requires `/fabric reload`.
+
+## Surprise
+
+The session surprise sensor: pure counting statistics over events the host already observes (tool errors, repeated calls, mid-stream steers, cross-turn file revisits, input gaps), each normalized against the session's own EWMA baseline and integrated by a CUSUM accumulator — zero model tokens; the math lives in [docs/surprise.md](docs/surprise.md). It is a sensor, not a policy for anyone: consumers like `/skill:fabric-advisor` decide whether an advisor *acts* on the evidence, by putting the published `fabric.surprise` lifecycle event in their event diet — publish is a no-op when nobody subscribes, so an unconsumed alarm costs nothing. The sensor itself invites nobody.
+
+Surprise settings:
+
+- `mode` — `"notify"` (default): a crossed accumulator posts a single, session-capped notification; `"trace"` just writes the per-turn JSONL verdicts to `<agentDir>/fabric-surprise/<encoded cwd>/<sessionId>.jsonl` for calibration; `"off"` disables the sensor entirely. The trace is written in both live modes, and every fire publishes a `fabric.surprise` lifecycle event (payload: a scalar projection of the verdict) regardless of mode.
+- `learn` — default `true`: `threshold` (h) and `drift` (d) self-tune toward the alert budget via Robbins–Monro quantile tracking, and observed alarm outcomes (confirmed vs. ignored by any subscriber or human) float the budget. Adapted state persists per project at `<agentDir>/fabric-surprise/<encoded cwd>/tuning.json`. `false` pins `threshold`/`drift` as exact values and freezes adaptation.
+- `budget` — target fires per 100 turns while learning (default 1; hard-bounded 0.2–5 by the tuner).
+- `window` — turns of per-feature history in the EWMA baselines (default 16; α = 1/window).
+- `drift` — CUSUM allowance d (default 0.3): per-turn evidence required just to hold the accumulator level. Churn below it cools away.
+- `threshold` — CUSUM alarm level h in z-weighted surprise quanta (default 2). A rare error burst or a mid-stream steer rings solo; revisits and autopilot-silence only add to a case.
+- `cooldown` — silent turns after a fire, accumulator held at zero (default 3).
+- `maxPerSession` — session cap on fires (default 5).
+
+`/fabric settings` → **Surprise** exposes every knob.
 
 ## Agents
 

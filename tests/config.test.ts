@@ -103,6 +103,26 @@ describe("Fabric configuration", () => {
     expect(bounded.capture.advisory.budget).toBe(8192);
   });
 
+  it("parses surprise sensor settings with defaults and bounds", () => {
+    expect(DEFAULT_FABRIC_CONFIG.surprise).toEqual({
+      mode: "notify", learn: true, budget: 1, window: 16, drift: 0.3, threshold: 2, cooldown: 3, maxPerSession: 5,
+    });
+    const adorned = normalizeFabricConfig({
+      surprise: { mode: "notify", learn: false, budget: 2.5, window: 24, drift: 0.5, threshold: 4, cooldown: 8, maxPerSession: 9 },
+    });
+    expect(adorned.surprise).toEqual({
+      mode: "notify", learn: false, budget: 2.5, window: 24, drift: 0.5, threshold: 4, cooldown: 8, maxPerSession: 9,
+    });
+    const bounded = normalizeFabricConfig({
+      // mode outside the enum, out-of-range numerics, and a retired key
+      // (shadow) that must simply be dropped.
+      surprise: { mode: "omniscient", learn: "yes", budget: 999, window: 1, drift: Number.NaN, threshold: 999, cooldown: 0, maxPerSession: 500, shadow: "yes" },
+    });
+    expect(bounded.surprise).toEqual({
+      mode: "notify", learn: true, budget: 5, window: 4, drift: 0.3, threshold: 100, cooldown: 1, maxPerSession: 50,
+    });
+  });
+
   it("normalizes executor runtimes and their memory ceilings", () => {
     const native = normalizeFabricConfig({
       executor: { runtime: "node-process", memoryLimitBytes: Number.MAX_SAFE_INTEGER },

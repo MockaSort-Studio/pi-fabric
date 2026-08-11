@@ -691,6 +691,13 @@ export class FabricState {
     });
   }
 
+  lifecycleEventEngagement(
+    event: FabricLifecycleEventType,
+    sinceMs: number,
+  ): { subscribed: number; delivered: number } {
+    return this.#lifecycle?.deliveriesSince(event, sinceMs) ?? { subscribed: 0, delivered: 0 };
+  }
+
   registerExternal(provider: FabricProvider, options: { overwrite?: boolean } = {}): void {
     if (
       [
@@ -830,6 +837,10 @@ const lifecycleMetadata = (
       return scalarMetadata(payload, ["toolCallId", "toolName"]);
     case "pi.session_compact":
       return scalarMetadata(payload, ["reason", "willRetry"]);
+    case "fabric.surprise":
+      return scalarMetadata(payload, [
+        "turn", "score", "cusum", "threshold", "drift", "firedTotal", "cooldownLeft", "reasonText",
+      ]);
     default:
       return undefined;
   }

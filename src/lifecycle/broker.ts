@@ -8,6 +8,7 @@ import {
   lifecycleSourceIdentity,
   lifecycleSubscriptionFromValue,
   type FabricLifecycleEvent,
+  type FabricLifecycleEventType,
   type FabricLifecyclePublishRequest,
   type FabricLifecycleSubscription,
   type FabricLifecycleSubscriptionRequest,
@@ -151,6 +152,26 @@ export class LifecycleBroker {
         if (input.to && subscription.to !== input.to) return [];
         return [structuredClone(subscription)];
       });
+  }
+
+  // Alarm-postmortem support: how many subscriptions cover an event, and
+  // how many actually delivered it since a timestamp. The surprise tuner uses
+  // this to judge whether a published alarm reached its consumers.
+  deliveriesSince(
+    event: FabricLifecycleEventType,
+    sinceMs: number,
+  ): { subscribed: number; delivered: number } {
+    let subscribed = 0;
+    let delivered = 0;
+    for (const subscription of this.list()) {
+      if (!subscription.events.includes(event)) continue;
+      subscribed += 1;
+      if (
+        subscription.lastDeliveredAt !== undefined &&
+        subscription.lastDeliveredAt >= sinceMs
+      ) delivered += 1;
+    }
+    return { subscribed, delivered };
   }
 
   async unsubscribe(id: string): Promise<{ removed: boolean }> {

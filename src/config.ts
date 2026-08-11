@@ -107,6 +107,36 @@ export interface FabricCapabilityAdvisoryConfig {
   budget: number;
 }
 
+export type FabricSurpriseMode = "off" | "trace" | "notify";
+
+export interface FabricSurpriseConfig {
+  /**
+   * notify (default): surface a crossed accumulator as one session-capped
+   * notification (the per-turn trace is written in either live mode).
+   * trace: write the JSONL quietly for calibration. off: sensor disabled.
+   * The sensor never invites anyone itself.
+   */
+  mode: FabricSurpriseMode;
+  /**
+   * Self-tuning (default on): h and d adapt toward the alert budget via
+   * stochastic approximation, and observed alarm outcomes float the budget.
+   * false pins threshold/drift below as exact values.
+   */
+  learn: boolean;
+  /** Target fires per 100 turns while learning (the one legible knob). */
+  budget: number;
+  /** Turns of feature history in the EWMA baselines (α = 1/window). */
+  window: number;
+  /** CUSUM allowance d: per-turn evidence required just to hold S level. */
+  drift: number;
+  /** CUSUM alarm level h, in surprise quanta (z-weighted feature evidence). */
+  threshold: number;
+  /** Silent turns after a fire; S holds at zero while cooling down. */
+  cooldown: number;
+  /** Session cap on fires. */
+  maxPerSession: number;
+}
+
 export interface FabricToolCaptureConfig {
   enabled: boolean;
   hideFromModel: boolean;
@@ -214,6 +244,7 @@ export interface FabricConfig {
   prewalk: FabricPrewalkConfig;
   agents: FabricAgentConfig;
   capture: FabricToolCaptureConfig;
+  surprise: FabricSurpriseConfig;
   ui: FabricUiConfig;
   compaction: FabricCompactionConfig;
   retention: FabricRetentionConfig;
@@ -308,6 +339,19 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
       maxPerSession: 3,
       budget: 512,
     },
+  },
+  // On by default in its least invasive posture ("notify"): a crossed
+  // accumulator posts one capped notification while h/d self-tune toward the
+  // alert budget; the per-turn trace is always written. "off" opts out.
+  surprise: {
+    mode: "notify",
+    learn: true,
+    budget: 1,
+    window: 16,
+    drift: 0.3,
+    threshold: 2,
+    cooldown: 3,
+    maxPerSession: 5,
   },
   ui: {
     enabled: true,
@@ -503,6 +547,12 @@ const advisoryModeValue = (
 ): FabricCapabilityAdvisoryMode =>
   value === "enabled" || value === "hidden" || value === "disabled" ? value : fallback;
 
+const surpriseModeValue = (
+  value: unknown,
+  fallback: FabricSurpriseMode,
+): FabricSurpriseMode =>
+  value === "off" || value === "trace" || value === "notify" ? value : fallback;
+
 const riskValue = (value: unknown, fallback: FabricRisk): FabricRisk =>
   value === "read" ||
   value === "write" ||
@@ -520,6 +570,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const agents = objectValue(input.agents);
   const claude = objectValue(agents.claude);
   const capture = objectValue(input.capture);
+  const surprise = objectValue(input.surprise);
   const ui = objectValue(input.ui);
   const compaction = objectValue(input.compaction);
   const retention = objectValue(input.retention);
@@ -762,6 +813,41 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
           8192,
         ),
       },
+    },
+    surprise: {
+      mode: surpriseModeValue(surprise.mode, DEFAULT_FABRIC_CONFIG.surprise.mode),
+      learn: booleanValue(surprise.learn, DEFAULT_FABRIC_CONFIG.surprise.learn),
+      budget: boundedFloat(surprise.budget, DEFAULT_FABRIC_CONFIG.surprise.budget, 0.2, 5),
+      window: boundedInteger(
+        surprise.window,
+        DEFAULT_FABRIC_CONFIG.surprise.window,
+        4,
+        64,
+      ),
+      drift: boundedFloat(
+        surprise.drift,
+        DEFAULT_FABRIC_CONFIG.surprise.drift,
+        0,
+        10,
+      ),
+      threshold: boundedFloat(
+        surprise.threshold,
+        DEFAULT_FABRIC_CONFIG.surprise.threshold,
+        0,
+        100,
+      ),
+      cooldown: boundedInteger(
+        surprise.cooldown,
+        DEFAULT_FABRIC_CONFIG.surprise.cooldown,
+        1,
+        32,
+      ),
+      maxPerSession: boundedInteger(
+        surprise.maxPerSession,
+        DEFAULT_FABRIC_CONFIG.surprise.maxPerSession,
+        1,
+        50,
+      ),
     },
     ui: {
       enabled: booleanValue(ui.enabled, DEFAULT_FABRIC_CONFIG.ui.enabled),
