@@ -38,6 +38,7 @@ describe("/fabric command", () => {
       capturedTools: {} as CapturedToolCatalog,
       applyFabricMode: vi.fn(),
       suspendToolCapture: vi.fn(),
+      autoArmPrewalk: vi.fn(async () => {}),
     });
     expect(handler).toBeDefined();
 
@@ -80,6 +81,7 @@ describe("/fabric command", () => {
       capturedTools: {} as CapturedToolCatalog,
       applyFabricMode: vi.fn(),
       suspendToolCapture: vi.fn(),
+      autoArmPrewalk: vi.fn(async () => {}),
     });
     await handler!("prewalk Implement the token guard", context);
 
@@ -145,6 +147,7 @@ describe("/fabric command", () => {
       capturedTools: {} as CapturedToolCatalog,
       applyFabricMode: vi.fn(),
       suspendToolCapture: vi.fn(),
+      autoArmPrewalk: vi.fn(async () => {}),
     });
     await handler!("prewalk", context);
 
@@ -208,6 +211,7 @@ describe("/fabric command", () => {
       capturedTools: {} as CapturedToolCatalog,
       applyFabricMode: vi.fn(),
       suspendToolCapture: vi.fn(),
+      autoArmPrewalk: vi.fn(async () => {}),
     });
     await handler!("prewalk", context);
 

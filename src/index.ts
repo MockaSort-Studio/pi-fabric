@@ -18,6 +18,7 @@ import {
   withTrajectoryRearmDirective,
 } from "./prewalk/handoff.js";
 import type { PendingFabricHandoff } from "./prewalk/handoff.js";
+import { autoArmFabricPrewalk } from "./prewalk/arm.js";
 import {
   DEFAULT_FABRIC_CONFIG,
   effectiveToolCaptureConfig,
@@ -297,6 +298,17 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     );
   };
 
+  // alwaysRearm means always armed: every session opens with prewalk armed.
+  // Config-health skips (no prewalk.model, gated modes) warn once per process
+  // rather than on every session switch.
+  let prewalkAutoArmNoticeShown = false;
+  const autoArmPrewalk = async (context: ExtensionContext): Promise<void> => {
+    const skipReason = await autoArmFabricPrewalk(state, context, pi);
+    if (!skipReason || prewalkAutoArmNoticeShown || !context.hasUI) return;
+    prewalkAutoArmNoticeShown = true;
+    context.ui.notify(skipReason, "warning");
+  };
+
   pi.on("session_start", async (_event, context) => {
     pendingHandoffs.clear();
     directToolApproval.clear();
@@ -324,6 +336,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     }
     applyFabricMode();
     fabricUi.start(context);
+    // After initialize() (which cancels any prior arm) so alwaysRearm opens
+    // the fresh session armed.
+    await autoArmPrewalk(context);
     installHaltOnEscape(context);
   });
 
@@ -640,6 +655,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     capturedTools,
     applyFabricMode,
     suspendToolCapture,
+    autoArmPrewalk,
     refreshCodePreviewSettings,
   });
 }

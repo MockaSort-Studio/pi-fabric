@@ -1137,7 +1137,7 @@ export const buildFabricSettingsItems = (
             config.prewalk.alwaysRearm ? "true" : "false",
             {
               description:
-                "After a completed prewalk handoff, arm prewalk again for the next user task until explicitly cancelled. Read-only turns never disarm prewalk.",
+                "Arm prewalk automatically at every session start and again after each completed handoff until /fabric prewalk --off cancels it for the session. Auto-arm needs prewalk.model (provider/model). Read-only turns never disarm prewalk.",
               values: BOOLEANS,
             },
           ),

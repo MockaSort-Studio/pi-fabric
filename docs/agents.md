@@ -112,7 +112,7 @@ Inside the guest, `agents.handoff()` resolves to `{ scheduled: true, status: "de
 /fabric prewalk --off
 ```
 
-With a task, Fabric arms prewalk and submits it to Main immediately. Without one, it captures the next user input. Configure the executor under `/fabric settings` → **Prewalk**. **Always re-arm** captures successive tasks until `/fabric prewalk --off`.
+With a task, Fabric arms prewalk and submits it to Main immediately. Without one, it captures the next user input. Configure the executor under `/fabric settings` → **Prewalk**. **Always re-arm** arms prewalk automatically at every session start (non-interactively, from `prewalk.model`) and again after each completed handoff; `/fabric prewalk --off` cancels it until the next session starts.
 
 The default `prewalk.mode` is `"in-place"`:
 

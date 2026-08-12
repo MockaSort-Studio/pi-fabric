@@ -3,11 +3,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import type { CapturedToolCatalog } from "../capture/catalog.js";
 import type { FabricActorHostEvent } from "../actors/types.js";
 import type { FabricState } from "../fabric-state.js";
-import {
-  PREWALK_ARMED_MESSAGE_TYPE,
-  hasPrewalkArmedPrompt,
-  prewalkArmedPrompt,
-} from "../prewalk/handoff.js";
+import { armFabricPrewalkSession } from "../prewalk/arm.js";
 import { truncateMiddle } from "../util.js";
 import type { FabricUiController } from "../ui/controller.js";
 import { openFabricSettings } from "../ui/settings.js";
@@ -20,6 +16,7 @@ interface FabricCommandDeps {
   capturedTools: CapturedToolCatalog;
   applyFabricMode: () => void;
   suspendToolCapture: () => void;
+  autoArmPrewalk: (context: ExtensionContext) => Promise<void>;
   refreshCodePreviewSettings?: () => void;
 }
 
@@ -105,7 +102,7 @@ const resolvePrewalkModel = async (
 };
 
 export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps): void {
-  const { state, fabricUi, capturedTools, applyFabricMode, suspendToolCapture } = deps;
+  const { state, fabricUi, capturedTools, applyFabricMode, suspendToolCapture, autoArmPrewalk } = deps;
   pi.registerCommand("fabric", {
     description: "Open Fabric, arm prewalk, reload, or manage agents and actors",
     getArgumentCompletions: (argumentPrefix: string): AutocompleteItem[] | null => {
@@ -224,6 +221,8 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         await state.initialize(context);
         applyFabricMode();
         fabricUi.start(context);
+        // initialize() cancels the arm; alwaysRearm sessions re-open armed.
+        await autoArmPrewalk(context);
         context.ui.notify("Pi Fabric reloaded", "info");
         return;
       }
@@ -274,44 +273,10 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         const model = await resolvePrewalkModel(state, context);
         if (!model) return;
         const task = argumentsText.trim().slice(command.length).trim();
-        state.prewalk.arm({
+        await armFabricPrewalkSession(state, context, pi, {
           model,
-          mode: state.config.prewalk.mode,
-          sessionId: context.sessionManager.getSessionId(),
           ...(task ? { task } : {}),
-          ...(state.config.prewalk.thinking
-            ? { thinking: state.config.prewalk.thinking }
-            : {}),
-          alwaysRearm: state.config.prewalk.alwaysRearm,
         });
-        // Anchor the shell-write drift window at arm time so the first
-        // bash-running boundary diffs against the pre-task tree state; only
-        // snapshot when the fs fallback can actually claim.
-        if (state.config.prewalk.detectShellWrites) {
-          await state.prewalkDrift.captureBaseline(
-            context.sessionManager.getSessionId(),
-            context.cwd,
-          );
-        }
-        // Hidden advisory framing, queued for the next prompt (rules before
-        // the task when one is submitted below). nextTurn never triggers a
-        // turn; custom messages never fire `input`, so observeTask ignores it.
-        const armedPrompt = prewalkArmedPrompt(state.config.prewalk.mode, model);
-        if (!hasPrewalkArmedPrompt(context.sessionManager.getBranch(), armedPrompt)) {
-          pi.sendMessage(
-            {
-              customType: PREWALK_ARMED_MESSAGE_TYPE,
-              content: armedPrompt,
-              display: false,
-              details: { mode: state.config.prewalk.mode, model },
-            },
-            { deliverAs: "nextTurn" },
-          );
-        }
-        context.ui.setStatus(
-          "fabric-prewalk",
-          `armed (${state.config.prewalk.mode}) → ${model}`,
-        );
         const modeLabel =
           state.config.prewalk.mode === "in-place"
             ? "Main will continue in place"
@@ -699,7 +664,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           (() => {
             const prewalk = state.prewalk.status();
             return prewalk.state === "idle"
-              ? `prewalk: idle · ${config.prewalk.mode} · model ${config.prewalk.model || "Ask each time"} · always re-arm ${config.prewalk.alwaysRearm ? "on" : "off"}`
+              ? `prewalk: idle · ${config.prewalk.mode} · model ${config.prewalk.model || "Ask each time"} · auto-arm & re-arm ${config.prewalk.alwaysRearm ? "on" : "off"}`
               : `prewalk: ${prewalk.state} · ${prewalk.mode} → ${prewalk.model}${prewalk.alwaysRearm ? " · always re-arm" : ""}`;
           })(),
           config.fullCodeMode && config.capture.enabled
