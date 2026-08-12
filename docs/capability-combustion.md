@@ -22,8 +22,13 @@ when the available evidence says it will be used.
 ## Scoring: 1/df term weighting
 
 Captured tools are fingerprinted by source namespace. Each source's corpus is
-its tools' names plus descriptions. A prompt scores against each unburned
-source as the sum of per-word evidence:
+its identity surface: tool names plus the leading sentence of each
+description. Instructional tails ("Use this when…", "HOW TO USE: …") are
+excluded by construction — they describe how to choose the tool, not what the
+capability is, and their meta-vocabulary ("understand", "how") collides with
+ordinary interrogative prompts ("help me understand the mathematics behind
+docs/heat-diffusion.md" used to ignite fal.ai on "understand" + "docs"). A
+prompt scores against each unburned source as the sum of per-word evidence:
 
 $$
 s(p, j) = \sum_{w \in W(p)} \max_{t \in R(w) \cap T(j)} \frac{1}{\mathrm{df}(t)}, \qquad \mathrm{df}(t) = \Bigl|\{ j : t \in T(j) \}\Bigr|
@@ -50,6 +55,15 @@ Pre-ignition filters:
   ambient context rather than user intent, and its vocabulary would poison the
   fingerprint. The matcher removes those regions before tokenization. An
   unclosed trailing tag counts as stripped too.
+- **Path-context discount.** A prompt term that occurs only inside a path,
+  URL, or filename span (`docs/heat-diffusion.md`, `worker.ts`) denotes a
+  local artifact rather than capability intent, so its matched quantum is
+  halved (q/2). A lone such word lands below the default threshold entirely,
+  and two of them sum to a single weak-band quantum instead of an instant
+  strong fire. Filename spans are recognized through a code/doc extension
+  allowlist so brand domains in prose (`fal.ai`) keep full weight; a term
+  that also appears as free prose elsewhere in the prompt keeps full weight
+  too.
 - **At least two matched written words.** A lone distinctive word such as
   "project" or "recent" is a vocabulary coincidence, not intent. The gate
   and the scorer share one unit — the written word — so casing can inflate

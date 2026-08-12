@@ -2,6 +2,7 @@ import type { FabricCapabilityAdvisoryConfig } from "../config.js";
 import type { FabricActionDescriptor } from "../protocol.js";
 import {
   buildCapabilityIndex,
+  capabilityPathOnlyTerms,
   capabilityWordCandidates,
   isMostlyNonLatinPrompt,
   splitCapabilityWords,
@@ -33,6 +34,11 @@ const toolCallInput = (block: unknown): Record<string, unknown> | undefined => {
 // smallest unit of unambiguous evidence the 1/df scorer can express. The weak
 // band is exactly one quantum wide: strong = weak + one quantum of certainty.
 const SCORE_QUANTUM = 1;
+// Surface-form context discount: a term that only occurs inside a path, URL,
+// or filename span denotes a local artifact, not capability intent — it earns
+// half a quantum. Two such collisions (1 quantum total) still can't ignite the
+// strong band; a lone one sits below the default 0.9 threshold entirely.
+const PATH_ONLY_DISCOUNT = SCORE_QUANTUM / 2;
 const WEAK_MATCH_BAND = SCORE_QUANTUM;
 const MAX_ADVISORY_SOURCES = 2;
 const MAX_NAMES_PER_SOURCE = 2;
@@ -318,9 +324,11 @@ export class CapabilityAdvisor {
       .filter((candidates) => candidates.size > 0);
     if (promptWords.length === 0 || this.#index.sourceCount === 0) return undefined;
 
+    const pathOnlyTerms = capabilityPathOnlyTerms(stripped);
     // Each matched written word contributes the rarity of its rarest matched
     // reading (weight = 1/df is monotone, so max weight = min df): exactly
-    // one quantum per word, whichever way the word was cased.
+    // one quantum per word, whichever way the word was cased — halved when the
+    // matched reading only ever occurs inside a path/URL/filename span.
     const scoreWords = (hasTerm: (term: string) => boolean) => {
       let score = 0;
       let matchedWords = 0;
@@ -332,7 +340,7 @@ export class CapabilityAdvisor {
           if (!hasTerm(term)) continue;
           const frequency = this.#index.docFrequency(term);
           if (frequency === 0) continue;
-          const weight = 1 / frequency;
+          const weight = (1 / frequency) * (pathOnlyTerms.has(term) ? PATH_ONLY_DISCOUNT : 1);
           if (weight > bestWeight) {
             bestWeight = weight;
             bestTerm = term;

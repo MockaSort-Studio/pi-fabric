@@ -5,7 +5,8 @@ import type { FabricActionDescriptor } from "../protocol.js";
 const CAPABILITY_STOPWORDS: ReadonlySet<string> = new Set([
   "a", "an", "the", "of", "to", "in", "for", "on", "with", "and", "or", "as",
   "by", "at", "from", "into", "one", "this", "that", "it", "its", "their",
-  "your", "you", "we", "i", "is", "are", "be", "been", "current", "existing",
+  "your", "you", "we", "i", "me", "my", "mine", "us", "is", "are", "be", "been", "current", "existing",
+  "please", "thanks",
   "new", "use", "used", "using", "via", "per", "each", "all", "any", "can",
   "will", "also", "not", "no", "if", "when", "then", "else", "than", "so",
   "such", "over", "under", "out", "up", "down", "off", "through", "during",
@@ -61,6 +62,27 @@ export const capabilityWordCandidates = (word: string): string[] => {
   return [...candidates];
 };
 
+// Path/URL/filename spans in a prompt: tokens found ONLY inside these denote
+// local artifacts ("docs/heat-diffusion.md" is something to read, not evidence
+// for any documentation-search capability), so the advisory halves their match
+// weight. Filename detection uses an extension allowlist so brand names like
+// "fal.ai" stay full-weight prose.
+const PATH_SPAN =
+  /(?:[a-z][a-z0-9+.-]*:\/\/[^\s"'<>()]+)|(?:[\w.~-]+\/[\w./~-]+)|(?:\b[\w~-]+\.(?:md|markdown|txt|tsx?|jsx?|mjs|cjs|mts|cts|jsonc?|py|rb|go|rs|java|kt|swift|c|h|cc|cpp|hpp|cs|php|sh|bash|zsh|ya?ml|toml|ini|cfg|conf|xml|html?|css|s[ac]ss|less|sql|[ct]sv|lock|log|png|jpe?g|gif|webp|svg|ico|pdf|zip|gz|tar|mp4|mp3|wav|wasm|proto|graphql|vue|svelte)\b)/gi;
+
+// Prompt terms whose every occurrence lives inside a path/URL/filename span.
+export const capabilityPathOnlyTerms = (text: string): ReadonlySet<string> => {
+  const pathOnly = new Set<string>();
+  for (const span of text.match(PATH_SPAN) ?? []) {
+    for (const token of tokenizeCapabilityText(span)) pathOnly.add(token);
+  }
+  if (pathOnly.size === 0) return pathOnly;
+  for (const token of tokenizeCapabilityText(text.replace(PATH_SPAN, " "))) {
+    pathOnly.delete(token);
+  }
+  return pathOnly;
+};
+
 export const splitCapabilityWords = (text: string): string[] => {
   const words = text.match(/[A-Za-z0-9]+/g);
   if (!words) return [];
@@ -97,9 +119,12 @@ export const capabilitySourceLabel = (namespace: string | undefined): string =>
     : (namespace ?? "unscoped");
 
 // Capability fingerprints group captured tools by source namespace: a source's
-// whole corpus (tool names + descriptions) gives far stronger signal than any
-// single tool, and per-source tf-idf terms end up readable as capability
-// labels without requiring manifest declarations or a curated taxonomy.
+// identity surface (tool names + the leading sentence of each description)
+// gives far stronger signal than any single tool, and per-source tf-idf terms
+// end up readable as capability labels without requiring manifest declarations
+// or a curated taxonomy. Instructional description tails are deliberately not
+// indexed — their meta-prose ("Use this when you need to understand…") is
+// shared by every server and collides with interrogative user prompts.
 export const buildCapabilityIndex = (
   descriptors: FabricActionDescriptor[],
 ): CapabilityIndex => {
@@ -116,7 +141,13 @@ export const buildCapabilityIndex = (
   for (const [namespace, bucket] of grouped) {
     const tf = new Map<string, number>();
     for (const descriptor of bucket) {
-      for (const token of tokenizeCapabilityText(`${descriptor.name} ${descriptor.description}`)) {
+      // Identity surface: the name plus the leading sentence is where a tool
+      // states what it IS. Instructional tails ("Use this when you need to
+      // understand…", "HOW TO USE: …") are meta-prose shared by every server —
+      // indexing them once let "understand how X works" prompts ignite fal.ai.
+      for (const token of tokenizeCapabilityText(
+        `${descriptor.name} ${capabilityFirstSentence(descriptor.description)}`,
+      )) {
         tf.set(token, (tf.get(token) ?? 0) + 1);
       }
     }
@@ -130,7 +161,12 @@ export const buildCapabilityIndex = (
       names: bucket.map((descriptor) => descriptor.name),
       descriptions: bucket.map((descriptor) => descriptor.description),
       toolTerms: bucket.map(
-        (descriptor) => new Set(tokenizeCapabilityText(`${descriptor.name} ${descriptor.description}`)),
+        (descriptor) =>
+          new Set(
+            tokenizeCapabilityText(
+              `${descriptor.name} ${capabilityFirstSentence(descriptor.description)}`,
+            ),
+          ),
       ),
       tf,
     });
@@ -146,13 +182,23 @@ export const buildCapabilityIndex = (
 
 const CAPTURED_FROM_SUFFIX = /\s*\(captured from [^)]*\)\s*$/;
 
+const FIRST_SENTENCE = /^(.{8,}?[.!?])(?:\s|$)/;
+
+// Leading sentence of a description: the identity clause, before any
+// instructional tail. Whole string when no sentence boundary exists (terse
+// server descriptions like "Cancel subscription" are all identity).
+export const capabilityFirstSentence = (description: string): string => {
+  const cleaned = description.replace(/\s+/g, " ").trim();
+  return FIRST_SENTENCE.exec(cleaned)?.[1] ?? cleaned;
+};
+
 // Advisory text shows one short clause per tool: the first sentence when it
 // fits, otherwise a bounded slice. Provenance suffixes are stripped because
 // the advisory names the source separately.
 export const truncateAdvisoryDescription = (description: string, maxChars = 64): string => {
   const cleaned = description.replace(CAPTURED_FROM_SUFFIX, "").replace(/\s+/g, " ").trim();
   if (cleaned.length <= maxChars) return cleaned;
-  const sentence = /^(.{8,}?[.!?])(?:\s|$)/.exec(cleaned);
-  if (sentence?.[1] !== undefined && sentence[1].length <= maxChars) return sentence[1];
+  const sentence = FIRST_SENTENCE.exec(cleaned)?.[1];
+  if (sentence !== undefined && sentence.length <= maxChars) return sentence;
   return `${cleaned.slice(0, maxChars - 1)}…`;
 };

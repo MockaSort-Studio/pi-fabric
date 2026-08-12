@@ -5,6 +5,7 @@ import {
   CAPABILITY_ADVISORY_CUSTOM_TYPE,
   CapabilityAdvisor,
   type CapabilityAdvisoryMatch,
+  type CapabilityAdvisoryResult,
 } from "../src/core/capability-advisory.js";
 import { toMcpAdvisoryDescriptor } from "../src/providers/mcp-provider.js";
 
@@ -28,7 +29,7 @@ const FIXTURES: FabricActionDescriptor[] = [
   ),
   descriptor(
     "openai_image",
-    "Generate or edit images through the standalone Codex Images API. Supports local reference images and saves to the project by default.",
+    "Generate or edit images through the standalone Codex Images API, saving into the project. Supports local reference images by default.",
     "extension:pi-better-openai",
   ),
   descriptor(
@@ -61,19 +62,49 @@ const advisor = (): CapabilityAdvisor => {
   return instance;
 };
 
+// Shared vocabulary (search, web → df = 2, half a quantum each) sits in the
+// weak band at s = 1.0: warmth W = 0.5, 0.75, 0.875, 0.9375 crosses θ = 0.9
+// on the fourth sustained exposure, igniting both web sources together.
+const igniteWebSearch = (
+  instance: CapabilityAdvisor,
+  cfg: FabricCapabilityAdvisoryConfig = config(),
+): CapabilityAdvisoryResult | undefined => {
+  let result: CapabilityAdvisoryResult | undefined;
+  for (let turn = 0; turn < 4; turn++) {
+    result = instance.evaluate("search the web for recent llm pricing news", cfg);
+  }
+  return result;
+};
+
 describe("CapabilityAdvisor", () => {
-  it("fires unambiguous matches instantly; weak-band sources need sustained exposure", () => {
-    // synthetic scores strong (search/web/recent → 2.0 ≥ θ+1), openai is
-    // weak (search/web → 1.0): only the strong source ignites on the first
-    // prompt, the weak one burns in after sustained exposure (asymptote 1.0
-    // crosses θ=0.9 on the fourth identical prompt).
+  it("fires unambiguous matches instantly; shared vocabulary warms over turns", () => {
+    // Identity-surface vocabulary is unambiguous: all four fovea terms are
+    // unique to pi-fovea (s = 4.0 ≥ θ+1) and ignite instantly in the strong
+    // register. Web-search verbs are shared across catalogs (search, web →
+    // df = 2 — half a quantum each), so both web sources sit at s = 1.0 in
+    // the weak band and ignite together only on the fourth sustained turn.
     const instance = advisor();
-    const first = instance.evaluate("search the web for recent llm pricing news", config());
-    expect(first?.content).toContain("extensions.synthetic_web_search");
-    expect(first?.content).not.toContain("extensions.openai_websearch");
-    expect(instance.evaluate("search the web for recent llm pricing news", config())).toBeUndefined();
-    expect(instance.evaluate("search the web for recent llm pricing news", config())).toBeUndefined();
-    const fourth = instance.evaluate("search the web for recent llm pricing news", config());
+    const first = instance.evaluate("focus my code graph on a symbol", config());
+    expect(first?.content).toContain("extensions.fovea_focus");
+    expect(first?.content).toContain(
+      'Next: tools.describe({ref: "extensions.fovea_focus"}) for its schema, then extensions.fovea_focus({…}) inside fabric_exec.',
+    );
+    expect(first?.content).toContain(
+      "Steer: prefer these captured tools over re-implementing the capability",
+    );
+    expect(first?.content).toContain("pi-fovea · 2 tools matched your prompt.");
+    expect(first?.content).toContain("▪ extensions.fovea_focus — Focus the code graph on a symbol.");
+    expect(first?.content).not.toContain("might match");
+    expect(first?.display).toBe(false);
+    const strongNamespaces: CapabilityAdvisoryMatch["namespace"][] =
+      first?.details.matches.map((match) => match.namespace) ?? [];
+    expect(strongNamespaces).toContain("extension:pi-fovea");
+
+    const web = () => instance.evaluate("search the web for recent llm pricing news", config());
+    expect(web()).toBeUndefined();
+    expect(web()).toBeUndefined();
+    expect(web()).toBeUndefined();
+    const fourth = web();
     expect(fourth).toBeDefined();
     // Refs rank by their own prompt-term overlap: the image tool shares the
     // source but must not lead a web-search advisory.
@@ -81,36 +112,27 @@ describe("CapabilityAdvisor", () => {
       fourth?.content.indexOf("openai_image") ?? Number.POSITIVE_INFINITY,
     );
     expect(fourth?.content).toContain("extensions.openai_websearch");
+    expect(fourth?.content).toContain("extensions.synthetic_web_search");
     expect(fourth?.content).toContain("might match your prompt.");
     expect(fourth?.display).toBe(false);
-    // The strong first fire names the synthetic headline and action line.
-    expect(first?.content).toContain(
-      'Next: tools.describe({ref: "extensions.synthetic_web_search"}) for its schema, then extensions.synthetic_web_search({…}) inside fabric_exec.',
-    );
-    expect(first?.content).toContain(
-      "Steer: prefer these captured tools over re-implementing the capability",
-    );
-    expect(first?.content).toContain("pi-synthetic · 1 tool matched your prompt.");
-    expect(first?.content).toContain(
-      "▪ extensions.synthetic_web_search — Search the web using Synthetic's zero-data-retention API.",
-    );
-    expect(first?.content).not.toContain("(captured from");
-    expect(first?.content).not.toContain("might match");
-    expect(first?.display).toBe(false);
-    const strongNamespaces: CapabilityAdvisoryMatch["namespace"][] =
-      first?.details.matches.map((match) => match.namespace) ?? [];
-    expect(strongNamespaces).toContain("extension:pi-synthetic");
     const weakNamespaces: CapabilityAdvisoryMatch["namespace"][] =
       fourth?.details.matches.map((match) => match.namespace) ?? [];
     expect(weakNamespaces).toContain("extension:pi-better-openai");
+    expect(weakNamespaces).toContain("extension:pi-synthetic");
   });
 
   it("fires on a web-search prompt even with a tiny captured catalog", () => {
     // Regression: raw idf scoring starved matches when few sources exist
     // (web+search summed below threshold with only two captured sources).
+    // 1/df keeps the pair at s = 1.0 in the weak band — sustained exposure
+    // ignites on the fourth turn regardless of catalog size.
     const instance = new CapabilityAdvisor();
     instance.refresh(FIXTURES.filter((entry) => entry.namespace?.includes("openai") || entry.namespace?.includes("synthetic")));
-    const result = instance.evaluate("search the web for recent llm pricing news", config());
+    const prompt = "search the web for recent llm pricing news";
+    expect(instance.evaluate(prompt, config())).toBeUndefined();
+    expect(instance.evaluate(prompt, config())).toBeUndefined();
+    expect(instance.evaluate(prompt, config())).toBeUndefined();
+    const result = instance.evaluate(prompt, config());
     expect(result?.content).toContain("extensions.synthetic_web_search");
   });
 
@@ -128,7 +150,7 @@ describe("CapabilityAdvisor", () => {
 
   it("never fires twice for the same source in one session", () => {
     const instance = advisor();
-    const first = instance.evaluate("search the web for recent llm pricing news", config());
+    const first = igniteWebSearch(instance);
     const second = instance.evaluate("search the web once more please", config());
     expect(first).toBeDefined();
     expect(second).toBeUndefined();
@@ -148,15 +170,13 @@ describe("CapabilityAdvisor", () => {
   });
 
   it("renders advisories in the transcript only in enabled mode", () => {
-    expect(
-      advisor().evaluate("search the web for recent news", config({ mode: "enabled" }))?.display,
-    ).toBe(true);
+    expect(igniteWebSearch(advisor(), config({ mode: "enabled" }))?.display).toBe(true);
   });
 
   it("caps the number of advisories per session across distinct sources", () => {
     const instance = advisor();
     const capped = config({ maxPerSession: 2 });
-    expect(instance.evaluate("search the web for recent news", capped)).toBeDefined();
+    expect(igniteWebSearch(instance, capped)).toBeDefined();
     expect(instance.evaluate("focus my code graph on a symbol", capped)).toBeDefined();
     expect(instance.evaluate("send a mail draft to the team", capped)).toBeUndefined();
   });
@@ -165,7 +185,7 @@ describe("CapabilityAdvisor", () => {
     // reset() only clears session transients (warmth, smoke, per-session
     // cap); burnedness is durable entropy and is never wiped.
     const instance = advisor();
-    expect(instance.evaluate("search the web for recent news", config())).toBeDefined();
+    expect(igniteWebSearch(instance)).toBeDefined();
     instance.reset();
     expect(instance.evaluate("search the web again", config())).toBeUndefined();
     // Unburned capabilities still ignite after a reset.
@@ -208,7 +228,7 @@ describe("CapabilityAdvisor", () => {
 
   it("picks up new sources on refresh without clearing fired state", () => {
     const instance = advisor();
-    expect(instance.evaluate("search the web for recent news", config())).toBeDefined();
+    expect(igniteWebSearch(instance)).toBeDefined();
     instance.refresh([
       ...FIXTURES,
       descriptor("tz_convert", "Convert timezone offsets precisely.", "extension:pi-time"),
@@ -271,7 +291,7 @@ describe("CapabilityAdvisor", () => {
 
   it("replays ash from the session transcript on reload", () => {
     const first = advisor();
-    const firedAdvisory = first.evaluate("search the web for recent news", config());
+    const firedAdvisory = igniteWebSearch(first);
     expect(firedAdvisory).toBeDefined();
     // No side store: the fired hint persists as its own custom message entry,
     // organic use as the tool call itself. The transcript is the ash ledger.
@@ -338,7 +358,7 @@ describe("CapabilityAdvisor", () => {
 
   it("marks fired namespaces with origin and timestamp in the ash record", () => {
     const a = advisor();
-    a.evaluate("search the web for recent news", config());
+    igniteWebSearch(a);
     const fired = a.ashRecords().filter((record) => record.namespace === "extension:pi-synthetic");
     expect(fired).toHaveLength(1);
     expect(fired[0]?.origin).toBe("fired");
@@ -365,29 +385,33 @@ describe("CapabilityAdvisor", () => {
   });
 
   it("cools weak warmth while the topic is dropped", () => {
-    // s=1.333 weak band. T1 accumulates W=0.667 (silent). The unrelated
-    // focus prompt fires (strong) and halves residual warmth to 0.333, then
-    // decays again to 0.167 before the first re-exposure: 0.167+0.667=0.833
-    // stays under θ=0.9; only the second clean re-exposure ignites
-    // (0.417+0.667=1.083). Continuous repeated prompting would have fired
-    // one turn earlier — dropped topics cool.
-    const instance = advisor();
+    // db scores s = 1.5 (query df = 1, results df = 2): uninterrupted
+    // exposure ignites on turn 2 (W: 0.75 → 1.125). Interrupting with an
+    // unrelated turn halves the residual warmth (0.375), so the next
+    // re-exposure lands at 1.125 only on the second contiguous turn — the
+    // dropped topic ignites one turn later (turn 3). Dropped topics cool.
     const prompt = "query the results table please";
-    expect(instance.evaluate(prompt, config())).toBeUndefined();
-    expect(instance.evaluate("focus my code graph on a symbol", config())).toBeDefined();
-    expect(instance.evaluate(prompt, config())).toBeUndefined();
-    expect(instance.evaluate(prompt, config())).toBeDefined();
+    const uninterrupted = advisor();
+    expect(uninterrupted.evaluate(prompt, config())).toBeUndefined();
+    expect(uninterrupted.evaluate(prompt, config())).toBeDefined();
+    const dropped = advisor();
+    expect(dropped.evaluate(prompt, config())).toBeUndefined();
+    expect(dropped.evaluate("refactor this local function", config())).toBeUndefined();
+    expect(dropped.evaluate(prompt, config())).toBeDefined();
   });
 
-  it("raises the weak-band ignition point after an ignored fire (smoke)", () => {
+  it("raises the weak-band ignition point after ignored fires (smoke)", () => {
     const instance = advisor();
     const prompt = "query the results table please";
-    // Strong band fires instantly; no tool use this turn → smoke streak 1,
-    // ignition rises from 0.9 to 0.9·1.25=1.125. With s=1.333 the clean
-    // trajectory ignites on turn 2 (W=1.0); under smoke it needs turn 3
-    // (W: 0.667 → 1.0 → 1.167, where the final evaluates fire).
-    expect(instance.evaluate("search the web for recent news", config())).toBeDefined();
+    // Two ignored fires stack the smoke streak to 2, raising the weak-band
+    // ignition point from θ = 0.9 to 0.9·(1 + 2/τ²) = 1.35. With s = 1.5 the
+    // clean trajectory ignites on turn 2 (W = 1.125 ≥ 0.9); under double
+    // smoke it needs turn 4 (W: 0.75 → 1.125 → 1.3125 → 1.40625).
+    igniteWebSearch(instance);
     instance.endTurn();
+    instance.evaluate("focus my code graph on a symbol", config());
+    instance.endTurn();
+    expect(instance.evaluate(prompt, config())).toBeUndefined();
     expect(instance.evaluate(prompt, config())).toBeUndefined();
     expect(instance.evaluate(prompt, config())).toBeUndefined();
     expect(instance.evaluate(prompt, config())).toBeDefined();
@@ -395,7 +419,7 @@ describe("CapabilityAdvisor", () => {
 
   it("resets the smoke streak when a fired hint leads to tool use", () => {
     const instance = advisor();
-    expect(instance.evaluate("search the web for recent news", config())).toBeDefined();
+    igniteWebSearch(instance);
     instance.observeToolUse("extension:pi-synthetic");
     expect(instance.evaluate("focus my code graph on a symbol", config())).toBeDefined();
     instance.observeToolUse("extension:pi-fovea");
@@ -610,5 +634,100 @@ describe("CapabilityAdvisor MCP sources", () => {
     );
     expect(instance.ashRecords().map((record) => record.namespace)).toContain("mcp:test");
     expect(instance.evaluate("please echo a value back to me", config())).toBeUndefined();
+  });
+});
+
+describe("identity-surface vocabulary and prompt path context", () => {
+  // Verbose multi-sentence descriptions in the style of real MCP servers
+  // (fal.ai): instructional tails ("Use this when…", "IMPORTANT: …") describe
+  // how to choose the tool, not what the capability IS. The index reads tool
+  // names + leading sentences only, so that meta-prose cannot collide with
+  // interrogative user prompts ("help me understand…").
+  const VERBOSE_FAL: FabricActionDescriptor[] = [
+    descriptor(
+      "search_models",
+      "Search fal.ai's model catalog. Use this to discover available models.\nCategories: text-to-image, image-to-video, text-to-video, text-to-speech, speech-to-text, vision, training.",
+      "mcp:fal_ai",
+    ),
+    descriptor(
+      "get_model_schema",
+      "Get the full input/output schema for a specific fal.ai model.\nReturns all parameters the model accepts and what it returns.\nUse this before run_model to understand what inputs are needed.",
+      "mcp:fal_ai",
+    ),
+    descriptor(
+      "run_model",
+      "Run a fal.ai model: submits to the queue and waits a short, bounded time for the result.\nIMPORTANT: If the user does NOT specify a model by id, search first.",
+      "mcp:fal_ai",
+    ),
+    descriptor(
+      "check_job",
+      "Check the status of a running fal.ai job.\nUse this for long-running jobs (video generation, training, etc.) or when run_model returns status.",
+      "mcp:fal_ai",
+    ),
+    descriptor(
+      "search_docs",
+      "Search the fal.ai documentation for guides, API references, code examples, and implementation details.\nUse this when you need to understand how fal.ai works, find specific API docs, or get code snippets.",
+      "mcp:fal_ai",
+    ),
+  ];
+
+  const verboseCatalog = (extra: FabricActionDescriptor[] = []) => {
+    const instance = new CapabilityAdvisor();
+    instance.refresh([...VERBOSE_FAL, ...extra]);
+    return instance;
+  };
+
+  it("never ignites on a prompt about a documentation path", () => {
+    // Regression: full-description indexing matched "understand" (a tail
+    // prose verb in search_docs) + "docs" (df = 1 via search_docs' name) for
+    // an instant strong fire that permanently burned mcp:fal_ai. Now
+    // "understand" is tail prose — not indexed at all — and "docs" only
+    // occurs inside the path span docs/heat-diffusion.md: half a quantum,
+    // below the threshold, so no warmth even accumulates.
+    const instance = verboseCatalog();
+    for (let turn = 0; turn < 4; turn++) {
+      expect(
+        instance.evaluate(
+          "Help me understand the mathematics behind docs/heat-diffusion.md",
+          config(),
+        ),
+      ).toBeUndefined();
+    }
+  });
+
+  it("stays silent on interrogative prompts about local source files", () => {
+    const instance = verboseCatalog([
+      descriptor("get_me", "Get the authenticated user's profile.", "mcp:github"),
+    ]);
+    // "me" is prose filler (get_me must not claim it); the filenames carry
+    // local-artifact path context; "understand"/"works" live in fal's tails.
+    expect(
+      instance.evaluate("explain how the worker.ts retry logic works", config()),
+    ).toBeUndefined();
+    expect(instance.evaluate("help me understand src/config.ts", config())).toBeUndefined();
+  });
+
+  it("still fires strongly on the verbose source's actual identity", () => {
+    const instance = verboseCatalog();
+    const result = instance.evaluate("submit a fal job and check its status", config());
+    expect(result?.content).toContain("mcp:fal_ai");
+    expect(result?.content).toContain("matched your prompt.");
+  });
+
+  it("keeps path-adjacent intent at full strength when prose carries it", () => {
+    const instance = verboseCatalog([
+      descriptor("read_file", "Read a file.", "mcp:filesystem"),
+      descriptor("write_file", "Write or create a file.", "mcp:filesystem"),
+      descriptor("create_directory", "Create a directory.", "mcp:filesystem"),
+      descriptor("list_directory", "List directory contents and sizes.", "mcp:filesystem"),
+    ]);
+    // "src/components" is path context and earns nothing, but create /
+    // directory / write / file are full-weight prose intent: strong fire.
+    const result = instance.evaluate(
+      "create a directory src/components and write a file there",
+      config(),
+    );
+    expect(result?.details.matches[0]?.namespace).toBe("mcp:filesystem");
+    expect(result?.content).toContain("matched your prompt.");
   });
 });
