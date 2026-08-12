@@ -335,6 +335,69 @@ describe("CapabilityAdvisor", () => {
     expect(second.evaluate("focus my code graph on a symbol", config())).toBeDefined();
   });
 
+  it("replays echo words exactly from the current branch", () => {
+    const catalog = [
+      descriptor("audit_kit", "Audit the ledger mesh kit.", "extension:alpha"),
+      descriptor("mesh_drift", "Audit ledger mesh drift.", "extension:beta"),
+    ];
+    const make = () => {
+      const instance = new CapabilityAdvisor();
+      instance.refresh(catalog);
+      return instance;
+    };
+    const first = make();
+    const fired = first.evaluate("audit the ledger mesh kit please", config());
+    expect(fired).toBeDefined();
+    const transcript = [
+      {
+        type: "custom_message",
+        customType: CAPABILITY_ADVISORY_CUSTOM_TYPE,
+        content: fired!.content,
+        details: fired!.details,
+      },
+    ];
+
+    // A process reload rebuilds emitted vocabulary from the transcript: alpha
+    // is ash, beta remains live, yet quoting alpha's advisory cannot warm beta
+    // through the three identity words our own sentence supplied.
+    const reloaded = make();
+    reloaded.restoreAshFromEntries(transcript, () => undefined);
+    for (let quote = 0; quote < 3; quote++) {
+      expect(reloaded.evaluate(fired!.content, config())).toBeUndefined();
+    }
+
+    // A branch rewind is the inverse. reset + replay of an empty branch must
+    // forget the abandoned advisory's words, or genuine beta intent would be
+    // suppressed by text that no longer exists in this history.
+    first.reset();
+    first.restoreAshFromEntries([], () => undefined);
+    const genuine = first.evaluate("audit ledger mesh drift", config());
+    expect(genuine?.details.matches[0]?.namespace).toBe("extension:beta");
+  });
+
+  it("replays the advisory cap from the current branch", () => {
+    const capped = advisor();
+    capped.restoreAshFromEntries(
+      [
+        hintEntry("extension:pi-synthetic", "2026-01-01T00:00:00.000Z"),
+        hintEntry("extension:pi-fovea", "2026-01-01T00:05:00.000Z"),
+      ],
+      () => undefined,
+    );
+    expect(
+      capped.evaluate("send and draft mail messages", config({ maxPerSession: 2 })),
+    ).toBeUndefined();
+
+    // Rewinding before the second advisory also restores one unit of budget.
+    capped.restoreAshFromEntries(
+      [hintEntry("extension:pi-synthetic", "2026-01-01T00:00:00.000Z")],
+      () => undefined,
+    );
+    expect(
+      capped.evaluate("send and draft mail messages", config({ maxPerSession: 2 })),
+    ).toBeDefined();
+  });
+
   it("replays ash only up to the replayed branch point", () => {
     const transcript = [
       hintEntry("extension:pi-synthetic", "2026-01-01T00:00:00.000Z"),
@@ -417,9 +480,11 @@ describe("CapabilityAdvisor", () => {
     // clean trajectory ignites on turn 2 (W = 1.125 ≥ 0.9); under double
     // smoke it needs turn 4 (W: 0.75 → 1.125 → 1.3125 → 1.40625).
     igniteWebSearch(instance);
-    instance.endTurn();
-    instance.evaluate("focus my code graph on a symbol", config());
-    instance.endTurn();
+    instance.endTurn(); // web fire enters its grace turn
+    expect(instance.evaluate("focus my code graph on a symbol", config())).toBeDefined();
+    instance.endTurn(); // web expires (smoke 1); fovea enters its grace turn
+    expect(instance.evaluate("continue unrelated work", config())).toBeUndefined();
+    instance.endTurn(); // fovea expires (smoke 2)
     expect(instance.evaluate(prompt, config())).toBeUndefined();
     expect(instance.evaluate(prompt, config())).toBeUndefined();
     expect(instance.evaluate(prompt, config())).toBeUndefined();
@@ -436,6 +501,52 @@ describe("CapabilityAdvisor", () => {
     // Ignition stays at the base 0.9: weak fire arrives on exposure two.
     expect(instance.evaluate("query the results table please", config())).toBeUndefined();
     expect(instance.evaluate("query the results table please", config())).toBeDefined();
+  });
+
+  it("attributes a fire to tool use on the following turn", () => {
+    // "query" is source-unique and "results" lives in three sources, so the
+    // weak surface scores 4/3: clean ignition is t2, while one smoke raises
+    // θ_i enough to delay it to t3. Following the first hint on the next turn
+    // must preserve the clean t2 trajectory rather than manufacture smoke at
+    // the first turn boundary.
+    const catalog = [
+      descriptor("ignite_now", "Ignite beacon now.", "extension:first"),
+      descriptor("query_results", "Query results.", "extension:weak"),
+      descriptor("results_alpha", "Results alpha.", "extension:share-a"),
+      descriptor("results_beta", "Results beta.", "extension:share-b"),
+    ];
+    const make = () => {
+      const instance = new CapabilityAdvisor();
+      instance.refresh(catalog);
+      return instance;
+    };
+    const ignitionTurn = (instance: CapabilityAdvisor): number => {
+      for (let turn = 1; turn <= 4; turn++) {
+        const fire = instance.evaluate("query results", config());
+        instance.endTurn();
+        if (fire !== undefined) return turn;
+      }
+      return 0;
+    };
+    expect(ignitionTurn(make())).toBe(2);
+
+    const delayed = make();
+    expect(delayed.evaluate("ignite beacon", config())).toBeDefined();
+    delayed.endTurn();
+    expect(delayed.evaluate("continue unrelated work", config())).toBeUndefined();
+    delayed.observeToolUse("extension:first");
+    delayed.endTurn();
+    expect(ignitionTurn(delayed)).toBe(2);
+
+    // The grace is bounded. A call after both τ checkpoints cannot rewrite a
+    // resolved miss; its smoke quantum still delays the weak signal to t3.
+    const late = make();
+    expect(late.evaluate("ignite beacon", config())).toBeDefined();
+    late.endTurn();
+    expect(late.evaluate("continue unrelated work", config())).toBeUndefined();
+    late.endTurn();
+    late.observeToolUse("extension:first");
+    expect(ignitionTurn(late)).toBe(3);
   });
 
   it("cannot be gamed by camelCase: one written word is one gate word", () => {
@@ -550,6 +661,33 @@ describe("CapabilityAdvisor", () => {
     }
   });
 
+  it("habituates casing-invariant word episodes", () => {
+    // Target score = 1 + 1/2 + 1/4 = 1.75: its first isolated episode leaves
+    // W = 0.875 just below θ. Three filler turns leave enough residue that a
+    // fresh undamped episode would falsely ignite at 0.9297. Changing case is
+    // spelling, not a new episode; Title Case must receive the same e = 1
+    // discount as lowercase and remain silent.
+    const instance = new CapabilityAdvisor();
+    instance.refresh([
+      descriptor("ledger_mesh_audit", "Ledger mesh audit.", "extension:target"),
+      descriptor("mesh_audit", "Mesh audit elsewhere.", "extension:share-one"),
+      descriptor("audit_two", "Audit second.", "extension:share-two"),
+      descriptor("audit_three", "Audit third.", "extension:share-three"),
+    ]);
+    for (const namespace of [
+      "extension:share-one",
+      "extension:share-two",
+      "extension:share-three",
+    ]) {
+      instance.observeToolUse(namespace);
+    }
+    expect(instance.evaluate("ledger mesh audit", config())).toBeUndefined();
+    for (let gap = 1; gap < 4; gap++) {
+      expect(instance.evaluate("refactor retry logic", config())).toBeUndefined();
+    }
+    expect(instance.evaluate("Ledger Mesh Audit", config())).toBeUndefined();
+  });
+
   it("strips its own emissions from the evidence stream", () => {
     // Both namespaces share "audit / ledger / mesh". Prompt 1 phrases the
     // full alpha identity on one surface and ignites it (df-1 "kit" carries
@@ -591,6 +729,45 @@ describe("CapabilityAdvisor", () => {
     const fire = direct.evaluate("blast radius of edited files", config());
     expect(fire?.content).toContain("matched your prompt.");
     expect(fire?.details.matches[0]?.namespace).toBe("extension:pi-fovea");
+  });
+
+  it("bounds phrased mass to one tool surface regardless of catalog breadth", () => {
+    // alpha + beta co-occur on one target surface but each has df = 2, so the
+    // certified surface carries exactly one quantum. Every facet term lives
+    // on a different tool. Adding 1, 8, or 32 such terms may raise raw
+    // namespace overlap without bound; it must never launder that scatter
+    // through the one local pair. All catalog widths retain the same t4 weak
+    // trajectory and report the same effective score.
+    for (const breadth of [1, 8, 32]) {
+      const namespace = "extension:wide";
+      const facets = Array.from({ length: breadth }, (_, index) =>
+        descriptor(
+          `facet${index}_probe`,
+          `Facet${index} operation.`,
+          namespace,
+        ),
+      );
+      const instance = new CapabilityAdvisor();
+      instance.refresh([
+        descriptor("alpha_beta", "Alpha beta work.", namespace),
+        ...facets,
+        descriptor("alpha_only", "Alpha elsewhere.", "extension:other"),
+        descriptor("beta_only", "Beta elsewhere.", "extension:other"),
+      ]);
+      // Keep the comparison source in df but out of the firing set.
+      instance.observeToolUse("extension:other");
+      const prompt = [
+        "alpha",
+        "beta",
+        ...Array.from({ length: breadth }, (_, index) => `facet${index}`),
+      ].join(" ");
+      for (let turn = 0; turn < 3; turn++) {
+        expect(instance.evaluate(prompt, config()), `breadth ${breadth}, turn ${turn + 1}`).toBeUndefined();
+      }
+      const fire = instance.evaluate(prompt, config());
+      expect(fire?.content, `breadth ${breadth}`).toContain("might match your prompt.");
+      expect(fire?.details.matches[0]?.score, `breadth ${breadth}`).toBe(1);
+    }
   });
 
   it("scores one written word as one unit of evidence in any casing", () => {

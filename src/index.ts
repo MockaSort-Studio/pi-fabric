@@ -325,10 +325,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     });
   };
 
-  // Ash is derived state, never stored beside the session: replay the
-  // current branch's transcript entries (hints persist as pi-fabric-capability
-  // custom messages, organic use as tool calls naming captured tools).
-  const refreshAdvisorAsh = (context: ExtensionContext): void => {
+  // Durable advisory state is transcript-derived: custom messages replay ash,
+  // emitted-word echoes, and the session fire count; captured/MCP calls replay
+  // organic ash. Branch switches therefore reproduce one exact ledger.
+  const refreshAdvisorLedger = (context: ExtensionContext): void => {
     capabilityAdvisor.restoreAshFromEntries(
       context.sessionManager?.getBranch?.() ?? [],
       (toolName, input) => {
@@ -368,7 +368,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     fabricUi.stop();
     suspendToolCapture();
     capabilityAdvisor.reset();
-    refreshAdvisorAsh(context);
+    refreshAdvisorLedger(context);
     if (!compatibilityWarningShown) {
       compatibilityWarningShown = true;
       const warning = piHostCompatibilityWarning();
@@ -395,11 +395,11 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     installHaltOnEscape(context);
   });
 
-  // Branch changes move the leaf: ashes must track the branch exactly, so a
-  // rewind re-exposes capabilities whose burns live only in abandoned paths.
+  // Branch changes move the leaf: ash, emitted echoes, and spent advisory
+  // budget must track it exactly. Rewind removes abandoned-branch residue.
   pi.on("session_tree", async (_event, context) => {
     capabilityAdvisor.reset();
-    refreshAdvisorAsh(context);
+    refreshAdvisorLedger(context);
     return undefined;
   });
 

@@ -48,6 +48,26 @@ score below a common one and matches would starve. Weight $1/\mathrm{df}$
 keeps "two distinctive words about equal to one source" true at any catalog
 size.
 
+That $s(p,j)$ is **raw namespace overlap**. It can prove that scatter exists,
+but it never owns phrased ignition. For each tool identity surface $u$ in
+source $j$, the scorer computes the same sum against $T(u)$ and admits only a
+surface containing a local pair $L(p,u)$:
+
+$$
+s_\phi(p,j)=\max_{u \in U(j):L(p,u)} s(p,u), \qquad
+\hat{s}(p,j)=
+\begin{cases}
+s_\phi(p,j) & s_\phi(p,j) \geq \theta \\
+\min(s(p,j),q) & \text{otherwise.}
+\end{cases}
+$$
+
+$\hat{s}$ is the effective score used for ignition, ranking, and advisory
+details. This binds a phrase and its mass to one surface: adding unrelated
+tools can raise raw $s$ without changing $s_\phi$, and raw scatter remains
+bounded by $q$ at every catalog width. The lone-brand and script-boundary
+lanes retain their one-word score as explicit exceptions described below.
+
 Pre-ignition filters:
 
 - **Skill-envelope strip.** Pi expands loaded skills into the prompt as XML
@@ -78,19 +98,20 @@ Pre-ignition filters:
   (a deliberate brand reach — the word must appear as a ≥3-letter token of
   the label's terminal namespace segment, so "ai"/"pi" stay starved), and
   fire-once ignition across a script boundary, the last entry here.
-- **Phrased evidence (locality).** A match is *phrased* when two of its
-  matched written words stand within a $2\tau$ window of each other in the
-  prompt's survivor stream (4 at the defaults) AND co-occur on one tool
-  surface of the source — the sequential-dependence clause of Metzler &
-  Croft's Markov random field retrieval model, scored with the corpus the
-  index already holds; nothing new is tokenized or stored. Words matched far
-  apart, or across different tools of one namespace, are *scatter*:
-  vocabulary collision, not phrasing. Scatter never ignites instantly (the
-  strong band requires phrased evidence), and its warmth trickles at one
-  quantum per turn, $\tilde{s} = \min(s, q)$, whatever its raw score — so a
-  scattered collision needs four sustained turns to cross $\theta_i$, and
-  its asymptote $W_\infty = q$ falls under $\theta(1 + 1/\tau^2)$: a single
-  smoke event prices scatter out for the rest of the session.
+- **Phrased evidence (locality + surface mass).** A match is *phrased* when
+  two of its matched written words stand within a $2\tau$ window of each
+  other in the prompt's survivor stream (4 at the defaults) AND co-occur on
+  one tool surface — the sequential-dependence clause of Metzler & Croft's
+  Markov random field retrieval model. Certification and arithmetic are the
+  same operation: each surface is scored independently and the strongest
+  threshold-clearing local surface supplies $s_\phi$. A local pair can never
+  launder words from the source's other tools into its score. Words matched
+  far apart, across different tools, or on surfaces whose own mass stays
+  below $\theta$ are *scatter*: vocabulary collision, not phrasing. Scatter
+  never ignites instantly and trickles at one quantum per turn,
+  $\tilde{s}=\min(s,q)$, whatever raw mass or catalog breadth produced it.
+  It needs four sustained turns to cross $\theta_i$, and its asymptote
+  $W_\infty=q$ falls under $\theta(1+1/\tau^2)$ after one smoke.
 - **Script-boundary ignition.** When a prompt's non-latin letters
   outnumber its latin written words, the prose itself is not latin — Chinese,
   Japanese, Korean, Cyrillic, Arabic, Hebrew, Thai — and the collision the
@@ -118,19 +139,22 @@ Pre-ignition filters:
   word's appearances into *episodes*: consecutive-turn repetition is one
   episode, a return after a $\tau^2$-turn pause completes one and starts
   another, and $\tau^3$ turns of absence relapses the word to fresh. Every
-  completed episode discounts rarity by a count — effective weight
-  $1/(1+e)$ instead of $1/\mathrm{df}$ — so words that drift through
-  ambient commentary sink below $\theta$ after a few episodes. Sustained
-  presence is mathematically exempt (gap $1 < \tau^2$ never damps), because
-  sustained presence is the weak band's own ignition signature; brand terms
-  never accrue episodes either — typing a source's name is a claim, not
-  vocabulary.
+  completed episode multiplies rarity by $1/(1+e)$ — effective weight
+  $1/[\mathrm{df}(t)(1+e_w)]$ — so words that drift through ambient
+  commentary sink below $\theta$ after a few episodes. Episode keys are
+  casing-invariant: `Ledger`, `ledger`, and `LEDGER` are one vocabulary item,
+  not three ways around the ledger. Sustained presence is mathematically
+  exempt (gap $1 < \tau^2$ never damps), because it is the weak band's own
+  ignition signature; brand terms never accrue episodes either — typing a
+  source's name is a claim, not vocabulary.
 - **Echo stripping.** Everything the advisory renders enters an
-  emitted-words ledger kept with ash for the session's life. Words we
-  uttered never re-enter the evidence stream, so the self-echo class is
-  zero: quoting, parroting, or pasting the advisory back cannot score, and
+  emitted-words ledger derived from the current branch's custom messages.
+  Words we uttered never re-enter the evidence stream, so the self-echo class
+  is zero: quoting, parroting, or pasting the advisory back cannot score, and
   a namespace whose vocabulary leaked into another source through our own
-  header line cannot be burned by our noise.
+  header line cannot be burned by our noise. Replay makes the rule exact in
+  both directions: process reload reconstructs prior echoes, while a branch
+  rewind drops words emitted only in the abandoned future.
 - **Latin-only tokenization.** Matching keeps latin alphanumerics of two or
   more characters; non-latin scripts atomize to nothing, so a non-latin
   prompt matches through the latin brand words it contains — the gap that
@@ -171,6 +195,7 @@ user-facing $\theta$:
 | phrase window | 4 survivors | $2\tau$ |
 | scatter feed | $\min(s, q)$ per turn | trickle cap $q$ |
 | topic share | 1/2 of identity surfaces | $1 - 1/\tau$ |
+| feedback attribution window | 2 turns | $\tau$ |
 | episode gap | 4 turns | $\tau^2$ |
 | relapse gap | 8 turns | $\tau^3$ |
 | habituation discount | $1/(1+e)$ after $e$ episodes | per-word episodes |
@@ -183,21 +208,21 @@ turns of signal suffice for that. Smoke estimates a usage bias whose variance
 falls like $1/n$; a convergent estimate of bias wants the squared budget
 before the thermostat hardens against a namespace.
 
-Let $\theta$ be the configured `threshold` (default 0.9) and $B = q = 1$ the
-weak-band width. Each turn, every unburned source with $s \geq \theta$ falls
-into one of two bands:
+Let $\theta$ be the configured `threshold` (default 0.9) and $B=q=1$ the
+weak-band width. Each turn, every unburned source with raw $s\geq\theta$ falls
+into one of two bands using effective score $\hat{s}$:
 
 | Band | Condition | Behavior |
 |---|---|---|
-| Strong | $s \geq \theta + B$, phrased | **Ignites at once.** Multi-term overlap that localizes on one tool surface is strong evidence, and any delay would hurt real use. Scatter of the same mass demotes to the trickle path instead. |
-| Weak | $\theta \leq s < \theta + B$, or scatter | Must accumulate **warmth** until it passes the ignition point $\theta_i$. Phrased evidence feeds at full score; scatter feeds $\min(s, q)$ per turn. Lone written words feed nothing and never fire (brand reach, topic-saturating words, and the script boundary excepted). |
+| Strong | $s_\phi \geq \theta+B$ | **Ignites at once.** One tool surface carries the entire strong claim. Scatter elsewhere in the namespace contributes zero strong mass. |
+| Weak | $\theta\leq s_\phi<\theta+B$, or raw scatter $s\geq\theta$ | Must accumulate **warmth** until it passes $\theta_i$. A phrased surface feeds $s_\phi$; scatter feeds $\min(s,q)$. Lone words feed nothing (brand reach and the script boundary excepted). |
 
-The headline register reports **how the fire ignited, not how big the score
-was**: "matched your prompt" only when this turn's evidence alone clears the
-strong bar (phrased, $s \geq \theta + B$); every warmth arrival — trickle,
-brand reach, script boundary — reads "might match your prompt", whatever raw
-mass it carried in. The register carries the fire's confidence, not its
-arithmetic.
+The headline register reports **how the fire ignited, not how big raw overlap
+was**: "matched your prompt" only when one surface clears the strong bar
+$s_\phi\geq\theta+B$ this turn; every warmth arrival — trickle, brand reach,
+script boundary — reads "might match your prompt". The register carries the
+fire's confidence, and `details.matches[].score` carries the effective
+$\hat{s}$ rather than breadth-inflated namespace mass.
 
 Warmth convolves the per-turn score signal with the unit-mass exponential
 kernel $K_\tau(j) = \tfrac{1}{\tau}\bigl(1 - \tfrac{1}{\tau}\bigr)^j$ over
@@ -207,10 +232,10 @@ of one turn:
 
 $$
 W_k = (1-\alpha)\, \tilde{s}_k + \alpha\, W_{k-1} = (K_\tau * \tilde{s})_k, \qquad \tilde{s}_k =
-\begin{cases} s \geq \theta & \text{phrased evidence this turn} \\ \min(s, q) \geq \theta & \text{scatter this turn} \\ 0 & \text{otherwise} \end{cases}
+\begin{cases} s_\phi & s_\phi \geq \theta \text{ (one local surface)} \\ \min(s, q) & s \geq \theta \text{ (scatter)} \\ 0 & \text{otherwise.} \end{cases}
 $$
 
-Phrased evidence feeds full score; scatter trickles at one quantum per turn.
+Phrased evidence feeds one surface's score; scatter trickles at one quantum per turn.
 The trickle's asymptote is $W_\infty = q = 1$: it crosses $\theta = 0.9$
 after four sustained turns, and once smoke lifts the ignition point to
 $\theta(1 + 1/\tau^2) = 1.125$ it can never cross again.
@@ -235,65 +260,67 @@ $s = 1.333$ (weak band). The EWMA crosses $0.9$ only on the second tidy
 prompt, and a cool-off while the user edits code delays the fire the way the
 design intends.
 
-## Ash: session-scoped suppression, with the transcript as the ledger
+## Transcript-derived ledger: ash, echoes, and cap
 
-Fired namespaces burn. The burn record lives in the session transcript and in
-no other file:
+Fired namespaces burn. Durable advisory state lives in the session transcript,
+never in a side file:
 
 - `fired`: the hint itself is the record. Every advisory goes out as a
-  `pi-fabric-capability` custom-message entry whose `details` list the shown
-  namespaces.
+  `pi-fabric-capability` custom-message entry. Its `details` list the burned
+  namespaces, its `content` reconstructs emitted-word echo suppression, and
+  the entry itself spends exactly one unit of session fire budget.
 - `organic`: the model invoked a captured tool from that namespace before any
   hint. The tool call is already a transcript entry, and the capability has
   been introduced. The advisor marks the namespace burned so a later hint
   cannot spend a turn on it (organic-discovery poisoning).
 
-Nothing stores the ash separately. On `session_start` and on each branch
-switch (`session_tree`) the advisor replays the current branch's entries
-(`ctx.sessionManager.getBranch()`) and rebuilds both kinds of burn. The
-provenance (`origin`) reflects which kind of evidence matched. The wall clock
-(`at`) comes from the entry's own timestamp:
+On `session_start` and every branch switch (`session_tree`), the advisor replays
+`ctx.sessionManager.getBranch()` and **replaces** ash, echoes, and fire count
+with the state at that exact leaf. Process reload cannot reopen self-echo or
+replenish the cap; branch rewind cannot retain suppression or budget spent only
+in abandoned history. Burn provenance (`origin`) and wall clock (`at`) come
+from the entries themselves:
 
 ```json
 { "namespace": "extension:pi-websearch", "origin": "fired", "at": "2026-08-10T16:00:00.000Z" }
 { "namespace": "extension:pi-fovea",    "origin": "organic", "at": "2026-08-10T16:12:11.000Z" }
 ```
 
-The replay runs up to the branch's current leaf, so the ash set follows the
-history exactly. A fork sees the burns that happened before the fork point. A
-`/tree` rewind re-exposes capabilities whose only burns sat in the abandoned
-part of the tree. A fresh session starts with an empty urn, on the grounds
-that the one who learned from the hint arrives with a fresh context anyway.
-
-Inside one session a burn stays burned, without expiry or release. `reset()`
-clears the transient state (warmth, smoke streak, per-session cap) and leaves
-ash alone.
+A fork sees all ledger state before its fork point. A `/tree` rewind re-exposes
+capabilities, budget, and vocabulary whose records lived only in the abandoned
+future. A fresh session replays an empty branch. Inside one history a burn
+stays burned without expiry; transient warmth, smoke, pending attribution, and
+habituation reset at the session/tree boundary before durable replay.
 
 ## Furnace feedback
 
-Combustion quality regulates the furnace. At each `turn_end` the advisor
-checks the pending fires: did any matched namespace see a captured-tool call
-before the turn closed? A fire that produced no tool call counts as smoke, and
-a streak of smoke lifts the weak-band ignition point:
+Combustion quality regulates the furnace. One advisory event can name two
+namespaces, and using either means the event helped. The event remains pending
+for $\tau$ `turn_end` checkpoints: its firing turn **and the following turn**
+at the default $\tau=2$. A captured-tool call in either interval marks clean
+combustion. Only when the second checkpoint closes unused does the event emit
+one smoke quantum:
 
 $$
 \theta_i = \theta \cdot \bigl(1 + n / \tau^2\bigr), \qquad 0 \leq n \leq \tau^2
 $$
 
-The streak $n$ caps at 4, so the ignition point stays at or below $2\theta$.
-The first hint the model follows clears the streak, and the furnace responds
-fast again. Smoke feedback applies to the weak band alone. Strong matches
-ignite at once, since the thermostat's skepticism has no standing when the
-evidence is unambiguous.
+Pending events overlap independently and resolve in event order. A clean event
+clears the streak; an expired unused event increments it. The streak $n$ caps
+at 4, so the ignition point stays at or below $2\theta$. A call after the
+$\tau$-turn causal horizon still burns organic ash but cannot rewrite an
+already resolved observation. Smoke feedback applies to the weak band alone;
+strong one-surface evidence still ignites immediately.
 
-Smoke stays session-local as well. A new session starts from a fresh
-transcript, and with it a fresh furnace reading.
+Smoke stays transient and session-local. Unlike ash, echoes, and fire count,
+it is not replayed from the transcript.
 
 ## Per-session cap
 
-At most `maxPerSession` hints fire per session, whatever the model does
-(default 3). The cap guards against prompt storms inside one session, and ash
-guards against repeat hints.
+At most `maxPerSession` hints fire on the current session branch, whatever the
+model does (default 3). Each replayed advisory custom message spends one unit,
+so process reload cannot replenish the budget; rewinding before a hint restores
+exactly that abandoned unit. Ash separately guards against repeat namespaces.
 
 ## Coverage matrix and compromises
 
@@ -317,35 +344,38 @@ turn for one repeated prompt; "weak"/"STRONG" is the rendered register.
 | L | No overlap / units / code spans | never | never | never | never | tokenizer |
 | M | Path-only URL evidence, repeated | silent | fires t2 (weak) | never | ash | q/2 path discount |
 | N | Interleaved topic drift | silent | never | never | — | α decay |
-| O | Quoted advisory / self-echo (our own words) | **never** | never | — | — | echo ledger |
-| P | Ambient word recurring across long pauses | silent, decaying | **never past a few episodes** | never | — | habituation $1/(1+e)$ |
+| O | Quoted advisory / self-echo (our own words) | **never** | never, including reload | — | branch-exact | replayed echo ledger |
+| P | Ambient word recurring across long pauses / casing shifts | silent, decaying | **never past a few episodes** | never | — | casing-invariant habituation $1/(1+e)$ |
+| Q | One weak local pair + 32 cross-tool hits | silent | fires t4 (weak), same as 0 hits | **never** | ash | surface score $s_\phi$ |
+| R | Hint followed on the next turn | pending | clean combustion | clears streak | fired ash | $\tau$-turn attribution |
+| S | Process reload / branch rewind | exact replay | exact replay | transient reset | exact replay | transcript ledger |
 
 What we could not close without learning (and chose not to fake):
 
-- **Row J, verbatim paraphrase.** A prompt echoing a tool's identity sentence
-  ("based on what you recommend, create my playlist") is phrased, strong,
-  single-surface evidence. Every deterministic gate agrees with it — the
-  evidence is real; it's the *intent* that's absent. Ash caps the cost at
-  one slot per session; smoke makes the mistake expensive for everything
-  that follows. Closing it want semantics: paraphrase-rate or a
-  probability that the writer derived their sentence from the catalog —
-  neither expressible from the session corpus alone.
-- ~~Session-repeating vocabulary.~~ *Closed: habituation (row P) — an
-  episode-counted damping term that leaves the weak band's sustained
-  ignition mathematically intact while ambient recurrence decays below
-  threshold.*
+- **Row J, unmarked verbatim paraphrase.** A prompt echoing a tool's identity
+  sentence ("based on what you recommend, create my playlist") is phrased,
+  strong, single-surface evidence. Every deterministic gate agrees with it —
+  the evidence is real; only intent is absent. Ash caps the cost at one slot
+  per session and smoke hardens later weak paths. Closing it would require a
+  semantic paraphrase/source-attribution probability unavailable from the
+  prompt × catalog × session state alone.
 
-Contained by design, not levers:
+Deterministic fronts closed:
 
-- **Catalog-breadth advantage.** Score sums over matched words, so wide
-  servers look bigger. Containment already follows from the gates: instant
-  fire needs pairs phrased on *one* surface (bounded by one identity), and
-  the trickle is capped at q per turn regardless of breadth; the breadth can
-  raise warmth a constant factor faster, never the asymptote.
-- **Smoke attribution window = one turn.** A hint the model follows two
-  turns later reads as smoke. Chosen over a longer window because the ash
-  from the organic tool use already clears the burn, and the transient
-  smoke raise washes out over τ² events.
+- **Catalog breadth (row Q).** Phrase certification now owns its arithmetic:
+  the maximum score of one local tool surface. In the adversarial fixture, a
+  weak surface plus 1, 8, or 32 source-unique terms scattered across other
+  tools has the same effective score (1.0) and same t4 weak ignition. Raw
+  namespace overlap can grow without changing either path or rank.
+- **Delayed-follow attribution (row R).** A fire remains attributable through
+  the following turn ($\tau$ checkpoints), removing the measured false smoke
+  penalty (the companion weak signal stays t2, equal to a clean control).
+  Credit after that finite causal horizon would itself be an attribution guess.
+- **Transcript continuity (rows O/S).** Echoes and fire count now replay with
+  ash. Reload preserves suppression and budget; rewind removes abandoned
+  emissions and restores abandoned budget.
+- **Case-shift habituation (row P).** Episode identity is lowercase-normalized,
+  so alternating casing cannot reset ambient-vocabulary damping.
 
 ## Summary
 
@@ -356,7 +386,9 @@ Contained by design, not levers:
 | `capture.advisory.maxPerSession` | config | session fire cap |
 | `capture.advisory.budget` | config | token ceiling for the advisory text (chars/4, 128–8192, same range as [pi-fovea](https://github.com/monotykamary/pi-fovea)'s `sync.budget`) |
 
-Everything else derives from the primitives $q = 1$ and $\tau = 2$: retention
-$\alpha = 1 - 1/\tau$, weak band $B = q$, smoke step $\theta/\tau^2$, streak
-cap $\tau^2$, and the default session cap $2\tau - 1$. Getting $\tau$ wrong
-costs some responsiveness. The furnace ceiling stays at $\theta$ either way.
+Everything else derives from $q=1$ and $\tau=2$: retention
+$\alpha=1-1/\tau$, weak band $B=q$, phrase window $2\tau$, feedback horizon
+$\tau$, smoke step $\theta/\tau^2$, streak cap $\tau^2$, episode gap $\tau^2$,
+relapse gap $\tau^3$, and default session cap $2\tau-1$. Changing $\tau$
+trades responsiveness for patience; the maximum furnace **raise** remains
+exactly $\theta$ (so $\theta_i\leq2\theta$) for every value.

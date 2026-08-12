@@ -32,6 +32,21 @@ const toolCallInput = (block: unknown): Record<string, unknown> | undefined => {
     ? (candidate as Record<string, unknown>)
     : undefined;
 };
+
+// Custom-message content has appeared as a plain string and as pi text blocks
+// across transcript versions. Normalize only actual text; malformed or richer
+// blocks carry no advisory vocabulary.
+const customMessageText = (content: unknown): string => {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    if (typeof block !== "object" || block === null) continue;
+    const { type, text } = block as { type?: unknown; text?: unknown };
+    if (type === "text" && typeof text === "string") parts.push(text);
+  }
+  return parts.join("\n");
+};
 // Score quantum: the weight of a source-unique term (df = 1 → 1/df = 1) — the
 // smallest unit of unambiguous evidence the 1/df scorer can express. The weak
 // band is exactly one quantum wide: strong = weak + one quantum of certainty.
@@ -144,6 +159,15 @@ interface CapabilityMatchedTerm {
   term: string;
 }
 
+// One advisory event can name up to two namespaces. Feedback belongs to the
+// event, not to each namespace independently: using either recommendation is
+// clean combustion. turnsLeft spans the firing turn plus the following turn.
+interface PendingCapabilityFire {
+  namespaces: ReadonlySet<string>;
+  turnsLeft: number;
+  used: boolean;
+}
+
 // Brand tokens of a source's label: the words that name the capability
 // itself ("pi-fovea" → {fovea}; "mcp:fal-ai" → {fal}). Two-letter tokens are
 // excluded — "ai", "pi" are ambient vocabulary, not a deliberate reach.
@@ -172,28 +196,18 @@ const topicShare = (term: string, source: CapabilitySourceFingerprint): number =
   return hits / total;
 };
 
-// Phrased evidence: two matched written words standing within the
-// PHRASE_WINDOW survivor window of each other AND co-occurring on one tool
-// surface of the source. Prompt-adjacent words living in different tools of
-// the same namespace (e.g. "focus" in fovea_focus and "blast" in
-// fovea_impact) are scatter, not phrasing — multi-tool MCP servers spread
-// generic vocabulary across tools exactly that way, which is why the
-// co-surface clause checks a single tool, not the whole namespace.
-const hasPhraseLocality = (
-  matched: CapabilityMatchedTerm[],
-  source: CapabilitySourceFingerprint,
-): boolean => {
+// Prompt locality is evaluated only after scoring one tool surface. The caller
+// therefore supplies the co-surface clause by construction; this helper owns
+// only the sequential-dependence clause. Keeping those operations together at
+// the call site prevents one valid pair from certifying namespace-wide mass.
+const hasPromptLocality = (matched: CapabilityMatchedTerm[]): boolean => {
   for (let a = 0; a < matched.length; a++) {
     for (let b = a + 1; b < matched.length; b++) {
       const first = matched[a];
       const second = matched[b];
       if (first === undefined || second === undefined) continue;
       if (second.pos - first.pos > PHRASE_WINDOW) break; // positions ascend
-      for (const toolTerms of source.toolTerms) {
-        if (toolTerms !== undefined && toolTerms.has(first.term) && toolTerms.has(second.term)) {
-          return true;
-        }
-      }
+      return true;
     }
   }
   return false;
@@ -247,8 +261,7 @@ export class CapabilityAdvisor {
   readonly #slices = new Map<string, FabricActionDescriptor[]>();
   #ash = new Map<string, CapabilityBurn>();
   #warmth = new Map<string, number>();
-  #pendingFire = new Set<string>();
-  #hitsThisTurn = new Set<string>();
+  #pendingFires: PendingCapabilityFire[] = [];
   #smokeStreak = 0;
   // Habituation ledger: word → last turn seen + completed episodes. A word the
   // user keeps returning to across long pauses is ambient vocabulary, not
@@ -260,8 +273,9 @@ export class CapabilityAdvisor {
   #mentions = new Map<string, { last: number; extra: number }>();
   // Echo ledger: every latin word we ourselves rendered in advisory content.
   // Our own utterances must never score as intent — quoting or parroting the
-  // advisory back cannot re-derive intent from our own voice. Lives with ash
-  // (the transcripts outlive warmth); never cleared by reset().
+  // advisory back cannot re-derive intent from our own voice. Like ash and
+  // the fire count, this is branch-derived: reset clears it and transcript
+  // replay reconstructs exactly the current history.
   #emitted = new Set<string>();
   #firedTotal = 0;
 
@@ -284,21 +298,19 @@ export class CapabilityAdvisor {
 
   reset(): void {
     this.#warmth.clear();
-    this.#pendingFire.clear();
-    this.#hitsThisTurn.clear();
+    this.#pendingFires = [];
     this.#turnNo = 0;
     this.#mentions.clear();
+    this.#emitted.clear();
     this.#smokeStreak = 0;
     this.#firedTotal = 0;
   }
 
-  // Ash is derived from the session transcript, never stored beside it:
-  // fired hints ARE their own custom messages, organic use IS the tool calls
-  // that named captured tools — both are already persisted entries. Replay a
-  // branch (ctx.sessionManager.getBranch()) to rebuild ash exactly up to the
-  // current leaf, so forks and /tree rewinds see ashes up to that point in
-  // time, and a brand-new session starts with a clean urn. Warmth, smoke, and
-  // the per-session cap stay pure transients: reset() governs them.
+  // Durable advisory state derives from the session transcript, never a side
+  // store: fired hints ARE custom messages (their content is the echo ledger
+  // and each entry spends one cap unit), while organic use IS the tool calls
+  // that name captured tools. Replay rebuilds ash, echoes, and fire count at
+  // the current branch leaf. Warmth, smoke, and habituation stay transient.
   restoreAshFromEntries(
     entries: Iterable<unknown>,
     nameToNamespace: (
@@ -306,12 +318,17 @@ export class CapabilityAdvisor {
       input?: Record<string, unknown>,
     ) => string | string[] | undefined,
   ): void {
+    // Transcript-derived state is replaced, never merged: both branch rewinds
+    // and process reloads must reproduce exactly the current history.
     this.#ash.clear();
+    this.#emitted.clear();
+    this.#firedTotal = 0;
     for (const entryUnknown of entries) {
       const entry = entryUnknown as {
         type?: unknown;
         customType?: unknown;
         timestamp?: unknown;
+        content?: unknown;
         details?: unknown;
         message?: unknown;
       };
@@ -321,6 +338,8 @@ export class CapabilityAdvisor {
         entry.type === "custom_message" &&
         entry.customType === CAPABILITY_ADVISORY_CUSTOM_TYPE
       ) {
+        this.#firedTotal += 1;
+        this.#rememberEmission(customMessageText(entry.content));
         const matches = (entry.details as { matches?: unknown } | undefined)
           ?.matches;
         if (Array.isArray(matches)) {
@@ -357,6 +376,13 @@ export class CapabilityAdvisor {
     }
   }
 
+  #rememberEmission(content: string): void {
+    for (const token of splitCapabilityWords(content)) {
+      this.#emitted.add(token);
+      this.#emitted.add(token.toLowerCase());
+    }
+  }
+
   // Idempotent append: a namespace burns at most once per session history.
   #burn(namespace: string, origin: CapabilityBurn["origin"], at: string): boolean {
     if (this.#ash.has(namespace)) return false;
@@ -376,20 +402,34 @@ export class CapabilityAdvisor {
   // the capability's information potential is already spent. Burn it as ash
   // with origin "organic". Returns true when the ash set changed (persist it).
   observeToolUse(namespace: string): boolean {
-    if (this.#pendingFire.has(namespace)) this.#hitsThisTurn.add(namespace);
+    // Attribution has a τ-turn grace window. A model that follows the hint on
+    // the next turn still used the advisory; closing the event at the first
+    // turn boundary manufactured smoke and needlessly hardened the furnace.
+    for (const fire of this.#pendingFires) {
+      if (fire.namespaces.has(namespace)) fire.used = true;
+    }
     return this.#burn(namespace, "organic", new Date().toISOString());
   }
 
-  // Furnace feedback, evaluated once per turn (turn_end event). A fire whose
-  // namespaces saw no tool use is smoke; a used fire is clean combustion and
-  // clears the streak. Smoke raises the weak-band ignition point.
+  // Resolve feedback in event order. Each fire spans its firing turn and the
+  // following turn (τ checkpoints): use anywhere in that window is clean;
+  // only an expired unused event emits one smoke quantum. Overlapping events
+  // stay independent, and the latest resolved outcome owns the final streak.
   endTurn(): void {
-    if (this.#pendingFire.size > 0) {
-      const combusted = [...this.#pendingFire].some((namespace) => this.#hitsThisTurn.has(namespace));
-      this.#smokeStreak = combusted ? 0 : Math.min(this.#smokeStreak + 1, SMOKE_MAX);
-      this.#pendingFire.clear();
+    const pending: PendingCapabilityFire[] = [];
+    for (const fire of this.#pendingFires) {
+      if (fire.used) {
+        this.#smokeStreak = 0;
+        continue;
+      }
+      fire.turnsLeft -= 1;
+      if (fire.turnsLeft <= 0) {
+        this.#smokeStreak = Math.min(this.#smokeStreak + 1, SMOKE_MAX);
+      } else {
+        pending.push(fire);
+      }
     }
-    this.#hitsThisTurn.clear();
+    this.#pendingFires = pending;
   }
 
   evaluate(
@@ -418,11 +458,12 @@ export class CapabilityAdvisor {
     // either count. Words with no surviving candidates drop out. Echo ledger
     // words — anything we ourselves rendered in an earlier advisory — never
     // enter the stream: our utterances are evidence of nothing.
-    const promptWords: { word: string; candidates: Set<string> }[] = [];
+    const promptWords: { key: string; candidates: Set<string> }[] = [];
     for (const word of splitCapabilityWords(stripped)) {
-      if (this.#emitted.has(word) || this.#emitted.has(word.toLowerCase())) continue;
+      const key = word.toLowerCase();
+      if (this.#emitted.has(word) || this.#emitted.has(key)) continue;
       const candidates = new Set(capabilityWordCandidates(word));
-      if (candidates.size > 0) promptWords.push({ word, candidates });
+      if (candidates.size > 0) promptWords.push({ key, candidates });
     }
     if (promptWords.length === 0 || this.#index.sourceCount === 0) return undefined;
 
@@ -437,11 +478,11 @@ export class CapabilityAdvisor {
     for (const source of this.#index.sources) {
       for (const token of sourceBrandTokens(source.label)) brandWords.add(token);
     }
-    for (const { word } of promptWords) {
-      if (brandWords.has(word)) continue;
-      const mention = this.#mentions.get(word);
+    for (const { key } of promptWords) {
+      if (brandWords.has(key)) continue;
+      const mention = this.#mentions.get(key);
       if (mention === undefined) {
-        this.#mentions.set(word, { last: this.#turnNo, extra: 0 });
+        this.#mentions.set(key, { last: this.#turnNo, extra: 0 });
         continue;
       }
       const gap = this.#turnNo - mention.last;
@@ -460,7 +501,7 @@ export class CapabilityAdvisor {
       let matchedWords = 0;
       const contributingTerms: string[] = [];
       const matched: CapabilityMatchedTerm[] = [];
-      promptWords.forEach(({ word, candidates }, pos) => {
+      promptWords.forEach(({ key, candidates }, pos) => {
         let bestWeight = 0;
         let bestTerm: string | undefined;
         for (const term of candidates) {
@@ -478,7 +519,7 @@ export class CapabilityAdvisor {
         // τ²-turn pause) discounts the word's rarity by one more count —
         // weight 1/(1 + e). The matched-word count and every structural gate
         // are untouched; only the arithmetic claim decays.
-        const extra = this.#mentions.get(word)?.extra ?? 0;
+        const extra = this.#mentions.get(key)?.extra ?? 0;
         matchedWords += 1;
         score += bestWeight / (1 + extra);
         contributingTerms.push(bestTerm);
@@ -498,8 +539,8 @@ export class CapabilityAdvisor {
       // the threshold, while 1/df keeps "two distinctive words ≈ one source"
       // meaningful at any catalog size.
       const unit = scoreWords((term) => source.tf.has(term));
-      const { score } = unit;
-      if (score < config.threshold) continue;
+      const namespaceScore = unit.score;
+      if (namespaceScore < config.threshold) continue;
       // Script-boundary exception: inside non-latin prose a lone latin word
       // cannot be a vocabulary collision — the writer had to leave their
       // input method to type it. But switching input methods is only proof
@@ -535,20 +576,35 @@ export class CapabilityAdvisor {
       );
       if (unit.matchedWords < 2 && !scriptSwitched && !namesItself) continue;
 
-      const phrased = hasPhraseLocality(unit.matched, source);
-      // The strong band ignites on phrased mass only: s ≥ θ + B buys instant
-      // fire when the evidence also localizes on one tool surface. Scatter
-      // mass, however high, demotes to the trickle path below.
+      // A phrase and its mass must come from the SAME tool surface. The old
+      // Boolean locality certificate was attached to namespaceScore, so one
+      // weak local pair could launder arbitrarily many words scattered across
+      // a wide server into a strong fire. Score every surface independently
+      // and retain the strongest threshold-clearing local one. If no surface
+      // certifies, namespace-wide overlap is scatter and is bounded to q.
+      let phrasedUnit: ReturnType<typeof scoreWords> | undefined;
+      for (const toolTerms of source.toolTerms) {
+        if (toolTerms === undefined) continue;
+        const candidate = scoreWords((term) => toolTerms.has(term));
+        if (candidate.score < config.threshold || !hasPromptLocality(candidate.matched)) {
+          continue;
+        }
+        if (phrasedUnit === undefined || candidate.score > phrasedUnit.score) {
+          phrasedUnit = candidate;
+        }
+      }
+      const phrased = phrasedUnit !== undefined;
+      const score = scriptSwitched
+        ? namespaceScore
+        : (phrasedUnit?.score ?? Math.min(namespaceScore, SCORE_QUANTUM));
+      // The strong band ignites on one surface's phrased mass only: sφ ≥ θ + B
+      // buys instant fire. Catalog breadth cannot alter sφ; scatter remains q.
       const strong = phrased && score >= config.threshold + WEAK_MATCH_BAND;
       if (!strong && !scriptSwitched) {
-        // Weak band: accumulate warmth this turn, ignite only at saturation.
-        // Phrased evidence feeds at full score; scatter trickles at one
-        // quantum per turn (min(s, q)), so a scattered collision needs four
-        // sustained turns to cross θ — and never crosses once smoke lifts
-        // the ignition point past the trickle's asymptote (W∞ = q = 1 <
-        // θ(1 + 1/τ²)).
-        const feed = phrased ? score : Math.min(score, SCORE_QUANTUM);
-        const warmth = (this.#warmth.get(source.namespace) ?? 0) + (1 - WARM_ALPHA) * feed;
+        // Weak band: accumulate the effective score this turn. Same-surface
+        // phrases feed their own mass; scatter has already been capped at q,
+        // so one smoke raises θ_i above its asymptote for the session.
+        const warmth = (this.#warmth.get(source.namespace) ?? 0) + (1 - WARM_ALPHA) * score;
         this.#warmth.set(source.namespace, warmth);
         if (warmth < ignitionPoint) continue;
       }
@@ -568,7 +624,7 @@ export class CapabilityAdvisor {
         namespace: source.namespace,
         label: source.label,
         score,
-        matchedTerms: unit.contributingTerms.sort(
+        matchedTerms: (phrasedUnit ?? unit).contributingTerms.sort(
           (a, b) => this.#index.docFrequency(a) - this.#index.docFrequency(b),
         ),
         names: order.map((index) => source.names[index] ?? "").filter((name) => name !== ""),
@@ -671,8 +727,12 @@ export class CapabilityAdvisor {
     for (const match of included) {
       this.#burn(match.namespace, "fired", new Date().toISOString());
       this.#warmth.delete(match.namespace);
-      this.#pendingFire.add(match.namespace);
     }
+    this.#pendingFires.push({
+      namespaces: new Set(included.map((match) => match.namespace)),
+      turnsLeft: TAU,
+      used: false,
+    });
     this.#firedTotal += 1;
     return {
       content,
