@@ -32,6 +32,7 @@ const PREWALK_CONTINUE_PROMPT = [
   "Continue the existing task in this same session under the new executor model.",
   "Do not stop merely because the model changed or because the first mutation succeeded.",
   "Finish the remaining implementation, check matching call sites for consistency, and run the relevant verification before reporting completion.",
+  "Report completion with concrete identifiers — relay links, PR and issue numbers, commit hashes, and artifact paths verbatim so the user can follow up without digging.",
 ].join(" ");
 
 // Forced continuation after a completed trajectory handoff: Main must not
@@ -40,11 +41,49 @@ const PREWALK_CONTINUE_PROMPT = [
 const PREWALK_TRAJECTORY_VERIFY_PROMPT = [
   "Prewalk trajectory handoff complete: the executor's implementation above is final — do not redo it.",
   "Continue now: run the relevant verification (matching test module, build, or an equivalent probe) and check the changed call sites for consistency, then summarize what the executor implemented and how the checks went.",
+  "Relay concrete identifiers from the executor's report verbatim — links, PR and issue numbers, commit hashes, and file paths — so the user can follow up without expanding the tool result.",
   "If a check fails, fix only the failing part; keep the fix scoped. If this verification already happened in this turn, respond with the summary only.",
 ].join(" ");
 
+// Forced reply after a trajectory handoff that settled without completing
+// (failed / stopped / timed out): the terminating boundary suppresses Main's
+// inference, so without a queued follow-up nobody would ever tell the user.
+const PREWALK_TRAJECTORY_INCOMPLETE_PROMPT = [
+  "Prewalk trajectory ended without completing: the executor's result above is final — do not redo its work.",
+  "Tell the user now, briefly: how the executor ended, why, and what it still managed in the workspace — relay any links, PR and issue numbers, and commit hashes it produced verbatim.",
+  "Propose the next step (retry, adjust, or continue manually) and stop; do not take over the implementation unprompted.",
+].join(" ");
+
+// Thrown-boundary variant for both modes: the handoff failed before its
+// continuation even started (unavailable model, missing auth, queue failure).
+const PREWALK_FAILURE_PROMPT = [
+  "A prewalk handoff at this boundary failed — the boundary result above is final; do not retry the handoff autonomously.",
+  "Tell the user now, briefly: that the handoff failed and why (from the result above), relaying any identifiers verbatim, and propose the next step.",
+  "The task stays re-armed where applicable; wait for the user's direction instead of redoing anything yourself.",
+].join(" ");
+
 export const PREWALK_ARMED_MESSAGE_TYPE = "pi-fabric-prewalk-armed";
+const PREWALK_FAILURE_MESSAGE_TYPE = "pi-fabric-prewalk-failure";
 const PREWALK_CONTINUE_MESSAGE_TYPE = "pi-fabric-prewalk-continue";
+
+// Hidden boundary follow-ups queue best-effort after the handoff settles: the
+// persisted boundary result stays authoritative, so a missed turn must never
+// fail or mask the handoff outcome itself.
+const queuePrewalkFollowUp = (
+  extension: ExtensionAPI,
+  customType: string,
+  content: string,
+  details: Record<string, unknown>,
+): void => {
+  try {
+    extension.sendMessage(
+      { customType, content, display: false, details },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
+  } catch {
+    // Swallow: a missed follow-up turn must not fail the handoff.
+  }
+};
 
 const prewalkTriggerField = (
   pending: PendingFabricHandoff,
@@ -530,26 +569,31 @@ export const runFabricHandoffAtBoundary = async (
     pending.audit.success = completed;
     pending.audit.result = result;
     pending.audit.endedAt = Date.now();
-    if (pending.kind === "prewalk-trajectory" && completed) {
+    if (pending.kind === "prewalk-trajectory") {
       // Main is never left idle after a delegated implementation: queue a
-      // hidden verify-and-summarize continuation the same way in-place does.
-      // Best-effort — the executor's completed result stays authoritative.
-      try {
-        extension.sendMessage(
-          {
-            customType: "pi-fabric-prewalk-continue",
-            content: PREWALK_TRAJECTORY_VERIFY_PROMPT,
-            display: false,
-            details: {
-              mode: "trajectory",
-              model,
-              trigger: pending.triggerRef,
-            },
-          },
-          { deliverAs: "followUp", triggerTurn: true },
+      // hidden follow-up the same way in-place does. Completed handoffs get
+      // verify-and-summarize; non-completed ones get report-and-propose so a
+      // failed, stopped, or timed-out executor never ends the turn in silence.
+      if (completed) {
+        queuePrewalkFollowUp(
+          extension,
+          PREWALK_CONTINUE_MESSAGE_TYPE,
+          PREWALK_TRAJECTORY_VERIFY_PROMPT,
+          { mode: "trajectory", model, trigger: pending.triggerRef },
         );
-      } catch {
-        // Swallow: a missed verification turn must not fail the handoff.
+      } else {
+        queuePrewalkFollowUp(
+          extension,
+          PREWALK_FAILURE_MESSAGE_TYPE,
+          PREWALK_TRAJECTORY_INCOMPLETE_PROMPT,
+          {
+            mode: "trajectory",
+            model,
+            status: result.status,
+            ...(typeof result.error === "string" ? { error: result.error } : {}),
+            trigger: pending.triggerRef,
+          },
+        );
       }
     }
     context.ui.setStatus(
@@ -568,6 +612,16 @@ export const runFabricHandoffAtBoundary = async (
     pending.audit.success = false;
     pending.audit.error = message;
     pending.audit.endedAt = Date.now();
+    if (pending.kind.startsWith("prewalk-")) {
+      // Thrown failures end the turn silently too (the boundary terminates
+      // Main's inference), so queue the same report-and-propose reply.
+      queuePrewalkFollowUp(
+        extension,
+        PREWALK_FAILURE_MESSAGE_TYPE,
+        PREWALK_FAILURE_PROMPT,
+        { mode: inPlace ? "in-place" : "trajectory", trigger: pending.triggerRef, error: message },
+      );
+    }
     context.ui.setStatus("fabric-prewalk", inPlace ? "in-place continuation failed" : "trajectory handoff failed");
     return {
       ...(pending.kind.startsWith("prewalk-")

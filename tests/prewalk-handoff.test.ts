@@ -624,6 +624,20 @@ describe("outer-boundary Prewalk", () => {
       expect.objectContaining({ customType: "pi-fabric-prewalk-continue" }),
       expect.anything(),
     );
+    expect(ext.sendMessage).toHaveBeenCalledTimes(1);
+    expect(ext.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customType: "pi-fabric-prewalk-failure",
+        display: false,
+        content: expect.stringContaining("at this boundary failed"),
+        details: expect.objectContaining({
+          mode: "in-place",
+          trigger: "pi.edit",
+          error: expect.stringContaining("No authentication"),
+        }),
+      }),
+      { deliverAs: "followUp", triggerTurn: true },
+    );
     expect(controller.status()).toMatchObject({
       state: "armed",
       task: "Implement the guard",
@@ -822,13 +836,21 @@ describe("outer-boundary Prewalk", () => {
       }),
       { deliverAs: "followUp", triggerTurn: true },
     );
+    const verifyCall = ext.sendMessage.mock.calls.find(
+      ([message]) => message.customType === "pi-fabric-prewalk-continue",
+    );
+    expect(String(verifyCall?.[0]?.content)).toContain("verbatim");
+    expect(ext.sendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ customType: "pi-fabric-prewalk-failure" }),
+      expect.anything(),
+    );
     expect(ctx.setStatus).toHaveBeenLastCalledWith(
       "fabric-prewalk",
       "trajectory executor implemented",
     );
   });
 
-  it("does not queue the verify continuation after a failed trajectory handoff", async () => {
+  it("queues a hidden report-and-propose reply after a failed trajectory handoff", async () => {
     const controller = new PrewalkController();
     controller.arm({
       mode: "trajectory",
@@ -860,6 +882,67 @@ describe("outer-boundary Prewalk", () => {
     expect(ext.sendMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ customType: "pi-fabric-prewalk-continue" }),
       expect.anything(),
+    );
+    expect(ext.sendMessage).toHaveBeenCalledTimes(1);
+    expect(ext.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customType: "pi-fabric-prewalk-failure",
+        display: false,
+        content: expect.stringContaining("without completing"),
+        details: expect.objectContaining({
+          mode: "trajectory",
+          model: "anthropic/executor",
+          status: "failed",
+          error: "child crashed",
+          trigger: "pi.edit",
+        }),
+      }),
+      { deliverAs: "followUp", triggerTurn: true },
+    );
+  });
+
+  it("queues a hidden failure reply when the trajectory handoff throws", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      mode: "trajectory",
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "auto");
+    const ctx = context();
+    const ext = extension();
+    const runner = {
+      executeHandoff: vi.fn(async () => {
+        throw new Error("child process died");
+      }),
+    };
+
+    const result = await runFabricHandoffAtBoundary(
+      controller,
+      runner,
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+
+    expect(result).toMatchObject({
+      prewalk: true,
+      mode: "trajectory",
+      status: "failed",
+      error: "child process died",
+    });
+    expect(ext.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customType: "pi-fabric-prewalk-failure",
+        content: expect.stringContaining("at this boundary failed"),
+        details: expect.objectContaining({
+          mode: "trajectory",
+          error: "child process died",
+        }),
+      }),
+      { deliverAs: "followUp", triggerTurn: true },
     );
   });
 
