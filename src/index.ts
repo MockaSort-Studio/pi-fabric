@@ -113,16 +113,42 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   const surpriseDetector = new SurpriseDetector();
   const surpriseTracer = new SurpriseTrace();
   const surpriseTuning = new SurpriseTuning();
-  const state = new FabricState(pi, capturedTools, (entry) => {
-    // Organic discovery: the model found and used the namespace on its own —
-    // burn it as ash so no future hint wastes the fire. Nothing to persist:
-    // the tool call itself is the transcript entry a future replay recovers.
-    try {
-      capabilityAdvisor.observeToolUse(capturedToolNamespace(entry));
-    } catch {
-      // Advisory bookkeeping only.
-    }
-  });
+  const state = new FabricState(
+    pi,
+    capturedTools,
+    (entry) => {
+      // Organic discovery: the model found and used the namespace on its own —
+      // burn it as ash so no future hint wastes the fire. Nothing to persist:
+      // the tool call itself is the transcript entry a future replay recovers.
+      try {
+        capabilityAdvisor.observeToolUse(capturedToolNamespace(entry));
+      } catch {
+        // Advisory bookkeeping only.
+      }
+    },
+    (outcome) => {
+      const input = outcome.input as Record<string, unknown> | undefined;
+      const lifecycle = input?.data as Record<string, unknown> | undefined;
+      if (lifecycle?.event !== "fabric.surprise" || outcome.actor.name !== "advisor") return;
+      const fireTurn = (lifecycle.data as Record<string, unknown> | undefined)?.turn;
+      const action = outcome.message.action ?? "silent";
+      if (typeof fireTurn === "number" && (action === "silent" || action === "message" || action === "stop")) {
+        surpriseTuning.noteAdvisorDecision(fireTurn, action);
+      }
+      surpriseTracer.note({
+        kind: "advisor-decision",
+        actorId: outcome.actor.id,
+        actorName: outcome.actor.name,
+        activationId: outcome.activation.id,
+        lifecycleEventId: lifecycle.id,
+        fireTurn,
+        action,
+        deliveredAdvice: outcome.message.action === "message" || outcome.message.action === "stop",
+        runId: outcome.message.runId,
+        usage: outcome.message.usage,
+      });
+    },
+  );
   const directToolApproval = new FabricDirectToolApproval(
     pi,
     () => state.config,
@@ -392,12 +418,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       const tuning = surpriseTuning.parameters(surprise);
       const verdict = surpriseDetector.endTurn(event.turnIndex, { ...surprise, ...tuning });
       surpriseTracer.append(verdict, surprise.mode);
-      // Outcome windows close here: a fire from `cooldown` turns ago is
-      // confirmed if any fabric.surprise subscriber received it or a human
-      // engaged after it; audience-free sessions abstain from judgment.
-      const resolutions = surpriseTuning.resolveOutcomes(event.turnIndex, (sinceMs) =>
-        state.lifecycleEventEngagement("fabric.surprise", sinceMs),
-      );
+      // Outcome windows close here. Explicit advisor selectivity or human
+      // engagement can update the budget; mere event delivery cannot.
+      const resolutions = surpriseTuning.resolveOutcomes(event.turnIndex);
       for (const resolution of resolutions) {
         surpriseTracer.note({ kind: "outcome", ...resolution });
       }

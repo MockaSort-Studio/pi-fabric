@@ -5,10 +5,18 @@ import readline from "node:readline";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { SurpriseDetector } from "../src/core/surprise.js";
 
-export type InterventionKind = "steer" | "abort" | "terminalError" | "recovery";
+export type InterventionKind =
+  | "steer"
+  | "abort"
+  | "terminalError"
+  | "recovery"
+  | "correction"
+  | "rejection"
+  | "failureReport";
+export type InterventionProvenance = "observed" | "weak" | "heuristic";
 export type UserKind = "initial" | "followUp" | "steer";
 
-const LEXICAL_BUCKETS = 128;
+export const LEXICAL_BUCKETS = 128;
 const MAX_HASHED_TOKENS = 512;
 
 const tokenHash = (token: string): number => {
@@ -20,7 +28,7 @@ const tokenHash = (token: string): number => {
   return (hash >>> 0) % LEXICAL_BUCKETS;
 };
 
-const hashValueInto = (target: Uint16Array, value: unknown): void => {
+export const hashValueInto = (target: Uint16Array, value: unknown): void => {
   let tokens = 0;
   const visit = (entry: unknown, depth: number): void => {
     if (tokens >= MAX_HASHED_TOKENS || depth > 5) return;
@@ -83,12 +91,16 @@ export interface LabIntervention {
   turn: number;
   kind: InterventionKind;
   atMs: number;
+  provenance?: InterventionProvenance;
+  confidence?: number;
 }
 
 export interface LabSession {
   id: string;
   project: string;
   cwd: string;
+  source?: string;
+  agent?: string;
   startedMs: number;
   endedMs: number;
   turns: LabTurn[];
@@ -97,6 +109,15 @@ export interface LabSession {
 }
 
 export const STRONG_INTERVENTIONS: readonly InterventionKind[] = ["steer", "abort"];
+export const SOFT_INTERVENTIONS: readonly InterventionKind[] = [
+  "correction",
+  "rejection",
+  "failureReport",
+];
+export const HUMAN_INTERVENTIONS: readonly InterventionKind[] = [
+  "steer",
+  ...SOFT_INTERVENTIONS,
+];
 export const EXPANDED_INTERVENTIONS: readonly InterventionKind[] = [
   "steer",
   "abort",
@@ -351,7 +372,11 @@ const fingerprint = (tool: LabTool): string =>
 
 const toolPath = (tool: LabTool): string | undefined => {
   const args = asRecord(tool.args);
-  return typeof args?.path === "string" && args.path.length > 0 ? args.path : undefined;
+  for (const key of ["path", "file_path", "notebook_path", "filename"] as const) {
+    const value = args?.[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
 };
 
 const entropyDeficit = (values: readonly string[]): number => {
@@ -387,6 +412,13 @@ export const LAB_FEATURE_NAMES = [
   "reasoningRatio",
   "textLog",
   "thinkingLog",
+  "researchBurst",
+  "actionBurst",
+  "verificationBurst",
+  "actionWithoutResearch",
+  "verificationDebt",
+  "failedVerificationDebt",
+  "actionResearchImbalance",
   "terminalMomentum",
   "interventionMomentum",
 ] as const;
@@ -422,6 +454,11 @@ export const buildLabRows = (session: LabSession, historyWindow = 16): LabRow[] 
   let runLength = 0;
   let inputGap = 0;
   let failureStreak = 0;
+  let researchMomentum = 0;
+  let actionMomentum = 0;
+  let turnsSinceResearch = 0;
+  let turnsSinceVerification = 0;
+  let failedVerificationDebt = 0;
   let terminalMomentum = 0;
   let interventionMomentum = 0;
   const lexicalMomentum = new Float32Array(LEXICAL_BUCKETS);
@@ -436,7 +473,8 @@ export const buildLabRows = (session: LabSession, historyWindow = 16): LabRow[] 
       lexicalMomentum[bucket] = 0.65 * (lexicalMomentum[bucket] ?? 0) + Math.log1p(turn.lexical[bucket] ?? 0);
     }
     runLength = startsRun ? 1 : runLength + 1;
-    inputGap = anyInputNow ? 0 : inputGap + 1;
+    const currentInputGap = anyInputNow ? 0 : inputGap + 1;
+    inputGap = currentInputGap;
 
     let retries = 0;
     let revisits = 0;
@@ -458,6 +496,31 @@ export const buildLabRows = (session: LabSession, historyWindow = 16): LabRow[] 
     while ((concentrationWindow[0]?.turn ?? Number.POSITIVE_INFINITY) < turnIndex - 3) {
       concentrationWindow.shift();
     }
+    const toolRecords = turn.tools.map((tool) => asRecord(tool.args));
+    const researchBurst = turn.tools.filter((tool, index) => {
+      const category = toolRecords[index]?.category;
+      return category === "Research" || /^(?:read|grep|glob|search|list)/i.test(tool.name);
+    }).length;
+    const actionBurst = turn.tools.filter((tool, index) => {
+      const category = toolRecords[index]?.category;
+      return category === "Action" || /(?:edit|write|bash|command|shell)/i.test(tool.name);
+    }).length;
+    const verificationBurst = turn.tools.filter((tool, index) => {
+      const bashCategory = toolRecords[index]?.bash_category;
+      const command = toolRecords[index]?.command;
+      return bashCategory === "test/build" ||
+        (typeof command === "string" && /(?:^|\s)(?:test|check|lint|build|typecheck|pytest|cargo test|go test)(?:\s|$)/i.test(command));
+    }).length;
+    const verificationFailed = turn.tools.some((tool, index) => {
+      const bashCategory = toolRecords[index]?.bash_category;
+      return bashCategory === "test/build" && tool.isError;
+    });
+    researchMomentum = researchBurst + 0.7 * researchMomentum;
+    actionMomentum = actionBurst + 0.7 * actionMomentum;
+    turnsSinceResearch = researchBurst > 0 ? 0 : turnsSinceResearch + 1;
+    turnsSinceVerification = verificationBurst > 0 ? 0 : turnsSinceVerification + 1;
+    if (verificationBurst > 0) failedVerificationDebt = verificationFailed ? 1 : 0;
+    else if (actionBurst > 0 && failedVerificationDebt > 0) failedVerificationDebt += 1;
     const errors = turn.tools.filter((tool) => tool.isError).length;
     errorMomentum = errors + 0.65 * errorMomentum;
     retryMomentum = retries + 0.65 * retryMomentum;
@@ -498,6 +561,13 @@ export const buildLabRows = (session: LabSession, historyWindow = 16): LabRow[] 
         reasoningRatio: turn.reasoningTokens / Math.max(1, turn.outputTokens + turn.reasoningTokens),
         textLog: Math.log2(1 + turn.textChars),
         thinkingLog: Math.log2(1 + turn.thinkingChars),
+        researchBurst: Math.log2(1 + researchBurst),
+        actionBurst: Math.log2(1 + actionBurst),
+        verificationBurst: Math.log2(1 + verificationBurst),
+        actionWithoutResearch: actionBurst > 0 ? Math.log2(1 + turnsSinceResearch) : 0,
+        verificationDebt: actionBurst > 0 ? Math.log2(1 + turnsSinceVerification) : 0,
+        failedVerificationDebt: Math.log2(1 + failedVerificationDebt),
+        actionResearchImbalance: Math.max(0, Math.log2(1 + actionMomentum) - Math.log2(1 + researchMomentum)),
         terminalMomentum,
         interventionMomentum: priorInterventionMomentum,
       },
@@ -560,6 +630,7 @@ export interface TrainingExample {
   project: string;
   row: LabRow;
   positive: boolean;
+  targetLead?: number;
 }
 
 export const trainingExamples = (
@@ -570,15 +641,21 @@ export const trainingExamples = (
 ): TrainingExample[] => {
   const examples: TrainingExample[] = [];
   for (const session of sessions) {
-    const positives = new Set<number>();
+    const leads = new Map<number, number>();
     for (const intervention of interventionTurns(session, kinds)) {
       for (let lead = 1; lead <= leadWindow; lead++) {
         const turn = intervention - lead;
-        if (turn >= 0) positives.add(turn);
+        if (turn >= 0) leads.set(turn, Math.min(leads.get(turn) ?? Number.POSITIVE_INFINITY, lead));
       }
     }
     for (const row of rows.get(session.id) ?? []) {
-      examples.push({ project: session.project, row, positive: positives.has(row.turn) });
+      const targetLead = leads.get(row.turn);
+      examples.push({
+        project: session.project,
+        row,
+        positive: targetLead !== undefined,
+        ...(targetLead === undefined ? {} : { targetLead }),
+      });
     }
   }
   return examples;
@@ -605,6 +682,13 @@ const FEATURE_THRESHOLDS: Record<LabFeatureName, readonly number[]> = {
   reasoningRatio: [0, 0.1, 0.3, 0.6, 0.9],
   textLog: [0, 5, 8, 11, 14],
   thinkingLog: [0, 5, 8, 11, 14],
+  researchBurst: [0, 1, 2, 3],
+  actionBurst: [0, 1, 2, 3],
+  verificationBurst: [0, 1, 2],
+  actionWithoutResearch: [0, 1, 2, 3, 4, 5],
+  verificationDebt: [0, 1, 2, 3, 4, 5],
+  failedVerificationDebt: [0, 1, 2, 3, 4],
+  actionResearchImbalance: [0, 0.5, 1, 2, 3],
   terminalMomentum: [0, 0.5, 1, 2, 3],
   interventionMomentum: [0, 0.25, 0.5, 1, 2],
 };
@@ -882,6 +966,7 @@ export const fitDeterministicRandomForest = (
   name = "seeded-random-forest",
   treeCount = 16,
   seed = 42,
+  maximumDepth = 6,
 ): RiskModel => {
   const positives = examples.filter((example) => example.positive);
   const negatives = examples.filter((example) => !example.positive);
@@ -898,7 +983,7 @@ export const fitDeterministicRandomForest = (
     const positive = entries.filter((entry) => entry.positive).length;
     const probability = (positive + 1) / (entries.length + 2);
     const leaf: DecisionNode = { probability, feature: null, threshold: 0 };
-    if (depth >= 6 || entries.length < 40 || positive < 3 || entries.length - positive < 3) return leaf;
+    if (depth >= maximumDepth || entries.length < 40 || positive < 3 || entries.length - positive < 3) return leaf;
 
     const featurePool = [...LAB_FEATURE_NAMES];
     for (let index = featurePool.length - 1; index > 0; index--) {

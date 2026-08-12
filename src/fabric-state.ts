@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { FabricActivityStore } from "./activity/store.js";
 import { ActorManager } from "./actors/manager.js";
+import type { FabricActorOutcome } from "./actors/types.js";
 import { GlobalActorRegistry } from "./actors/global-registry.js";
 import { buildActorContext } from "./actors/context.js";
 import { actorDeliveryNotice } from "./actors/delivery-policy.js";
@@ -99,13 +100,16 @@ export class FabricState {
   #widgetDismissedAt = 0;
 
   readonly #onCapturedToolUse: ((entry: CapturedToolEntry) => void) | undefined;
+  readonly #onActorOutcome: ((outcome: FabricActorOutcome) => void) | undefined;
 
   constructor(
     readonly pi: ExtensionAPI,
     readonly capturedTools: CapturedToolCatalog,
     onCapturedToolUse?: (entry: CapturedToolEntry) => void,
+    onActorOutcome?: (outcome: FabricActorOutcome) => void,
   ) {
     this.#onCapturedToolUse = onCapturedToolUse;
+    this.#onActorOutcome = onActorOutcome;
   }
 
   get initialized(): boolean {
@@ -390,6 +394,7 @@ export class FabricState {
             claimResidency: "session",
             rootId: mainAgentId,
             retention: this.#config.retention,
+            ...(this.#onActorOutcome ? { onOutcome: this.#onActorOutcome } : {}),
           }
         : {
             persistent: false,
@@ -399,6 +404,7 @@ export class FabricState {
             claimResidency: "session",
             rootId: mainAgentId,
             retention: this.#config.retention,
+            ...(this.#onActorOutcome ? { onOutcome: this.#onActorOutcome } : {}),
           },
     );
     this.#lifecycle = new LifecycleBroker(

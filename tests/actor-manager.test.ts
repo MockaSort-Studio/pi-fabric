@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActorManager } from "../src/actors/manager.js";
+import type { FabricActorOutcome } from "../src/actors/types.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import type { FabricMainAgentDeliveryRequest } from "../src/main-agent.js";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
@@ -25,6 +26,7 @@ const waitFor = async (predicate: () => boolean, timeoutMs = DEFAULT_WAIT_MS): P
 const setup = (
   persistent = false,
   canManageActor?: (id: string) => boolean | undefined,
+  onOutcome?: (outcome: FabricActorOutcome) => void,
 ) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-actor-test-"));
   roots.push(root);
@@ -55,6 +57,7 @@ const setup = (
       actorRoot: path.join(root, "actors"),
       persistent,
       ...(canManageActor ? { canManageActor } : {}),
+      ...(onOutcome ? { onOutcome } : {}),
     },
   );
   actorManagers.push(actors);
@@ -564,6 +567,31 @@ describe("ActorManager", () => {
       { direction: "in", source: "direct" },
       { direction: "out", source: "direct", text: "fake worker complete" },
     ]);
+  });
+
+  it("emits directive outcomes with their source activation", async () => {
+    const outcomes: FabricActorOutcome[] = [];
+    const { actors } = setup(false, undefined, (outcome) => outcomes.push(outcome));
+    const actor = await actors.create({
+      name: "advisor",
+      instructions: "Advise only when useful.",
+      responseMode: "directive",
+    });
+    const lifecycle = {
+      event: "fabric.surprise",
+      id: "event-1",
+      data: { turn: 7 },
+    };
+
+    actors.tell(actor.id, "Review surprise", lifecycle);
+    await waitFor(() => outcomes.length === 1);
+
+    expect(outcomes[0]).toMatchObject({
+      actor: { id: actor.id, name: "advisor" },
+      activation: { kind: "direct", source: "direct" },
+      input: { message: "Review surprise", data: lifecycle },
+      message: { action: "message", text: "fake actor advice" },
+    });
   });
 
   it("delivers schema-validated actor directives through the fixed policy", async () => {

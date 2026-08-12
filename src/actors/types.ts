@@ -223,6 +223,13 @@ export interface FabricActorDeliveryRequest {
   triggerTurn: boolean;
 }
 
+export interface FabricActorOutcome {
+  actor: FabricActorInfo;
+  activation: FabricActorActivation;
+  input: unknown;
+  message: FabricActorMessage;
+}
+
 /**
  * A project-independent actor template stored in the global registry
  * (the user's agent dir, not a project mesh). It carries only the actor

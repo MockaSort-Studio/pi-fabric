@@ -40,7 +40,6 @@ export interface SurpriseOutcomeResolution {
 interface PendingFire {
   turn: number;
   windowTurns: number;
-  firedAt: number;
   // Logical clock value at fire time: ordering against human activity is by
   // causal sequence, not wall time — two host operations inside one
   // millisecond must still order correctly.
@@ -106,6 +105,7 @@ export class SurpriseTuning {
   #pending: PendingFire[] = [];
   #clock = 0;
   #lastHumanOrder = -1;
+  #advisorDecisions = new Map<number, "silent" | "message" | "stop">();
   #turnsSinceSave = 0;
 
   /**
@@ -141,6 +141,7 @@ export class SurpriseTuning {
   reset(): void {
     this.#pending = [];
     this.#lastHumanOrder = -1;
+    this.#advisorDecisions.clear();
   }
 
   /** The h/d the sensor should close this turn with. */
@@ -156,24 +157,23 @@ export class SurpriseTuning {
     this.#lastHumanOrder = ++this.#clock;
   }
 
+  /** Record whether the subscribed advisor found material advice. Delivery is
+   * exposure; only a message/stop directive is positive advisor evidence. */
+  noteAdvisorDecision(turn: number, action: "silent" | "message" | "stop"): void {
+    this.#advisorDecisions.set(turn, action);
+  }
+
   /** A fire starts an outcome window of `windowTurns` (the cooldown span: by
    *  the time another fire is structurally possible, this one's fate is
    *  known). */
   registerFire(turn: number, windowTurns: number): void {
     if (!this.#state) return;
-    this.#pending.push({ turn, windowTurns, firedAt: Date.now(), order: ++this.#clock });
+    this.#pending.push({ turn, windowTurns, order: ++this.#clock });
     if (this.#pending.length > MAX_PENDING) this.#pending.shift();
   }
 
-  /**
-   * Resolve pending fires whose window has closed. `engagement(sinceMs)`
-   * reports subscriber presence and deliveries for the alarm event — host
-   * supplies it, so the tuner never peeks into lifecycle internals itself.
-   */
-  resolveOutcomes(
-    turn: number,
-    engagement: (sinceMs: number) => { subscribed: number; delivered: number },
-  ): SurpriseOutcomeResolution[] {
+  /** Resolve pending fires whose evidence window has closed. */
+  resolveOutcomes(turn: number): SurpriseOutcomeResolution[] {
     if (!this.#state) return [];
     const resolutions: SurpriseOutcomeResolution[] = [];
     const pending = this.#pending;
@@ -183,16 +183,22 @@ export class SurpriseTuning {
         this.#pending.push(fire);
         continue;
       }
-      const heard = engagement(fire.firedAt);
       // Strictly after the fire in causal order: activity predating the
       // alarm is baseline presence, not a reaction to it.
       const humanNear = this.#lastHumanOrder > fire.order;
-      if (heard.subscribed === 0 && this.#lastHumanOrder < 0) {
-        // Audience-free: no human input all session, no subscriber. No
-        // evidence either way — abstain (drop the pending silently).
+      const advisorDecision = this.#advisorDecisions.get(fire.turn);
+      this.#advisorDecisions.delete(fire.turn);
+      const hasEvidence = humanNear
+        || advisorDecision !== undefined
+        || this.#lastHumanOrder >= 0;
+      if (!hasEvidence) {
+        // Delivery is exposure, not usefulness. Without a directive decision
+        // or human evidence, abstain rather than reward or punish the alarm.
         continue;
       }
-      const confirmed = humanNear || heard.delivered > 0;
+      const confirmed = humanNear
+        || advisorDecision === "message"
+        || advisorDecision === "stop";
       this.#state.budget = clamp(
         confirmed ? this.#state.budget * OUTCOME_FACTOR : this.#state.budget / OUTCOME_FACTOR,
         BUDGET_MIN,

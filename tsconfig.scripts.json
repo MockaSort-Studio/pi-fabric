@@ -13,6 +13,8 @@
     "src/**/*.ts",
     "scripts/simulate-surprise.ts",
     "scripts/surprise-lab.ts",
+    "scripts/swe-chat-lab.ts",
+    "scripts/optimize-swe-chat.ts",
     "scripts/optimize-surprise.ts"
   ],
   "exclude": ["tests/**"]

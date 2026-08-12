@@ -128,7 +128,7 @@ const main = async (): Promise<void> => {
         }
         const p = tuning.parameters(CONFIG);
         const v = detector.endTurn(t, { ...CONFIG, ...p });
-        const res = tuning.resolveOutcomes(t, () => ({ subscribed: 0, delivered: 0 }));
+        const res = tuning.resolveOutcomes(t);
         confirmed += res.filter((r) => r.outcome === "confirmed").length;
         ignored += res.filter((r) => r.outcome === "ignored").length;
         if (v.fire) {
@@ -227,7 +227,7 @@ const main = async (): Promise<void> => {
         if (inStuck && t % 2 === 0) { detector.observeInput(true); tuning.noteHumanActivity(); }
         const p = tuning.parameters(CONFIG);
         const v = detector.endTurn(t, { ...CONFIG, ...p });
-        const res = tuning.resolveOutcomes(t, () => ({ subscribed: 0, delivered: 0 }));
+        const res = tuning.resolveOutcomes(t);
         void res;
         if (v.fire) { fires++; tuning.registerFire(t, CONFIG.cooldown); }
         tuning.observeTurn(v.score, v.fire);

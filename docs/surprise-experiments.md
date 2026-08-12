@@ -164,6 +164,11 @@ untouched tests.
 
 ## Promotion gates
 
+The companion [SWE-chat transfer lab](swe-chat-surprise.md) adds real-user
+pushback supervision, process-debt features, authenticated dataset setup, and
+domain-transfer results. Its external model remains offline because direct
+transfer to local pi validation underperforms local causal fitting.
+
 The learned gate remains offline. Production promotion requires all of:
 
 1. prospective traces from sessions not used anywhere in this search;
@@ -171,8 +176,9 @@ The learned gate remains offline. Production promotion requires all of:
 3. the token break-even target met at the conservative confidence bound, not
    only at the point estimate;
 4. per-project rate control, because small projects currently vary widely;
-5. an advisor outcome event that measures post-advice stabilization or explicit
-   acceptance rather than treating delivery as advice quality;
+5. enough `advisor-decision` traces to measure selectivity and cost, followed by
+   a stronger post-advice stabilization or explicit-acceptance label; delivery
+   alone is no longer treated as advice quality;
 6. a privacy review for any persisted hashed-feature state.
 
 Until then, the production EWMA/CUSUM detector remains the cheap broad sensor,

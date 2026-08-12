@@ -33,10 +33,6 @@ const withAgentDir = (run: (agentDir: string) => void): void => {
   }
 };
 
-const noAudience = () => ({ subscribed: 0, delivered: 0 });
-const consumerHeard = () => ({ subscribed: 1, delivered: 1 });
-const consumerMissed = () => ({ subscribed: 1, delivered: 0 });
-
 describe("SurpriseTuning", () => {
   it("starts from config priors on first sighting of a project", () => {
     withAgentDir(() => {
@@ -89,23 +85,24 @@ describe("SurpriseTuning", () => {
     });
   });
 
-  it("ignores outcome windows in audience-free sessions", () => {
+  it("abstains when no advisor or human supplies outcome evidence", () => {
     withAgentDir(() => {
       const tuning = new SurpriseTuning();
       tuning.configure("/repo/one", config());
       tuning.registerFire(5, 3);
-      const resolutions = tuning.resolveOutcomes(9, noAudience);
+      const resolutions = tuning.resolveOutcomes(9);
       expect(resolutions).toEqual([]);
       expect(tuning.state()?.budget).toBe(1);
     });
   });
 
-  it("confirms alarms a consumer received or a human reacted to", () => {
+  it("confirms alarms an advisor found material or a human reacted to", () => {
     withAgentDir(() => {
       const tuning = new SurpriseTuning();
       tuning.configure("/repo/one", config());
       tuning.registerFire(5, 3);
-      const confirmed = tuning.resolveOutcomes(9, consumerHeard);
+      tuning.noteAdvisorDecision(5, "message");
+      const confirmed = tuning.resolveOutcomes(9);
       expect(confirmed).toHaveLength(1);
       expect(confirmed[0]?.outcome).toBe("confirmed");
       expect(tuning.state()?.budget).toBeCloseTo(1.25, 6);
@@ -115,8 +112,26 @@ describe("SurpriseTuning", () => {
       second.configure("/repo/two", config({ budget: 2 }));
       second.registerFire(1, 2);
       second.noteHumanActivity();
-      expect(second.resolveOutcomes(5, noAudience)[0]?.outcome).toBe("confirmed");
+      expect(second.resolveOutcomes(5)[0]?.outcome).toBe("confirmed");
       expect(second.state()?.budget).toBeCloseTo(2.5, 6);
+    });
+  });
+
+  it("uses an advisor directive as selectivity evidence instead of delivery", () => {
+    withAgentDir(() => {
+      const silent = new SurpriseTuning();
+      silent.configure("/repo/silent", config());
+      silent.registerFire(5, 3);
+      silent.noteAdvisorDecision(5, "silent");
+      expect(silent.resolveOutcomes(9)[0]?.outcome).toBe("ignored");
+      expect(silent.state()?.budget).toBeCloseTo(0.8, 6);
+
+      const spoke = new SurpriseTuning();
+      spoke.configure("/repo/spoke", config());
+      spoke.registerFire(5, 3);
+      spoke.noteAdvisorDecision(5, "message");
+      expect(spoke.resolveOutcomes(9)[0]?.outcome).toBe("confirmed");
+      expect(spoke.state()?.budget).toBeCloseTo(1.25, 6);
     });
   });
 
@@ -126,7 +141,7 @@ describe("SurpriseTuning", () => {
       tuning.configure("/repo/one", config());
       tuning.noteHumanActivity(); // human present, then goes quiet
       tuning.registerFire(5, 3);
-      const resolutions = tuning.resolveOutcomes(9, noAudience);
+      const resolutions = tuning.resolveOutcomes(9);
       expect(resolutions[0]?.outcome).toBe("ignored");
       expect(tuning.state()?.budget).toBeCloseTo(0.8, 6);
 
@@ -135,14 +150,15 @@ describe("SurpriseTuning", () => {
       for (let i = 0; i < 30; i++) {
         stormy.noteHumanActivity();
         stormy.registerFire(i * 10, 3);
-        stormy.resolveOutcomes(i * 10 + 9, noAudience);
+        stormy.resolveOutcomes(i * 10 + 9);
       }
       expect(stormy.state()?.budget).toBe(0.2);
       const stormyUp = new SurpriseTuning();
       stormyUp.configure("/repo/four", config({ budget: 4 }));
       for (let i = 0; i < 30; i++) {
         stormyUp.registerFire(i * 10, 3);
-        stormyUp.resolveOutcomes(i * 10 + 9, consumerHeard);
+        stormyUp.noteAdvisorDecision(i * 10, "message");
+        stormyUp.resolveOutcomes(i * 10 + 9);
       }
       expect(stormyUp.state()?.budget).toBe(5);
     });
@@ -153,8 +169,9 @@ describe("SurpriseTuning", () => {
       const tuning = new SurpriseTuning();
       tuning.configure("/repo/one", config());
       tuning.registerFire(5, 3);
-      expect(tuning.resolveOutcomes(8, consumerHeard)).toEqual([]);
-      expect(tuning.resolveOutcomes(9, consumerHeard)).toHaveLength(1);
+      tuning.noteAdvisorDecision(5, "message");
+      expect(tuning.resolveOutcomes(8)).toEqual([]);
+      expect(tuning.resolveOutcomes(9)).toHaveLength(1);
     });
   });
 

@@ -28,6 +28,7 @@ import type {
   FabricActorInfo,
   FabricActorLog,
   FabricActorMessage,
+  FabricActorOutcome,
   FabricActorRequest,
   FabricActorResponseMode,
   FabricActorStatus,
@@ -203,6 +204,7 @@ export class ActorManager {
   #mainIdle = true;
   #reloadingOwnership = false;
   #registryFingerprint: string | undefined;
+  readonly #onOutcome: ((outcome: FabricActorOutcome) => void) | undefined;
 
   constructor(
     readonly sessionId: string,
@@ -222,6 +224,7 @@ export class ActorManager {
       rootId?: string;
       meshCursorPath?: string;
       retention?: FabricRetentionConfig;
+      onOutcome?: (outcome: FabricActorOutcome) => void;
     } = {},
   ) {
     this.#actorRoot =
@@ -241,6 +244,7 @@ export class ActorManager {
       this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
     }
     this.#retention = options.retention ?? DEFAULT_FABRIC_CONFIG.retention;
+    this.#onOutcome = options.onOutcome;
     this.#sweepRetainedRuns();
     this.#retentionTimer = setInterval(() => this.#sweepRetainedRuns(), RETENTION_SWEEP_INTERVAL_MS);
     this.#retentionTimer.unref();
@@ -1194,6 +1198,14 @@ export class ActorManager {
             continue;
           }
           this.#recordMessage(actor, message);
+          try {
+            this.#onOutcome?.({
+              actor: this.#publicInfo(actor),
+              activation: structuredClone(item.activation),
+              input: structuredClone(item.payload),
+              message: structuredClone(message),
+            });
+          } catch { /* advisory observation must not fail actor delivery */ }
           await this.mesh
             .publish({
               topic: "fabric.actor.output",
