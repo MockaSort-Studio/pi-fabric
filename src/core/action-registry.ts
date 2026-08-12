@@ -4,6 +4,7 @@ import { runAbortable, settleWithin } from "../async-settlement.js";
 import {
   executionOutcomeFromError,
   FabricResolutionError,
+  FabricTraceSafeError,
   type FabricExecutionTraceOperationHandle,
   type FabricExecutionTraceRecorder,
 } from "../audit/trace.js";
@@ -497,13 +498,15 @@ export class ActionRegistry {
           )
         : args;
       if (typeof preparedArgs !== "object" || preparedArgs === null || Array.isArray(preparedArgs)) {
-        throw new Error(`Argument preparation for ${ref} did not return an object`);
+        throw new FabricTraceSafeError(`Argument preparation for ${ref} did not return an object`);
       }
       traceOperation?.prepared(preparedArgs);
 
       failureStage = "validate";
       const invalid = validationMessage(action.inputSchema, preparedArgs);
-      if (invalid) throw new Error(`Invalid arguments for ${ref}: ${invalid}`);
+      // TypeBox validator messages describe schema expectations only — they
+      // never echo argument values — so they are safe for durable traces.
+      if (invalid) throw new FabricTraceSafeError(`Invalid arguments for ${ref}: ${invalid}`);
 
       failureStage = "approve";
       await runAbortable(context.signal, () => context.approve(action, preparedArgs));

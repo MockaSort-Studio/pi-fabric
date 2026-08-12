@@ -2,6 +2,7 @@ import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   FabricExecutionTraceRecorder,
+  FabricTraceSafeError,
   executionOutcomeFromError,
   type FabricExecutionFailureStageV1,
   type FabricExecutionTraceOperationHandle,
@@ -179,7 +180,11 @@ export class FabricExecutionService {
         logs: [],
         audits: [],
         phases: [],
-        trace: traceRecorder.seal("failed", [], "Type checking failed"),
+        trace: traceRecorder.seal(
+          "failed",
+          [],
+          `Type checking failed (${checked.errors.length} ${checked.errors.length === 1 ? "error" : "errors"})`,
+        ),
         elapsedMs: performance.now() - startedAt,
         typeErrors: checked.errors,
       };
@@ -228,7 +233,7 @@ export class FabricExecutionService {
       ) return;
       agentCalls++;
       if (agentCalls > maxAgentCalls) {
-        throw new Error(`Fabric agent budget exhausted (${maxAgentCalls} per execution)`);
+        throw new FabricTraceSafeError(`Fabric agent budget exhausted (${maxAgentCalls} per execution)`);
       }
     };
     const fullCodeProvider = (value: string): "pi" | "extensions" | undefined => {
@@ -240,7 +245,7 @@ export class FabricExecutionService {
       if (effectiveFullCodeMode) return;
       const provider = fullCodeProvider(ref);
       if (!provider) return;
-      throw new Error(
+      throw new FabricTraceSafeError(
         `Fabric full code mode is disabled; call ${provider === "pi" ? "Pi core" : "registered extension"} tools directly outside fabric_exec`,
       );
     };
@@ -708,7 +713,9 @@ export class FabricExecutionService {
       logs: sandboxResult.logs,
       audits,
       phases,
-      trace: traceRecorder.seal(runOutcome, phases, sandboxResult.error),
+      // Guest and provider error text may embed tool output or source
+      // literals, so the durable trace records only safe causes.
+      trace: traceRecorder.seal(runOutcome, phases),
       elapsedMs: performance.now() - startedAt,
       ...(sandboxResult.error ? { error: sandboxResult.error } : {}),
       ...(handoffRequest ? { handoffRequest } : {}),

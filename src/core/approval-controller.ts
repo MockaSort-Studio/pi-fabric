@@ -10,6 +10,7 @@ import {
   Text,
   type SelectItem,
 } from "@earendil-works/pi-tui";
+import { FabricTraceSafeError } from "../audit/trace.js";
 import type { FabricApprovalConfig } from "../config.js";
 import type { FabricRisk } from "../protocol.js";
 import type { ResolvedFabricAction } from "./action-registry.js";
@@ -85,7 +86,7 @@ export class ApprovalController {
       this.sessionApprovals.approvedRisks.has(action.risk)
     ) return;
     if (mode === "deny") {
-      throw new Error(`${action.ref} is denied by the Fabric ${action.risk} policy`);
+      throw new FabricTraceSafeError(`${action.ref} is denied by the Fabric ${action.risk} policy`);
     }
 
     await this.sessionApprovals.serialize(async () => {
@@ -140,7 +141,7 @@ export class ApprovalController {
     escalationReason?: string,
   ): Promise<void> {
     if (!this.context.hasUI) {
-      throw new Error(`${action.ref} requires approval, but no interactive UI is available`);
+      throw new FabricTraceSafeError(`${action.ref} requires approval, but no interactive UI is available`);
     }
 
     const notification = escalationReason
@@ -153,7 +154,7 @@ export class ApprovalController {
 
     if (choice === "deny") {
       this.context.ui.notify(`Denied ${action.risk} access for ${action.ref}`, "warning");
-      throw new Error(`User denied ${action.risk} access for ${action.ref}`);
+      throw new FabricTraceSafeError(`User denied ${action.risk} access for ${action.ref}`);
     }
     if (choice === "allow-session") {
       this.sessionApprovals.approvedRisks.add(action.risk);

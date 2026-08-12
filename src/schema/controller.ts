@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { FabricTraceSafeError } from "../audit/trace.js";
 import { writeJsonAtomic } from "../core/atomic-write.js";
 import type { FabricSchemaConfig, FabricSchemaTrustedCommand } from "../config.js";
 import type { MeshIdentity, MeshStateEntry, MeshStore } from "../mesh/store.js";
@@ -120,7 +121,7 @@ export class SchemaController {
     } catch {
       // The authorization decision remains fail-closed if reporting is unavailable.
     }
-    throw new Error(message);
+    throw new FabricTraceSafeError(message);
   }
 
   status(parentToolCallId?: string): Record<string, unknown> {

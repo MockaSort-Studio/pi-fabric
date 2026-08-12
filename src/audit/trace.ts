@@ -350,10 +350,13 @@ const lexicalIdentity = (ref: string): { provider?: string; action?: string } =>
   };
 };
 
-// Errors that carry no tool output or argument payloads and are safe to
-// quote in durable traces — currently thrown by the registry when a provider
-// or action cannot be resolved.
-export class FabricResolutionError extends Error {}
+// Errors whose messages contain no tool output, argument payloads, or
+// user/source text and are safe to quote verbatim in durable traces: registry
+// resolution failures, policy denials, and Fabric-generated guard messages.
+export class FabricTraceSafeError extends Error {}
+
+// Thrown by the registry when a provider or action cannot be resolved.
+export class FabricResolutionError extends FabricTraceSafeError {}
 
 const errorCause = (error: unknown): string | undefined => {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
@@ -422,7 +425,7 @@ export class FabricExecutionTraceOperationHandle {
   ): void {
     if (!this.operation || this.recorder.sealed) return;
     this.operation.failureStage = stage;
-    if (error instanceof FabricResolutionError) this.operation.causeSafe = true;
+    if (error instanceof FabricTraceSafeError) this.operation.causeSafe = true;
     const cause =
       outcome === "failed" &&
       (this.operation.causeSafe === true ||
@@ -478,10 +481,14 @@ export class FabricExecutionTraceRecorder {
     return new FabricExecutionTraceOperationHandle(this, operation);
   }
 
+  // safeError must contain no guest source text, tool output, or argument
+  // payloads — callers pass it only for Fabric-generated failure summaries
+  // (for example the type-check stage). Guest and provider error text is
+  // deliberately not persisted here.
   seal(
     outcome: FabricExecutionOutcomeV1,
     phases: readonly string[],
-    _error?: string,
+    safeError?: string,
   ): FabricExecutionTraceV1 {
     this.sealed = true;
     for (const operation of this.#operations) {
@@ -541,7 +548,7 @@ export class FabricExecutionTraceRecorder {
       counts.droppedValues += phases.length - boundedPhases.length;
       counts.truncatedValues++;
     }
-    const safeRunError = executionErrorMessage(outcome);
+    const safeRunError = safeError?.trim() || executionErrorMessage(outcome);
     const runError = safeRunError ? sanitizeString(safeRunError, MAX_ERROR_BYTES) : undefined;
     if (runError) addCounts(counts, runError.counts);
     const trace: FabricExecutionTraceV1 = {

@@ -568,6 +568,9 @@ return true;
       provider: demoProvider(),
       code: 'return tools.call({ ref: "demo.echo", args: { value: 42 } });',
       stage: "validate",
+      // TypeBox messages describe only schema expectations and never echo
+      // argument values, so they are safe to surface.
+      expectedError: "Call failed during validate: Invalid arguments for demo.echo: must be string",
     },
     {
       name: "provider invocation",
@@ -642,9 +645,12 @@ return true;
       ref: "pi.write",
       outcome: "failed",
       failureStage: "guard",
-      error: "Call failed during guard",
+      error: "Call failed during guard: Fabric full code mode is disabled; call Pi core tools directly outside fabric_exec",
       args: { path: "safe.txt" },
     });
+    expect(JSON.stringify(createFabricPersistedExecutionDetails(result))).toContain(
+      "Fabric full code mode is disabled",
+    );
     expect(result.audits).toEqual([]);
     expect(JSON.stringify(createFabricPersistedExecutionDetails(result))).not.toContain(
       "guard-content-secret",
@@ -671,10 +677,34 @@ return true;
     expect(result.trace.operations[0]).toMatchObject({
       outcome: "failed",
       failureStage: "approve",
-      error: "Call failed during approve",
+      error: "Call failed during approve: demo.echo is denied by the Fabric execute policy",
       args: {},
     });
     expect(result.audits).toEqual([]);
+  });
+
+  it("preserves approve-stage causes without interactive UI", async () => {
+    const provider = demoProvider({
+      async list() {
+        return [{ ...descriptor, risk: "write" }];
+      },
+      async describe(name) {
+        return name === "echo" ? { ...descriptor, risk: "write" } : undefined;
+      },
+    });
+    const { service, context } = serviceFor(provider);
+    service.config.approvals.write = "ask";
+    const result = await execute(
+      service,
+      context,
+      'return tools.call({ ref: "demo.echo", args: { value: "x" } });',
+    );
+
+    expect(result.trace.operations[0]).toMatchObject({
+      outcome: "failed",
+      failureStage: "approve",
+      error: "Call failed during approve: demo.echo requires approval, but no interactive UI is available",
+    });
   });
 
   it("keeps issue order when parallel calls complete out of order", async () => {
@@ -739,8 +769,10 @@ return true;
       outcome: "failed",
       operations: [],
       phases: [],
-      error: "Execution failed",
     });
+    // Counts surface the failure class, but source-derived diagnostic text
+    // must stay out of the durable trace.
+    expect(result.trace.error).toMatch(/^Type checking failed \(\d+ errors?\)$/);
     expect(JSON.stringify(details)).not.toContain("rawCodeSecretIdentifier");
   });
 
@@ -770,10 +802,30 @@ return true;
     expect(result.trace.operations[0]).toMatchObject({
       outcome: "failed",
       failureStage: "validate",
-      error: "Call failed during validate",
+      error: "Call failed during validate: Invalid arguments for demo.echo: Schema validator failed",
       args: {},
     });
     expect(JSON.stringify(createFabricPersistedExecutionDetails(result))).not.toContain("secret");
+  });
+
+  it("preserves validate-stage schema details without echoing argument values", async () => {
+    const { service, context } = serviceFor();
+    const result = await execute(
+      service,
+      context,
+      'return tools.call({ ref: "demo.echo", args: { delay: "arg-value-secret" } });',
+    );
+
+    expect(result.trace.operations[0]).toMatchObject({
+      outcome: "failed",
+      failureStage: "validate",
+    });
+    const error = result.trace.operations[0]?.error ?? "";
+    expect(error).toContain("Invalid arguments for demo.echo:");
+    expect(error).not.toContain("arg-value-secret");
+    expect(JSON.stringify(createFabricPersistedExecutionDetails(result))).not.toContain(
+      "arg-value-secret",
+    );
   });
 
   it("preserves repeated phase occurrences", async () => {
