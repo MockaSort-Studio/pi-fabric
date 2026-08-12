@@ -50,12 +50,29 @@ export interface FabricApprovalConfig {
   model?: string;
 }
 
+/** Session-start background revalidation scope for the MCP descriptor cache:
+ * "changed" lists only added/reconfigured servers, "all" re-lists every known
+ * server, "off" never spawns servers in the background. */
+type FabricMcpRevalidatePolicy = "changed" | "all" | "off";
+
+interface FabricMcpCacheConfig {
+  /** Serve MCP tool metadata from the on-disk descriptor cache instead of
+   * connecting to every configured server on first discovery each session. */
+  enabled: boolean;
+  revalidate: FabricMcpRevalidatePolicy;
+  /** Wall-clock budget for one session-start background revalidation pass. */
+  revalidateBudgetMs: number;
+}
+
 export interface FabricMcpConfig {
   enabled: boolean;
   configPath?: string;
   disableOAuth: boolean;
   allowDynamicServers: boolean;
   callTimeoutMs: number;
+  cache: FabricMcpCacheConfig;
+  /** Include cached MCP tools in the prompt-matched capability advisory. */
+  advisory: boolean;
 }
 
 interface FabricClaudeRunnerConfig {
@@ -274,6 +291,12 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     disableOAuth: true,
     allowDynamicServers: true,
     callTimeoutMs: 120_000,
+    cache: {
+      enabled: true,
+      revalidate: "changed",
+      revalidateBudgetMs: 60_000,
+    },
+    advisory: true,
   },
   prewalk: {
     mode: "in-place",
@@ -519,6 +542,12 @@ const advisoryModeValue = (
 ): FabricCapabilityAdvisoryMode =>
   value === "enabled" || value === "hidden" || value === "disabled" ? value : fallback;
 
+const mcpRevalidatePolicyValue = (
+  value: unknown,
+  fallback: FabricMcpRevalidatePolicy,
+): FabricMcpRevalidatePolicy =>
+  value === "changed" || value === "all" || value === "off" ? value : fallback;
+
 const riskValue = (value: unknown, fallback: FabricRisk): FabricRisk =>
   value === "read" ||
   value === "write" ||
@@ -532,6 +561,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const executor = objectValue(input.executor);
   const approvals = objectValue(input.approvals);
   const mcp = objectValue(input.mcp);
+  const mcpCache = objectValue(mcp.cache);
   const prewalk = objectValue(input.prewalk);
   const agents = objectValue(input.agents);
   const claude = objectValue(agents.claude);
@@ -681,6 +711,20 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         1_000,
         900_000,
       ),
+      cache: {
+        enabled: booleanValue(mcpCache.enabled, DEFAULT_FABRIC_CONFIG.mcp.cache.enabled),
+        revalidate: mcpRevalidatePolicyValue(
+          mcpCache.revalidate,
+          DEFAULT_FABRIC_CONFIG.mcp.cache.revalidate,
+        ),
+        revalidateBudgetMs: boundedInteger(
+          mcpCache.revalidateBudgetMs,
+          DEFAULT_FABRIC_CONFIG.mcp.cache.revalidateBudgetMs,
+          1_000,
+          600_000,
+        ),
+      },
+      advisory: booleanValue(mcp.advisory, DEFAULT_FABRIC_CONFIG.mcp.advisory),
     },
     prewalk: {
       mode: prewalkModeValue(prewalk.mode, DEFAULT_FABRIC_CONFIG.prewalk.mode),

@@ -669,3 +669,38 @@ describe("Fabric configuration", () => {
     expect(huge.agents.maxTokensPerChild).toBe(100_000_000);
   });
 });
+
+describe("MCP descriptor cache configuration", () => {
+  it("defaults to an enabled cache, changed revalidation, and advisory on", () => {
+    const config = normalizeFabricConfig({});
+    expect(config.mcp.cache).toEqual({
+      enabled: true,
+      revalidate: "changed",
+      revalidateBudgetMs: 60_000,
+    });
+    expect(config.mcp.advisory).toBe(true);
+  });
+
+  it("parses explicit cache and advisory overrides", () => {
+    const config = normalizeFabricConfig({
+      mcp: {
+        cache: { enabled: false, revalidate: "all", revalidateBudgetMs: 65_000 },
+        advisory: false,
+      },
+    });
+    expect(config.mcp.cache).toEqual({
+      enabled: false,
+      revalidate: "all",
+      revalidateBudgetMs: 65_000,
+    });
+    expect(config.mcp.advisory).toBe(false);
+  });
+
+  it("clamps the budget and falls back on an unknown revalidation policy", () => {
+    const config = normalizeFabricConfig({
+      mcp: { cache: { revalidate: "sometimes", revalidateBudgetMs: 250 } },
+    });
+    expect(config.mcp.cache.revalidate).toBe("changed");
+    expect(config.mcp.cache.revalidateBudgetMs).toBe(1_000);
+  });
+});

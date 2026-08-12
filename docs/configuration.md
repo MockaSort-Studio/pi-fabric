@@ -57,7 +57,13 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
     "enabled": true,
     "disableOAuth": true,
     "allowDynamicServers": true,
-    "callTimeoutMs": 120000
+    "callTimeoutMs": 120000,
+    "advisory": true,
+    "cache": {
+      "enabled": true,
+      "revalidate": "changed",
+      "revalidateBudgetMs": 60000
+    }
   },
   "prewalk": {
     "mode": "in-place",
@@ -307,6 +313,15 @@ See [agents, actors & mesh](agents.md) for the runner and transport details.
 - `mcp.callTimeoutMs` — per-call timeout bound.
 - `mcp.allowDynamicServers` — permit `mcp.register()` of ephemeral servers.
 - `mcp.enabled` — set to `false` to disable the MCP surface.
+
+Fabric keeps a per-project MCP descriptor cache at `.pi/fabric/mcp-cache.json`, keyed by the mcporter config layers (global `~/.mcporter/mcporter.json` plus `config/mcporter.json` in the project, mirroring [mcporter](https://github.com/openclaw/mcporter) exactly). Tool discovery (`tools.list`/`search`/`catalog` and the capability advisory) reads the cache instead of spawning every configured server: a session whose config is unchanged spawns nothing. Validity is config-aware, not time-based — per-server definition hashes survive config edits to other servers, so retyping whitespace invalidates nothing.
+
+Staleness is handled stale-while-revalidate style: sessions adopt the cache instantly, re-list servers in the background per policy, keep last-known tools (marked `stale` in `mcp.$servers`) when a server fails, and always re-list a server the first time it is actually connected for a call.
+
+- `mcp.cache.enabled` — turn the descriptor cache on (default: true). When false, discovery lists tools live with a 60s in-memory TTL, as before.
+- `mcp.cache.revalidate` — session-start background re-listing scope: `"changed"` (only added/reconfigured servers, default), `"all"`, or `"off"` (explicit `tools.list({ provider: "mcp", namespace })` probes still fetch exactly that server).
+- `mcp.cache.revalidateBudgetMs` — wall-clock budget for one background revalidation pass (default 60000; a leftover queue tail restarts with a fresh budget).
+- `mcp.advisory` — include cached MCP tools in the prompt-matched capability advisory (default: true).
 
 See the [`mcp` reference](../skills/fabric-exec/references/mcp.md) for the call surface.
 

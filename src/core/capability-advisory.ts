@@ -11,6 +11,24 @@ import {
 
 export const CAPABILITY_ADVISORY_CUSTOM_TYPE = "pi-fabric-capability";
 const ADVISORY_REF_PREFIX = "extensions";
+// MCP capability sources are namespaced "mcp:<server>" by the provider
+// adapter; their refs render from the mcp root (mcp.<server>.<tool>).
+const MCP_NAMESPACE_MARKER = "mcp:";
+const MCP_REF_PREFIX = "mcp";
+
+const refPrefixFor = (namespace: string): string =>
+  namespace.startsWith(MCP_NAMESPACE_MARKER) ? MCP_REF_PREFIX : ADVISORY_REF_PREFIX;
+
+// Transcript toolCall blocks have stored arguments under input/arguments/args
+// across pi versions; normalize whichever is present.
+const toolCallInput = (block: unknown): Record<string, unknown> | undefined => {
+  if (typeof block !== "object" || block === null) return undefined;
+  const record = block as Record<string, unknown>;
+  const candidate = record.input ?? record.arguments ?? record.args;
+  return typeof candidate === "object" && candidate !== null && !Array.isArray(candidate)
+    ? (candidate as Record<string, unknown>)
+    : undefined;
+};
 // Score quantum: the weight of a source-unique term (df = 1 → 1/df = 1) — the
 // smallest unit of unambiguous evidence the 1/df scorer can express. The weak
 // band is exactly one quantum wide: strong = weak + one quantum of certainty.
@@ -86,6 +104,7 @@ const stripSkillRegions = (prompt: string): string => prompt.replace(SKILL_REGIO
 const estimateTokens = (text: string): number => Math.ceil(text.length / 4);
 
 interface SourceBlock {
+  namespace: string;
   label: string;
   names: string[];
   descriptions: string[];
@@ -101,8 +120,9 @@ const renderCandidates = (blocks: SourceBlock[], withDescriptions: boolean): str
   const multiSource = blocks.length > 1;
   const lines: string[] = [];
   for (const block of blocks) {
+    const refPrefix = refPrefixFor(block.namespace);
     block.names.forEach((name, index) => {
-      const ref = `${ADVISORY_REF_PREFIX}.${name}`;
+      const ref = `${refPrefix}.${name}`;
       const sourceTag = multiSource ? ` (${block.label})` : "";
       const description = block.descriptions[index] ?? "";
       const tail =
@@ -125,7 +145,7 @@ const renderCandidates = (blocks: SourceBlock[], withDescriptions: boolean): str
 // inline — the actionable identity of each capability, no prose.
 const renderFlat = (blocks: SourceBlock[]): string[] =>
   blocks.map((block) => {
-    const refs = block.names.map((name) => `${ADVISORY_REF_PREFIX}.${name}`);
+    const refs = block.names.map((name) => `${refPrefixFor(block.namespace)}.${name}`);
     const listed = block.leftoverNames.slice(0, 3).join(", ");
     const leftover =
       block.leftoverNames.length > 0
@@ -136,6 +156,7 @@ const renderFlat = (blocks: SourceBlock[]): string[] =>
 
 export class CapabilityAdvisor {
   #index: CapabilityIndex = buildCapabilityIndex([]);
+  readonly #slices = new Map<string, FabricActionDescriptor[]>();
   #ash = new Map<string, CapabilityBurn>();
   #warmth = new Map<string, number>();
   #pendingFire = new Set<string>();
@@ -143,8 +164,21 @@ export class CapabilityAdvisor {
   #smokeStreak = 0;
   #firedTotal = 0;
 
+  // Descriptor sources refresh independently (captured tools on pi tool
+  // catalog changes, MCP on descriptor-cache updates) without clobbering each
+  // other; the matching index is rebuilt from the union.
+  setSource(source: string, descriptors: FabricActionDescriptor[]): void {
+    if (descriptors.length === 0) this.#slices.delete(source);
+    else this.#slices.set(source, descriptors);
+    this.#index = buildCapabilityIndex([...this.#slices.values()].flat());
+  }
+
   refresh(descriptors: FabricActionDescriptor[]): void {
-    this.#index = buildCapabilityIndex(descriptors);
+    this.setSource("captured", descriptors);
+  }
+
+  hasSources(): boolean {
+    return this.#index.sourceCount > 0;
   }
 
   reset(): void {
@@ -164,7 +198,10 @@ export class CapabilityAdvisor {
   // the per-session cap stay pure transients: reset() governs them.
   restoreAshFromEntries(
     entries: Iterable<unknown>,
-    nameToNamespace: (toolName: string) => string | undefined,
+    nameToNamespace: (
+      toolName: string,
+      input?: Record<string, unknown>,
+    ) => string | string[] | undefined,
   ): void {
     this.#ash.clear();
     for (const entryUnknown of entries) {
@@ -204,8 +241,14 @@ export class CapabilityAdvisor {
         for (const block of message.content) {
           const { type, name } = block as { type?: unknown; name?: unknown };
           if (type !== "toolCall" || typeof name !== "string") continue;
-          const namespace = nameToNamespace(name);
-          if (namespace !== undefined) this.#burn(namespace, "organic", at);
+          const resolved = nameToNamespace(name, toolCallInput(block));
+          if (resolved === undefined) continue;
+          const namespaces = Array.isArray(resolved) ? resolved : [resolved];
+          for (const namespace of namespaces) {
+            if (typeof namespace === "string" && namespace.length > 0) {
+              this.#burn(namespace, "organic", at);
+            }
+          }
         }
       }
     }
@@ -402,6 +445,7 @@ export class CapabilityAdvisor {
       match.names = cappedNames;
       match.descriptions = cappedDescriptions;
       blocks.push({
+        namespace: match.namespace,
         label: match.label,
         names: cappedNames,
         descriptions: cappedDescriptions,
@@ -410,10 +454,12 @@ export class CapabilityAdvisor {
     }
 
     const topName = blocks[0]?.names[0];
+    const topRefPrefix =
+      blocks[0] === undefined ? ADVISORY_REF_PREFIX : refPrefixFor(blocks[0].namespace);
     const nextLine =
       topName === undefined
         ? ""
-        : `Next: tools.describe({ref: "${ADVISORY_REF_PREFIX}.${topName}"}) for its schema, then ${ADVISORY_REF_PREFIX}.${topName}({…}) inside fabric_exec.`;
+        : `Next: tools.describe({ref: "${topRefPrefix}.${topName}"}) for its schema, then ${topRefPrefix}.${topName}({…}) inside fabric_exec.`;
 
     // Budget squeeze (fovea pattern): walk the ladder until a rung fits —
     // bullets with descriptions → bullets, names only → one bullet per

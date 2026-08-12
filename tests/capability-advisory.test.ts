@@ -6,6 +6,7 @@ import {
   CapabilityAdvisor,
   type CapabilityAdvisoryMatch,
 } from "../src/core/capability-advisory.js";
+import { toMcpAdvisoryDescriptor } from "../src/providers/mcp-provider.js";
 
 const descriptor = (
   name: string,
@@ -540,5 +541,74 @@ describe("CapabilityAdvisor", () => {
 
   it("exports the custom type used for message injection", () => {
     expect(CAPABILITY_ADVISORY_CUSTOM_TYPE).toBe("pi-fabric-capability");
+  });
+});
+
+describe("CapabilityAdvisor MCP sources", () => {
+  const mcpTool = {
+    name: "test.echo-value",
+    description: "Echo a value received from the client",
+    inputSchema: { type: "object", properties: { value: { type: "string" } } },
+    risk: "network",
+    namespace: "test",
+  } satisfies FabricActionDescriptor;
+  const mcpSlice = (): FabricActionDescriptor[] =>
+    [mcpTool].map((entry) => toMcpAdvisoryDescriptor(entry as FabricActionDescriptor));
+
+  it("renders mcp.* refs and burns the mcp: namespace", () => {
+    const instance = new CapabilityAdvisor();
+    instance.setSource("mcp", mcpSlice());
+    const result = instance.evaluate("please echo a value back to me", config());
+    expect(result?.content).toContain("mcp:test · 1 tool matched your prompt.");
+    expect(result?.content).toContain("▪ mcp.test.echo_value");
+    expect(result?.content).not.toContain("extensions.test.echo_value");
+    expect(result?.content).toContain(
+      'Next: tools.describe({ref: "mcp.test.echo_value"}) for its schema, then mcp.test.echo_value({…}) inside fabric_exec.',
+    );
+    expect(result?.details.matches[0]?.namespace).toBe("mcp:test");
+    // The namespace burned, so the identical prompt stays silent.
+    expect(instance.evaluate("please echo a value back to me", config())).toBeUndefined();
+  });
+
+  it("keeps slices independent across refreshes", () => {
+    const instance = new CapabilityAdvisor();
+    instance.setSource("captured", [
+      descriptor(
+        "synthetic_web_search",
+        "Search the web using Synthetic's zero-data-retention API.",
+        "extension:pi-synthetic",
+      ),
+    ]);
+    instance.setSource("mcp", mcpSlice());
+    instance.setSource("mcp", []);
+    const web = instance.evaluate("search the web for docs", config());
+    expect(web?.content).toContain("extensions.synthetic_web_search");
+    expect(web?.content).not.toContain("mcp.");
+    expect(instance.evaluate("please echo a value back to me", config())).toBeUndefined();
+  });
+
+  it("restores organic MCP ash from fabric_exec transcript inputs", () => {
+    const instance = new CapabilityAdvisor();
+    instance.setSource("mcp", mcpSlice());
+    const code = "await mcp.test.echo_value({ value: 'x' })";
+    instance.restoreAshFromEntries(
+      [
+        {
+          type: "message",
+          timestamp: "2024-01-01T00:00:00.000Z",
+          message: {
+            role: "assistant",
+            content: [{ type: "toolCall", name: "fabric_exec", input: { code } }],
+          },
+        },
+      ],
+      (toolName, input) => {
+        expect(toolName).toBe("fabric_exec");
+        expect(input).toEqual({ code });
+        return toolName === "fabric_exec" ? ["mcp:test"] : undefined;
+      },
+    );
+    expect(instance.ashRecords().map((record) => record.namespace)).toContain("mcp:test");
+    expect(instance.evaluate("please echo a value back to me", config())).toBeUndefined();
   });
 });

@@ -1115,6 +1115,28 @@ export const buildFabricSettingsItems = (
               "Timeout for individual MCP tool calls.",
             ),
           }),
+          setting("mcp.cache.enabled", "Descriptor cache", config.mcp.cache.enabled ? "true" : "false", {
+            description: "Cache MCP tool metadata across sessions keyed by mcporter config; discovery no longer spawns every server.",
+            values: BOOLEANS,
+          }),
+          setting("mcp.cache.revalidate", "Revalidate on start", config.mcp.cache.revalidate, {
+            description: "Background re-listing at session start: changed servers only, all servers, or off.",
+            values: ["changed", "all", "off"],
+          }),
+          setting("mcp.cache.revalidateBudgetMs", "Revalidate budget", formatMs(config.mcp.cache.revalidateBudgetMs), {
+            description: "Wall-clock budget for the session-start background MCP revalidation.",
+            submenu: numericSubmenu(
+              theme,
+              [15_000, 30_000, 60_000, 120_000, 300_000],
+              formatMs,
+              "MCP revalidate budget",
+              "Wall-clock budget for the session-start background MCP revalidation.",
+            ),
+          }),
+          setting("mcp.advisory", "Advisory", config.mcp.advisory ? "true" : "false", {
+            description: "Include cached MCP tools in the prompt-matched capability advisory.",
+            values: BOOLEANS,
+          }),
         ],
         persist,
       ),

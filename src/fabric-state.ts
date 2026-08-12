@@ -50,7 +50,8 @@ import {
 import { AgentsProvider } from "./providers/agents-provider.js";
 import { CapturedToolsProvider } from "./providers/captured-tools-provider.js";
 import { CompactProvider } from "./providers/compact-provider.js";
-import { McpProvider } from "./providers/mcp-provider.js";
+import { McpDescriptorCacheStore } from "./providers/mcp-descriptor-cache.js";
+import { McpProvider, type McpProviderHooks } from "./providers/mcp-provider.js";
 import { MemoryProvider, type MemoryProviderContext } from "./providers/memory-provider.js";
 import { MeshProvider } from "./providers/mesh-provider.js";
 import { PiToolsProvider } from "./providers/pi-tools-provider.js";
@@ -60,6 +61,7 @@ import { SchemaController } from "./schema/controller.js";
 import { StateStore } from "./state/store.js";
 import {
   FABRIC_PROVIDER_DISCOVER_EVENT,
+  type FabricActionDescriptor,
   type FabricProvider,
   type FabricProviderDiscovery,
 } from "./protocol.js";
@@ -75,6 +77,7 @@ const escapeXmlText = (value: string): string =>
 
 export class FabricState {
   #registry: ActionRegistry | undefined;
+  #mcpProvider: McpProvider | undefined;
   #config: FabricConfig | undefined;
   #execution: FabricExecutionService | undefined;
   #agents: AgentManager | undefined;
@@ -99,13 +102,16 @@ export class FabricState {
   #widgetDismissedAt = 0;
 
   readonly #onCapturedToolUse: ((entry: CapturedToolEntry) => void) | undefined;
+  readonly #mcpHooks: McpProviderHooks | undefined;
 
   constructor(
     readonly pi: ExtensionAPI,
     readonly capturedTools: CapturedToolCatalog,
     onCapturedToolUse?: (entry: CapturedToolEntry) => void,
+    mcpHooks?: McpProviderHooks,
   ) {
     this.#onCapturedToolUse = onCapturedToolUse;
+    this.#mcpHooks = mcpHooks;
   }
 
   get initialized(): boolean {
@@ -132,6 +138,12 @@ export class FabricState {
   get registry(): ActionRegistry {
     if (!this.#registry) throw new Error("Pi Fabric has not initialized");
     return this.#registry;
+  }
+
+  // Current MCP descriptor slice (cache-backed when mcp.cache is enabled), for
+  // the capability advisory. Empty until the provider hydrates.
+  mcpSlice(): FabricActionDescriptor[] {
+    return this.#mcpProvider?.sliceDescriptors() ?? [];
   }
 
   get execution(): FabricExecutionService {
@@ -228,7 +240,28 @@ export class FabricState {
         ),
       );
     }
-    this.#registry.register(new McpProvider(context.cwd, this.#config.mcp));
+    this.#mcpProvider = new McpProvider(context.cwd, this.#config.mcp, {
+      ...(this.#config.mcp.cache.enabled
+        ? {
+            cache: new McpDescriptorCacheStore(
+              path.join(
+                process.env.PI_FABRIC_PROJECT_ROOT ?? context.cwd,
+                ".pi",
+                "fabric",
+                "mcp-cache.json",
+              ),
+            ),
+          }
+        : {}),
+      hooks: {
+        onSliceChanged: (descriptors) => this.#mcpHooks?.onSliceChanged?.(descriptors),
+        onToolUse: (server) => this.#mcpHooks?.onToolUse?.(server),
+      },
+    });
+    this.#registry.register(this.#mcpProvider);
+    // Descriptor-cache hydration + background revalidation must not gate
+    // session start: fired unawaited, slices arrive via onSliceChanged.
+    this.#mcpProvider.warmup();
     if (capturedToolsProvider) this.#registry.register(capturedToolsProvider);
     const sessionId = context.sessionManager.getSessionId();
     const { identity, mainAgentId } = resolveFabricIdentity(sessionId);
@@ -728,6 +761,7 @@ export class FabricState {
       await this.#participants?.close();
     }
     this.#registry = undefined;
+    this.#mcpProvider = undefined;
     this.#config = undefined;
     this.#execution = undefined;
     this.#agents = undefined;
@@ -782,6 +816,7 @@ export class FabricState {
       await this.#participants?.close();
     }
     this.#registry = undefined;
+    this.#mcpProvider = undefined;
     this.#execution = undefined;
     this.#agents = undefined;
     this.#actors = undefined;

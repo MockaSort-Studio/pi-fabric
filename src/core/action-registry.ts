@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { Value } from "typebox/value";
 import { runAbortable, settleWithin } from "../async-settlement.js";
 import {
@@ -16,6 +16,7 @@ import {
   type FabricProvider,
   type FabricProviderListRequest,
 } from "../protocol.js";
+import { stableJsonHash } from "./stable-hash.js";
 import type { FabricNestedToolResultProxy } from "./tool-result-proxy.js";
 
 export interface ResolvedFabricAction extends FabricActionDescriptor {
@@ -207,18 +208,7 @@ const resolveDescriptor = (
   ref: `${provider.name}.${descriptor.name}`,
 });
 
-const stableJsonValue = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(stableJsonValue);
-  if (value === null || typeof value !== "object") return value;
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, nested]) => [key, stableJsonValue(nested)]),
-  );
-};
-
-const descriptorHash = (value: unknown): string =>
-  createHash("sha256").update(JSON.stringify(stableJsonValue(value))).digest("hex");
+const descriptorHash = stableJsonHash;
 
 const discoveryTerms = (value: string): string[] =>
   [...value.normalize("NFKC").matchAll(/[\p{L}\p{N}_]+/gu)]
