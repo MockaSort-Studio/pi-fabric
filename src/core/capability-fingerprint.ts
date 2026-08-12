@@ -7,6 +7,10 @@ const CAPABILITY_STOPWORDS: ReadonlySet<string> = new Set([
   "by", "at", "from", "into", "one", "this", "that", "it", "its", "their",
   "your", "you", "we", "i", "me", "my", "mine", "us", "is", "are", "be", "been", "current", "existing",
   "please", "thanks",
+  // Interrogatives and question fillers: they frame every request, carry no
+  // capability intent of their own, and — worst case — collide with identity
+  // prose like "recommendations based on what you want to create".
+  "what", "how", "who", "whom", "whose", "why", "where", "which",
   "new", "use", "used", "using", "via", "per", "each", "all", "any", "can",
   "will", "also", "not", "no", "if", "when", "then", "else", "than", "so",
   "such", "over", "under", "out", "up", "down", "off", "through", "during",

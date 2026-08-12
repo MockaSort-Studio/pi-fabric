@@ -67,12 +67,30 @@ Pre-ignition filters:
 - **At least two matched written words.** A lone distinctive word such as
   "project" or "recent" is a vocabulary coincidence, not intent. The gate
   and the scorer share one unit — the written word — so casing can inflate
-  neither the count nor the score. One exception: a word whose rarest
-  reading is found in exactly one source (df = 1) already weighs a full
-  score quantum, the smallest unit of unambiguous evidence the scorer can
-  express, so a single source-unique word earns the weak band on its own,
-  with sustained warmth doing the transience filtering. A second exception,
-  fire-once ignition across a script boundary, is the last entry here.
+  neither the count nor the score. A word whose rarest reading is found in
+  exactly one source (df = 1) still weighs a full score quantum, the
+  smallest unit of unambiguous evidence the scorer can express — but one
+  quantum from one word is no longer enough anywhere: interrogative filler
+  ("what", "project") is source-unique in small catalogs too, and used to
+  warm a namespace to ignition inside four question-shaped prompts. Lone
+  written words are starved outright: no fire, no warmth. Two narrow
+  exceptions: a lone word that names its own source keeps the weak trickle
+  (a deliberate brand reach — the word must appear as a ≥3-letter token of
+  the label's terminal namespace segment, so "ai"/"pi" stay starved), and
+  fire-once ignition across a script boundary, the last entry here.
+- **Phrased evidence (locality).** A match is *phrased* when two of its
+  matched written words stand within a $2\tau$ window of each other in the
+  prompt's survivor stream (4 at the defaults) AND co-occur on one tool
+  surface of the source — the sequential-dependence clause of Metzler &
+  Croft's Markov random field retrieval model, scored with the corpus the
+  index already holds; nothing new is tokenized or stored. Words matched far
+  apart, or across different tools of one namespace, are *scatter*:
+  vocabulary collision, not phrasing. Scatter never ignites instantly (the
+  strong band requires phrased evidence), and its warmth trickles at one
+  quantum per turn, $\tilde{s} = \min(s, q)$, whatever its raw score — so a
+  scattered collision needs four sustained turns to cross $\theta_i$, and
+  its asymptote $W_\infty = q$ falls under $\theta(1 + 1/\tau^2)$: a single
+  smoke event prices scatter out for the rest of the session.
 - **Script-boundary ignition.** When a prompt's non-latin letters
   outnumber its latin written words, the prose itself is not latin — Chinese,
   Japanese, Korean, Cyrillic, Arabic, Hebrew, Thai — and the collision the
@@ -80,14 +98,48 @@ Pre-ignition filters:
   across the script boundary to type a brand name is deliberate. A lone
   source-unique word inside such prose ignites on the first turn instead of
   warming for up to $k_{\text{ignite}}$ turns (4 at the defaults for a
-  band-floor signal, $s = 1$ at $\theta = 0.9$). Its score is unchanged, so
-  the fire still reads in the weak "might match" register, and ash, smoke,
-  and the session cap all apply as usual.
+  band-floor signal, $s = 1$ at $\theta = 0.9$) — but only after the word
+  certifies itself. Crossing the boundary proves deliberateness, not intent:
+  a teaching question about the host software ("model とは何ですか") types a
+  latin word the same deliberate way a brand does. The certification rule is
+  corpus-internal: the word must either *name* its source (a $\geq 3$-letter
+  token of the label's terminal namespace segment) or *saturate* it — live
+  on at least $1 - 1/\tau$ of the source's tool identity surfaces, at most
+  one omission per $\tau$ cycle. Brand words pass by definition ("fovea" in
+  every pi-fovea tool, "github" in both pi-integrations tools). Glue
+  vocabulary fails: "model" covers 5/11 fal surfaces, under the half the
+  rule demands. Saturation is corpus-relative by construction — in a
+  namespace whose every tool name contains a word, that word is the
+  namespace's topic, and the rule says so. Its score is unchanged, so the
+  fire still reads in the weak "might match" register, and ash, smoke, and
+  the session cap all apply as usual.
+- **Habituation: session-level Zipf damping.** Catalog rarity is static;
+  how the user talks is not. A per-session ledger partitions each written
+  word's appearances into *episodes*: consecutive-turn repetition is one
+  episode, a return after a $\tau^2$-turn pause completes one and starts
+  another, and $\tau^3$ turns of absence relapses the word to fresh. Every
+  completed episode discounts rarity by a count — effective weight
+  $1/(1+e)$ instead of $1/\mathrm{df}$ — so words that drift through
+  ambient commentary sink below $\theta$ after a few episodes. Sustained
+  presence is mathematically exempt (gap $1 < \tau^2$ never damps), because
+  sustained presence is the weak band's own ignition signature; brand terms
+  never accrue episodes either — typing a source's name is a claim, not
+  vocabulary.
+- **Echo stripping.** Everything the advisory renders enters an
+  emitted-words ledger kept with ash for the session's life. Words we
+  uttered never re-enter the evidence stream, so the self-echo class is
+  zero: quoting, parroting, or pasting the advisory back cannot score, and
+  a namespace whose vocabulary leaked into another source through our own
+  header line cannot be burned by our noise.
 - **Latin-only tokenization.** Matching keeps latin alphanumerics of two or
   more characters; non-latin scripts atomize to nothing, so a non-latin
   prompt matches through the latin brand words it contains — the gap that
   script-boundary ignition closes.
-- **Stopword filtering** during tokenization (see `capability-fingerprint.ts`).
+- **Stopword filtering** during tokenization (see `capability-fingerprint.ts`),
+  including the interrogative family (what/how/why/where/which/who). Question
+  words frame every request and carry no capability intent of their own — and
+  in the worst case they collide with identity prose ("…based on what you want
+  to create") to manufacture false evidence out of a user's grammar.
 
 ## Ignition bands and warmth
 
@@ -102,7 +154,7 @@ user-facing $\theta$:
    $1/1 = 1$. That is the smallest unit of unambiguous evidence the scorer
    can express. The weak band is one quantum wide, $B = q = 1$, so a weak
    match gains instant ignition as soon as one more source-unique word
-   appears.
+   appears and phrases with it (the locality gate above still applies).
 2. **The memory scale $\tau = 2$ turns.** Every temporal behavior below is the
    same exponential integrator with retention $1 - 1/\tau$. The table shows
    how the remaining constants come out:
@@ -116,6 +168,12 @@ user-facing $\theta$:
 | smoke streak cap | 4 | $\tau^2$ |
 | max furnace raise | $\theta$ | $(\theta/\tau^2)\cdot\tau^2$, equal to $\theta$ for every $\tau$ |
 | default session cap | 3 | $2\tau - 1$ |
+| phrase window | 4 survivors | $2\tau$ |
+| scatter feed | $\min(s, q)$ per turn | trickle cap $q$ |
+| topic share | 1/2 of identity surfaces | $1 - 1/\tau$ |
+| episode gap | 4 turns | $\tau^2$ |
+| relapse gap | 8 turns | $\tau^3$ |
+| habituation discount | $1/(1+e)$ after $e$ episodes | per-word episodes |
 
 Two rows justify the lift. The furnace's total authority comes out at exactly
 $\theta$ no matter which value $\tau$ takes, so more patience slows the
@@ -131,8 +189,15 @@ into one of two bands:
 
 | Band | Condition | Behavior |
 |---|---|---|
-| Strong | $s \geq \theta + B$ | **Ignites at once.** Multi-term overlap is strong evidence, and any delay would hurt real use. |
-| Weak | $\theta \leq s < \theta + B$ | Must accumulate **warmth** until it passes the ignition point $\theta_i$. |
+| Strong | $s \geq \theta + B$, phrased | **Ignites at once.** Multi-term overlap that localizes on one tool surface is strong evidence, and any delay would hurt real use. Scatter of the same mass demotes to the trickle path instead. |
+| Weak | $\theta \leq s < \theta + B$, or scatter | Must accumulate **warmth** until it passes the ignition point $\theta_i$. Phrased evidence feeds at full score; scatter feeds $\min(s, q)$ per turn. Lone written words feed nothing and never fire (brand reach, topic-saturating words, and the script boundary excepted). |
+
+The headline register reports **how the fire ignited, not how big the score
+was**: "matched your prompt" only when this turn's evidence alone clears the
+strong bar (phrased, $s \geq \theta + B$); every warmth arrival — trickle,
+brand reach, script boundary — reads "might match your prompt", whatever raw
+mass it carried in. The register carries the fire's confidence, not its
+arithmetic.
 
 Warmth convolves the per-turn score signal with the unit-mass exponential
 kernel $K_\tau(j) = \tfrac{1}{\tau}\bigl(1 - \tfrac{1}{\tau}\bigr)^j$ over
@@ -141,9 +206,14 @@ low-pass filter with $\alpha = 1 - 1/\tau = 0.5$ at the default, a half-life
 of one turn:
 
 $$
-W_k = (1-\alpha)\, s_k + \alpha\, W_{k-1} = (K_\tau * s)_k, \qquad s_k =
-\begin{cases} s \geq \theta & \text{weak-band score this turn} \\ 0 & \text{otherwise} \end{cases}
+W_k = (1-\alpha)\, \tilde{s}_k + \alpha\, W_{k-1} = (K_\tau * \tilde{s})_k, \qquad \tilde{s}_k =
+\begin{cases} s \geq \theta & \text{phrased evidence this turn} \\ \min(s, q) \geq \theta & \text{scatter this turn} \\ 0 & \text{otherwise} \end{cases}
 $$
+
+Phrased evidence feeds full score; scatter trickles at one quantum per turn.
+The trickle's asymptote is $W_\infty = q = 1$: it crosses $\theta = 0.9$
+after four sustained turns, and once smoke lifts the ignition point to
+$\theta(1 + 1/\tau^2) = 1.125$ it can never cross again.
 
 Weak ignition fires when $W_k \geq \theta_i$, with $\theta_i = \theta$ by
 default. Sustained exposure pushes W towards s: $W_k \to s\,(1 - \alpha^k)$.
@@ -224,6 +294,58 @@ transcript, and with it a fresh furnace reading.
 At most `maxPerSession` hints fire per session, whatever the model does
 (default 3). The cap guards against prompt storms inside one session, and ash
 guards against repeat hints.
+
+## Coverage matrix and compromises
+
+Measured against a live-shaped catalog (fal-ai's 11 tools, a mixed
+install of extension sources), θ at its default. "t*n*" is the ignition
+turn for one repeated prompt; "weak"/"STRONG" is the rendered register.
+
+| # | Evidence class | First turn | Sustained | After smokes | After ash | Lever |
+|---|---|---|---|---|---|---|
+| A | Phrased strong, one surface | **fires** (STRONG) | — | fires | ash | strong band |
+| B | Phrased weak, shared vocab | silent | fires t2 (weak) | t4 | ash | warmth |
+| C | Scatter, any raw mass | silent | fires t4 (weak) | **never** (W∞ = q < θᵢ) | ash | trickle cap, smoke |
+| D | Lone generic word | silent | never | never | — | starvation |
+| E | Lone brand (names its source) | silent | fires t4 (weak) | never | ash | brand trickle |
+| F | Lone 2-letter token ("ai") | silent | never | never | — | ≥3-letter guard |
+| G | Script boundary, brand | fires (weak) | — | fires | ash | name certification |
+| H | Script boundary, glue noun ("model とは…") | silent | never | — | — | topic share $1 - 1/\tau$ |
+| I | Script boundary, saturating topic | fires (weak) | — | fires | ash | topic share |
+| J | Verbatim paraphrase of identity prose | **fires (STRONG)** | — | fires | ash | none — residual |
+| K | Cross-tool adjacent, one namespace | silent | fires t4 (weak) | never | ash | co-surface clause |
+| L | No overlap / units / code spans | never | never | never | never | tokenizer |
+| M | Path-only URL evidence, repeated | silent | fires t2 (weak) | never | ash | q/2 path discount |
+| N | Interleaved topic drift | silent | never | never | — | α decay |
+| O | Quoted advisory / self-echo (our own words) | **never** | never | — | — | echo ledger |
+| P | Ambient word recurring across long pauses | silent, decaying | **never past a few episodes** | never | — | habituation $1/(1+e)$ |
+
+What we could not close without learning (and chose not to fake):
+
+- **Row J, verbatim paraphrase.** A prompt echoing a tool's identity sentence
+  ("based on what you recommend, create my playlist") is phrased, strong,
+  single-surface evidence. Every deterministic gate agrees with it — the
+  evidence is real; it's the *intent* that's absent. Ash caps the cost at
+  one slot per session; smoke makes the mistake expensive for everything
+  that follows. Closing it want semantics: paraphrase-rate or a
+  probability that the writer derived their sentence from the catalog —
+  neither expressible from the session corpus alone.
+- ~~Session-repeating vocabulary.~~ *Closed: habituation (row P) — an
+  episode-counted damping term that leaves the weak band's sustained
+  ignition mathematically intact while ambient recurrence decays below
+  threshold.*
+
+Contained by design, not levers:
+
+- **Catalog-breadth advantage.** Score sums over matched words, so wide
+  servers look bigger. Containment already follows from the gates: instant
+  fire needs pairs phrased on *one* surface (bounded by one identity), and
+  the trickle is capped at q per turn regardless of breadth; the breadth can
+  raise warmth a constant factor faster, never the asymptote.
+- **Smoke attribution window = one turn.** A hint the model follows two
+  turns later reads as smoke. Chosen over a longer window because the ash
+  from the organic tool use already clears the burn, and the transient
+  smoke raise washes out over τ² events.
 
 ## Summary
 

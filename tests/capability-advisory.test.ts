@@ -56,6 +56,15 @@ const config = (overrides: Partial<FabricCapabilityAdvisoryConfig> = {}): Fabric
   ...overrides,
 });
 
+const habitCatalog = (): CapabilityAdvisor => {
+  const instance = new CapabilityAdvisor();
+  instance.refresh([
+    descriptor("audit_signals", "Audit ledger mesh drift signals.", "extension:alpha"),
+    descriptor("check_regression", "Check ledger mesh regression.", "extension:beta"),
+  ]);
+  return instance;
+};
+
 const advisor = (): CapabilityAdvisor => {
   const instance = new CapabilityAdvisor();
   instance.refresh(FIXTURES);
@@ -451,19 +460,137 @@ describe("CapabilityAdvisor", () => {
     expect(twoWords.evaluate("git hub", config())).toBeDefined();
   });
 
-  it("admits a source-unique word into the weak band through sustained warmth", () => {
-    // "project" matches only pi-better-openai (df = 1 → one full score
-    // quantum, s = 1.0 ≥ θ). A lone word used to be void; now it ignites like
-    // any weak match — on the fourth identical prompt, never the first.
+  it("starves lone written words: one word of evidence is never intent", () => {
+    // A lone source-unique word (df = 1, s = 1.0 ≥ θ) used to warm a source
+    // to ignition inside four turns — but interrogative filler ("what",
+    // "project") is source-unique in small catalogs too, so question-heavy
+    // sessions accumulated phantom warmth. Lone words now neither fire nor
+    // warm: every "the project" stays silent forever.
     const instance = advisor();
-    expect(instance.evaluate("the project", config())).toBeUndefined();
-    expect(instance.evaluate("the project", config())).toBeUndefined();
-    expect(instance.evaluate("the project", config())).toBeUndefined();
-    const ignited = instance.evaluate("the project", config());
-    expect(ignited?.content).toContain("might match your prompt.");
-    expect(ignited?.details.matches.map((match) => match.namespace)).toContain(
+    for (let turn = 0; turn < 6; turn++) {
+      expect(instance.evaluate("the project", config())).toBeUndefined();
+    }
+    // The same surface still ignites at once once the evidence phrases:
+    // "edit", "project", "images" (all df = 1 in this catalog, s = 3.0)
+    // co-locate in the prompt AND on openai_image's identity surface.
+    const phrased = advisor();
+    const fire = phrased.evaluate("edit my project images", config());
+    expect(fire?.content).toContain("matched your prompt.");
+    expect(fire?.details.matches.map((match) => match.namespace)).toContain(
       "extension:pi-better-openai",
     );
+  });
+
+  it("keeps the weak trickle only for a lone word that names its own source", () => {
+    // "fovea" IS pi-fovea's name: typing the brand unaccompanied is a
+    // deliberate reach, so the lone word keeps the slow trickle — silent
+    // three turns, weak-register ignition on the fourth, never instant.
+    const brand = advisor();
+    expect(brand.evaluate("fovea", config())).toBeUndefined();
+    expect(brand.evaluate("fovea", config())).toBeUndefined();
+    expect(brand.evaluate("fovea", config())).toBeUndefined();
+    const ignited = brand.evaluate("fovea", config());
+    expect(ignited?.content).toContain("might match your prompt.");
+    // Two-letter label tokens do not qualify as a deliberate reach: "ai"
+    // (from mcp:fal-ai's label) is ambient vocabulary and stays starved,
+    // while the three-letter brand "fal" still trickles.
+    const falFixture = [descriptor("run_job", "Run a fal queue job.", "mcp:fal-ai")];
+    const ambient = new CapabilityAdvisor();
+    ambient.refresh(falFixture);
+    for (let turn = 0; turn < 6; turn++) {
+      expect(ambient.evaluate("ai capabilities today", config())).toBeUndefined();
+    }
+    const falBrand = new CapabilityAdvisor();
+    falBrand.refresh(falFixture);
+    for (let turn = 0; turn < 3; turn++) {
+      expect(falBrand.evaluate("fal", config())).toBeUndefined();
+    }
+    expect(falBrand.evaluate("fal", config())).toBeDefined();
+  });
+
+  it("reports the register of the fire's path, not the fire's arithmetic", () => {
+    // Scatter evidence can carry raw mass well past the strong bar
+    // (focus + impact sum to 2.0 ≥ θ + q) and still only arrive through
+    // sustained warmth. The old headline recomputed "matched" from the raw
+    // score and lied about the path; the register now reports HOW the fire
+    // ignited, so a t4 warmth arrival reads "might match" regardless.
+    const instance = advisor();
+    const scatter =
+      "focus the handler wiring, and much later after the refactor compute impact reports";
+    for (let turn = 0; turn < 3; turn++) {
+      expect(instance.evaluate(scatter, config())).toBeUndefined();
+    }
+    const fired = instance.evaluate(scatter, config());
+    expect(fired).toBeDefined();
+    expect(fired?.content).toContain("might match your prompt.");
+  });
+
+  it("habituates words that keep returning across long pauses, never sustained presence", () => {
+    // ledger + mesh are shared vocabulary (df = 2 each, w = 1/2), phrased on
+    // one surface: s = 1.0 sits in the weak band and needs four sustained
+    // turns to ignite. Returning to the same words across τ²-turn pauses —
+    // ambient commentary drifting through — completes episodes, and each
+    // episode discounts rarity by a count: episode 3 no longer clears θ at
+    // all (s = 0.5), and the accumulated warmth has decayed below the floor.
+    // Sustained presence, by contrast, never habituates: the control fires
+    // at t4 exactly as before.
+    const HABIT = "ledger mesh please";
+    const FILLER = "now refactor the retry logic";
+    const control = habitCatalog();
+    for (let turn = 0; turn < 3; turn++) {
+      expect(control.evaluate(HABIT, config())).toBeUndefined();
+    }
+    expect(control.evaluate(HABIT, config())).toBeDefined();
+    const ambient = habitCatalog();
+    for (let episode = 0; episode < 4; episode++) {
+      expect(ambient.evaluate(HABIT, config())).toBeUndefined();
+      for (let gap = 1; gap < 4; gap++) {
+        expect(ambient.evaluate(FILLER, config())).toBeUndefined();
+      }
+    }
+  });
+
+  it("strips its own emissions from the evidence stream", () => {
+    // Both namespaces share "audit / ledger / mesh". Prompt 1 phrases the
+    // full alpha identity on one surface and ignites it (df-1 "kit" carries
+    // the strong band). The user then quotes the rendered advisory verbatim —
+    // among its words, alpha's description sentence contains three of beta's
+    // identity terms. Without echo stripping those words would feed beta to
+    // weak-band ignition on the second quote, burning a namespace for
+    // repeating our own voice back. Emitted words never re-enter the stream,
+    // so quoting stays inert no matter how often it recurs.
+    const duo = new CapabilityAdvisor();
+    duo.refresh([
+      descriptor("audit_kit", "Audit the ledger mesh kit.", "extension:alpha"),
+      descriptor("mesh_drift", "Audit ledger mesh drift.", "extension:beta"),
+    ]);
+    const fired = duo.evaluate("audit the ledger mesh kit please", config());
+    expect(fired).toBeDefined();
+    expect(fired?.content).toContain("matched your prompt.");
+    const echo = duo.evaluate(fired!.content, config());
+    expect(echo).toBeUndefined();
+    for (let turn = 0; turn < 4; turn++) {
+      expect(duo.evaluate(fired!.content, config())).toBeUndefined();
+    }
+  });
+
+  it("treats same-namespace words from different tools as scatter", () => {
+    // "focus" lives only in fovea_focus's surface, "impact" only in
+    // fovea_impact's: same namespace, different tools. Even typed adjacently
+    // they are not a phrase (phrasing co-locates on one tool surface), so
+    // s = 2.0 demotes to the trickle path — silent three turns, igniting on
+    // the fourth sustained prompt.
+    const instance = advisor();
+    for (let turn = 0; turn < 3; turn++) {
+      expect(instance.evaluate("focus impact", config())).toBeUndefined();
+    }
+    expect(instance.evaluate("focus impact", config())).toBeDefined();
+    // One tool surface phrasing the same namespace ignites at once: "blast
+    // radius of edited files" co-locates entirely on fovea_impact (s = 4.0).
+    const direct = advisor();
+    const fire = direct.evaluate("blast radius of edited files", config());
+    expect(fire?.content).toContain("matched your prompt.");
+    expect(fire?.details.matches[0]?.namespace).toBe("extension:pi-fovea");
   });
 
   it("scores one written word as one unit of evidence in any casing", () => {
@@ -487,15 +614,14 @@ describe("CapabilityAdvisor", () => {
       // Ash still applies across scripts: the second ask stays silent.
       expect(instance.evaluate(prompt, config())).toBeUndefined();
     }
-    // Latin prose gives no such signal: the same lone word is ambient
-    // vocabulary there and stays on the slow warmth path, igniting on the
-    // fourth sustained prompt, never the first three.
+    // Latin prose gives no such signal: a lone brand word is ambient
+    // vocabulary there, and lone words are starved — no fire, no warmth,
+    // however often the prompt repeats.
     const latinProse = new CapabilityAdvisor();
     latinProse.refresh(catalog);
-    expect(latinProse.evaluate("github", config())).toBeUndefined();
-    expect(latinProse.evaluate("github", config())).toBeUndefined();
-    expect(latinProse.evaluate("github", config())).toBeUndefined();
-    expect(latinProse.evaluate("github", config())).toBeDefined();
+    for (let turn = 0; turn < 4; turn++) {
+      expect(latinProse.evaluate("github", config())).toBeUndefined();
+    }
     // Ordinary multi-word overlap still reaches the strong band at once, and
     // camelCase spelling of the brand word earns no extra evidence.
     for (const prompt of ["check github repo", "check GitHub repo"]) {
@@ -665,6 +791,11 @@ describe("identity-surface vocabulary and prompt path context", () => {
       "mcp:fal_ai",
     ),
     descriptor(
+      "recommend_model",
+      "Get model recommendations based on what you want to create.\nSearches the live fal.ai catalog and returns the best models for your use case.",
+      "mcp:fal_ai",
+    ),
+    descriptor(
       "search_docs",
       "Search the fal.ai documentation for guides, API references, code examples, and implementation details.\nUse this when you need to understand how fal.ai works, find specific API docs, or get code snippets.",
       "mcp:fal_ai",
@@ -712,6 +843,81 @@ describe("identity-surface vocabulary and prompt path context", () => {
     const result = instance.evaluate("submit a fal job and check its status", config());
     expect(result?.content).toContain("mcp:fal_ai");
     expect(result?.content).toContain("matched your prompt.");
+  });
+
+  it("certifies script-boundary words as brand or topic, not glue", () => {
+    // A CJK teaching question about the host software ("model とは何ですか")
+    // crosses the script boundary with a lone source-unique word — exactly
+    // the signature the boundary rule used to instant-ignite on. In this
+    // fixture "model" is the namespace's glue (1/4 surfaces): it fails
+    // certification and stays silent. "render" saturates the surfaces (3/4,
+    // at the 1 − 1/τ brand shape) and ignites. "flax" is the brand. All
+    // fires read in the might-match register — warmth-path arrivals, not
+    // same-turn evidence.
+    const flaxFixture = [
+      descriptor("queue_job", "Queue a render job on the flax farm.", "mcp:flax-ai"),
+      descriptor("poll_job", "Poll a render job for completion.", "mcp:flax-ai"),
+      descriptor("pack_scene", "Pack scene textures before render.", "mcp:flax-ai"),
+      descriptor("model_scene", "Reference a base model for the scene.", "mcp:flax-ai"),
+    ];
+    const silent = new CapabilityAdvisor();
+    silent.refresh(flaxFixture);
+    for (let turn = 0; turn < 6; turn++) {
+      expect(silent.evaluate("model とは何ですか", config())).toBeUndefined();
+    }
+    const topical = new CapabilityAdvisor();
+    topical.refresh(flaxFixture);
+    const topicFire = topical.evaluate("render で質問があります", config());
+    expect(topicFire).toBeDefined();
+    expect(topicFire?.content).toContain("might match your prompt.");
+    const branded = new CapabilityAdvisor();
+    branded.refresh(flaxFixture);
+    const brandFire = branded.evaluate("flax で画像の生成をお願い", config());
+    expect(brandFire).toBeDefined();
+    expect(brandFire?.content).toContain("might match your prompt.");
+  });
+
+  it("demotes scattered evidence to the trickle path (the PCM false positive)", () => {
+    // The reported misfire: a salt-based-PCM question collided with fal's
+    // recommend_model identity ("Get model recommendations based on what you
+    // want to create.") — "based" and "what", both df = 1, summed to s = 2.0
+    // and ignited the strong band instantly, permanently burning mcp:fal_ai.
+    // Two layers now close this: interrogatives are stopwords, so "what"
+    // evaporates, and the remaining lone "based" is starved — scattered or
+    // sustained, the prompt never heats fal at all.
+    const PCM_PROMPT =
+      "Watching a youtube video about salt based PCMs, with one PCM changing phase at 18 degrees C. I was wondering if you find what the materials to make it are and how long it lasts compared to regular water ice.";
+    const sustained = verboseCatalog();
+    for (let turn = 0; turn < 6; turn++) {
+      expect(sustained.evaluate(PCM_PROMPT, config())).toBeUndefined();
+    }
+    const mixed = verboseCatalog();
+    for (let turn = 0; turn < 3; turn++) {
+      expect(mixed.evaluate(PCM_PROMPT, config())).toBeUndefined();
+      expect(mixed.evaluate("refactor this local function", config())).toBeUndefined();
+    }
+  });
+
+  it("never ignites on interrogative-only overlap (the what-creep)", () => {
+    // "what" is df = 1 via recommend_model's identity sentence, so every
+    // question-shaped prompt used to feed fal warmth, igniting on the fourth
+    // consecutive question. Two layers close it: interrogatives are
+    // stopwords now, and lone words are starved regardless — no warmth, no
+    // fire, however question-heavy the session gets.
+    const instance = verboseCatalog();
+    for (let turn = 0; turn < 6; turn++) {
+      expect(instance.evaluate("what does this function do", config())).toBeUndefined();
+    }
+  });
+
+  it("keeps instant ignition when fal evidence phrases on one tool surface", () => {
+    // Control: "check" + "status" + "fal" + "job" all co-locate on
+    // check_job's identity surface, so s = 4.0 is phrased mass and ignites
+    // the strong band on the first turn.
+    const instance = verboseCatalog();
+    const fire = instance.evaluate("check the status of my fal job", config());
+    expect(fire?.content).toContain("matched your prompt.");
+    expect(fire?.details.matches[0]?.namespace).toBe("mcp:fal_ai");
   });
 
   it("keeps path-adjacent intent at full strength when prose carries it", () => {

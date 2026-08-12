@@ -6,8 +6,10 @@ import {
   capabilityWordCandidates,
   isMostlyNonLatinPrompt,
   splitCapabilityWords,
+  tokenizeCapabilityText,
   truncateAdvisoryDescription,
   type CapabilityIndex,
+  type CapabilitySourceFingerprint,
 } from "./capability-fingerprint.js";
 
 export const CAPABILITY_ADVISORY_CUSTOM_TYPE = "pi-fabric-capability";
@@ -55,13 +57,31 @@ const MAX_ADVISORY_NAMES = 3;
 //   τ   = 2 turns — the patience/memory scale. Warmth W is the convolution of
 //   the score signal with the exponential kernel K_τ (an EWMA with retention
 //   1 − 1/τ, half-life one turn at τ=2): first-order evidence averages over
-//   τ turns. Smoke feedback estimates a bias, a second-order signal, so it
+//   τ turns. The phrase window projects the same scale: 2τ survivors.
+//   Smoke feedback estimates a bias, a second-order signal, so it
 //   calibrates over τ² events: step θ/τ², ceiling τ² — keeping the maximum
 //   furnace raise at exactly θ regardless of τ.
 // Strong band ignites instantly; weak band fires when W breaches the ignition
 // point, so single-turn collisions cool before they get there.
 const TAU = 2;
 const WARM_ALPHA = 1 - 1 / TAU; // 0.5
+// Phrase locality window: two matched written words earn phrased evidence
+// when they stand within 2τ survivors of each other in the prompt AND
+// co-occur on one tool surface of the source (the MRF sequential-dependence
+// clause). Words matched far apart, or across different tools of one
+// namespace, are scatter — vocabulary collision, never phrasing.
+const PHRASE_WINDOW = 2 * TAU; // 4
+// Topic saturation for the script-boundary lane: a lone cross-script word
+// certifies itself when it saturates the source's identity surfaces the way
+// the brand does — at most one omission per τ cycle, share ≥ 1 − 1/τ.
+const TOPIC_SHARE = 1 - 1 / TAU; // 1/2
+// Episode gap for habituation: a written word earns an ambient-vocabulary
+// episode (and rareness damping 1/(1 + e)) when it reappears at least τ²
+// turns after its previous mention. Within-patience repetition stays one
+// episode, so sustained intent never damps. Complete session relapse after
+// τ³ turns forgives a word entirely.
+const SESSION_GAP = TAU * TAU; // 4
+const SESSION_RELAPSE = SESSION_GAP * TAU; // 8
 const SMOKE_STEP = 1 / (TAU * TAU); // 0.25
 const SMOKE_MAX = TAU * TAU; // 4
 const WARM_FLOOR = 1e-3;
@@ -117,6 +137,68 @@ interface SourceBlock {
   leftoverNames: string[];
 }
 
+// One matched written word: where it sits in the prompt's survivor stream
+// (pos) and which corpus reading claimed it (term).
+interface CapabilityMatchedTerm {
+  pos: number;
+  term: string;
+}
+
+// Brand tokens of a source's label: the words that name the capability
+// itself ("pi-fovea" → {fovea}; "mcp:fal-ai" → {fal}). Two-letter tokens are
+// excluded — "ai", "pi" are ambient vocabulary, not a deliberate reach.
+const sourceBrandTokens = (label: string): ReadonlySet<string> => {
+  // The terminal namespace segment names the capability ("mcp:fal-ai" →
+  // "fal-ai"); a leading "mcp:" is a structural prefix, not a brand.
+  const terminal = label.includes(":") ? label.slice(label.lastIndexOf(":") + 1) : label;
+  const tokens = new Set<string>();
+  for (const token of tokenizeCapabilityText(terminal)) {
+    if (token.length >= 3) tokens.add(token);
+  }
+  return tokens;
+};
+
+// Topic saturation: the share of a source's tool identity surfaces a term
+// lives on. Brand words saturate their namespace ("fovea" in every pi-fovea
+// tool name); glue vocabulary covers less than half of a big catalog
+// ("model" in 5/11 fal tools). The cutoff lives with the engine constants.
+const topicShare = (term: string, source: CapabilitySourceFingerprint): number => {
+  const total = source.names.length;
+  if (total === 0) return 0;
+  let hits = 0;
+  for (const terms of source.toolTerms) {
+    if (terms?.has(term)) hits += 1;
+  }
+  return hits / total;
+};
+
+// Phrased evidence: two matched written words standing within the
+// PHRASE_WINDOW survivor window of each other AND co-occurring on one tool
+// surface of the source. Prompt-adjacent words living in different tools of
+// the same namespace (e.g. "focus" in fovea_focus and "blast" in
+// fovea_impact) are scatter, not phrasing — multi-tool MCP servers spread
+// generic vocabulary across tools exactly that way, which is why the
+// co-surface clause checks a single tool, not the whole namespace.
+const hasPhraseLocality = (
+  matched: CapabilityMatchedTerm[],
+  source: CapabilitySourceFingerprint,
+): boolean => {
+  for (let a = 0; a < matched.length; a++) {
+    for (let b = a + 1; b < matched.length; b++) {
+      const first = matched[a];
+      const second = matched[b];
+      if (first === undefined || second === undefined) continue;
+      if (second.pos - first.pos > PHRASE_WINDOW) break; // positions ascend
+      for (const toolTerms of source.toolTerms) {
+        if (toolTerms !== undefined && toolTerms.has(first.term) && toolTerms.has(second.term)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+};
+
 // pi-fovea icon/indent pattern: one flat ▪ bullet per shown tool with the
 // fully-qualified ref, a source tag in parentheses when more than one source
 // is in play, and the truncated description after an em dash on the rich
@@ -168,6 +250,19 @@ export class CapabilityAdvisor {
   #pendingFire = new Set<string>();
   #hitsThisTurn = new Set<string>();
   #smokeStreak = 0;
+  // Habituation ledger: word → last turn seen + completed episodes. A word the
+  // user keeps returning to across long pauses is ambient vocabulary, not
+  // intent. Consecutive-turn repetition NEVER counts (sustained presence IS
+  // the weak band's ignition signature); a pause of τ² turns between
+  // appearances starts a fresh episode. Like warmth, it resets with the
+  // session ledger — ash alone is permanent.
+  #turnNo = 0;
+  #mentions = new Map<string, { last: number; extra: number }>();
+  // Echo ledger: every latin word we ourselves rendered in advisory content.
+  // Our own utterances must never score as intent — quoting or parroting the
+  // advisory back cannot re-derive intent from our own voice. Lives with ash
+  // (the transcripts outlive warmth); never cleared by reset().
+  #emitted = new Set<string>();
   #firedTotal = 0;
 
   // Descriptor sources refresh independently (captured tools on pi tool
@@ -191,6 +286,8 @@ export class CapabilityAdvisor {
     this.#warmth.clear();
     this.#pendingFire.clear();
     this.#hitsThisTurn.clear();
+    this.#turnNo = 0;
+    this.#mentions.clear();
     this.#smokeStreak = 0;
     this.#firedTotal = 0;
   }
@@ -318,11 +415,40 @@ export class CapabilityAdvisor {
     // candidate readings (camelCase atoms plus the word itself). One written
     // word is one unit of intent and of evidence: the scorer and the overlap
     // gate below both count these, so casing a word differently never changes
-    // either count. Words with no surviving candidates drop out.
-    const promptWords = splitCapabilityWords(stripped)
-      .map((word) => new Set(capabilityWordCandidates(word)))
-      .filter((candidates) => candidates.size > 0);
+    // either count. Words with no surviving candidates drop out. Echo ledger
+    // words — anything we ourselves rendered in an earlier advisory — never
+    // enter the stream: our utterances are evidence of nothing.
+    const promptWords: { word: string; candidates: Set<string> }[] = [];
+    for (const word of splitCapabilityWords(stripped)) {
+      if (this.#emitted.has(word) || this.#emitted.has(word.toLowerCase())) continue;
+      const candidates = new Set(capabilityWordCandidates(word));
+      if (candidates.size > 0) promptWords.push({ word, candidates });
+    }
     if (promptWords.length === 0 || this.#index.sourceCount === 0) return undefined;
+
+    // Habituation ledger. Turn bump, then record: brand terms never accrue
+    // (typing a source's name is a claim, not vocabulary — it keeps its full
+    // rarity). Episodes complete only across a τ²-turn pause; consecutive
+    // repetition stays one episode, so the weak band's sustained-presence
+    // signature never damps itself. Absence of τ³ turns relapses a word to
+    // fresh: long-dead chatter is forgiven rather than fossilized.
+    this.#turnNo += 1;
+    const brandWords = new Set<string>();
+    for (const source of this.#index.sources) {
+      for (const token of sourceBrandTokens(source.label)) brandWords.add(token);
+    }
+    for (const { word } of promptWords) {
+      if (brandWords.has(word)) continue;
+      const mention = this.#mentions.get(word);
+      if (mention === undefined) {
+        this.#mentions.set(word, { last: this.#turnNo, extra: 0 });
+        continue;
+      }
+      const gap = this.#turnNo - mention.last;
+      mention.last = this.#turnNo;
+      if (gap >= SESSION_RELAPSE) mention.extra = 0;
+      else if (gap >= SESSION_GAP) mention.extra += 1;
+    }
 
     const pathOnlyTerms = capabilityPathOnlyTerms(stripped);
     // Each matched written word contributes the rarity of its rarest matched
@@ -333,7 +459,8 @@ export class CapabilityAdvisor {
       let score = 0;
       let matchedWords = 0;
       const contributingTerms: string[] = [];
-      for (const candidates of promptWords) {
+      const matched: CapabilityMatchedTerm[] = [];
+      promptWords.forEach(({ word, candidates }, pos) => {
         let bestWeight = 0;
         let bestTerm: string | undefined;
         for (const term of candidates) {
@@ -346,15 +473,24 @@ export class CapabilityAdvisor {
             bestTerm = term;
           }
         }
-        if (bestTerm === undefined) continue;
+        if (bestTerm === undefined) return;
+        // Habituation damping: each completed episode (a return across a
+        // τ²-turn pause) discounts the word's rarity by one more count —
+        // weight 1/(1 + e). The matched-word count and every structural gate
+        // are untouched; only the arithmetic claim decays.
+        const extra = this.#mentions.get(word)?.extra ?? 0;
         matchedWords += 1;
-        score += bestWeight;
+        score += bestWeight / (1 + extra);
         contributingTerms.push(bestTerm);
-      }
-      return { score, matchedWords, contributingTerms };
+        matched.push({ pos, term: bestTerm });
+      });
+      return { score, matchedWords, contributingTerms, matched };
     };
 
     const matches: CapabilityAdvisoryMatch[] = [];
+    // Per-source record of how today's fire ignited: true when this turn's
+    // evidence alone carried it (strong band), false for warmth arrivals.
+    const fireBands = new Map<string, boolean>();
     for (const source of this.#index.sources) {
       if (this.#ash.has(source.namespace)) continue;
       // Score with 1/df term weights, not raw idf: idf magnitude collapses on
@@ -363,35 +499,61 @@ export class CapabilityAdvisor {
       // meaningful at any catalog size.
       const unit = scoreWords((term) => source.tf.has(term));
       const { score } = unit;
-      // Vocabulary-overlap gate: the match needs at least two matched
-      // written words, so a lone distinctive word ("project", "recent") stays
-      // what it is — vocabulary collision, not intent. The exception: a word
-      // whose rarest reading is unique to this source (df = 1) contributes a
-      // full score quantum, the smallest unit of unambiguous evidence the
-      // scorer expresses, so a single source-unique word earns the weak band,
-      // where sustained warmth — not instant ignition — does the transience
-      // filtering, except across a script boundary (see below).
-      const hasSourceUniqueMatch = unit.contributingTerms.some(
-        (term) => this.#index.docFrequency(term) === 1,
-      );
-      if ((unit.matchedWords < 2 && !hasSourceUniqueMatch) || score < config.threshold) continue;
-
-      const strong = score >= config.threshold + WEAK_MATCH_BAND;
+      if (score < config.threshold) continue;
       // Script-boundary exception: inside non-latin prose a lone latin word
       // cannot be a vocabulary collision — the writer had to leave their
-      // input method to type the brand name. The unambiguous evidence the
-      // weak band asks sustained warmth to establish is already present, so
-      // it ignites on the first turn. Only the gate moves; the score (and
-      // the might-match register it draws) stays as computed.
+      // input method to type it. But switching input methods is only proof
+      // of deliberateness, not of intent: a teaching question about the
+      // host software ("model とは何ですか") reaches across the boundary the
+      // same way a brand does. The boundary word must therefore certify
+      // itself against the source it names: either it IS the source's brand
+      // (a ≥3-letter token of the label's terminal segment) or it saturates
+      // the source's identity surfaces at brand level (TOPIC_SHARE = 1 − 1/τ —
+      // brand shape, not glue shape). Only the gate moves; the score (and
+      // the might-match register it draws) stays.
       const scriptSwitched =
-        mostlyNonLatin && unit.matchedWords === 1 && hasSourceUniqueMatch;
+        mostlyNonLatin &&
+        unit.matchedWords === 1 &&
+        unit.contributingTerms.some(
+          (term) =>
+            this.#index.docFrequency(term) === 1 &&
+            (sourceBrandTokens(source.label).has(term) ||
+              topicShare(term, source) >= TOPIC_SHARE),
+        );
+      // Lone-word starvation: one matched written word is never intent, in
+      // any latin prose. A source-unique word (df = 1) used to earn the weak
+      // band on its own, but interrogative filler ("what", "project") is
+      // source-unique in small catalogs too, and warmed fal-style namespaces
+      // to ignition inside four ordinary questions. Lone words now neither
+      // fire nor warm — with two narrow exceptions: the script boundary
+      // above, and a word that names its own source. Typing the source's
+      // brand ("fovea", "github") unaccompanied is a deliberate reach, so it
+      // keeps the weak trickle path (never instant). Ambiguous short label
+      // tokens ("ai", "pi") do not qualify.
+      const namesItself = unit.contributingTerms.some((term) =>
+        sourceBrandTokens(source.label).has(term),
+      );
+      if (unit.matchedWords < 2 && !scriptSwitched && !namesItself) continue;
+
+      const phrased = hasPhraseLocality(unit.matched, source);
+      // The strong band ignites on phrased mass only: s ≥ θ + B buys instant
+      // fire when the evidence also localizes on one tool surface. Scatter
+      // mass, however high, demotes to the trickle path below.
+      const strong = phrased && score >= config.threshold + WEAK_MATCH_BAND;
       if (!strong && !scriptSwitched) {
         // Weak band: accumulate warmth this turn, ignite only at saturation.
-        const warmth = (this.#warmth.get(source.namespace) ?? 0) + (1 - WARM_ALPHA) * score;
+        // Phrased evidence feeds at full score; scatter trickles at one
+        // quantum per turn (min(s, q)), so a scattered collision needs four
+        // sustained turns to cross θ — and never crosses once smoke lifts
+        // the ignition point past the trickle's asymptote (W∞ = q = 1 <
+        // θ(1 + 1/τ²)).
+        const feed = phrased ? score : Math.min(score, SCORE_QUANTUM);
+        const warmth = (this.#warmth.get(source.namespace) ?? 0) + (1 - WARM_ALPHA) * feed;
         this.#warmth.set(source.namespace, warmth);
         if (warmth < ignitionPoint) continue;
       }
 
+      fireBands.set(source.namespace, strong);
       // Rank this source's tools by their own prompt-word overlap so the
       // most relevant refs lead (e.g. openai_websearch before openai_image on
       // a web-search prompt) instead of inherited catalog order.
@@ -419,9 +581,15 @@ export class CapabilityAdvisor {
       (a, b) => b.score - a.score || a.namespace.localeCompare(b.namespace),
     );
     const included = matches.slice(0, MAX_ADVISORY_SOURCES);
+    // The register reports HOW the fire ignited, not how big the score was:
+    // "matched" only when this turn's evidence alone would have ignited on
+    // its own (phrased, above the strong bar). A fire that arrived through
+    // sustained warmth — trickle, brand reach, script boundary — reads
+    // "might match", however large the accumulated raw mass. The headline
+    // carries the fire's confidence, not its arithmetic.
     const strong =
       included[0] !== undefined &&
-      included[0].score >= config.threshold + WEAK_MATCH_BAND;
+      (fireBands.get(included[0].namespace) ?? false);
 
     // Structured like fovea's sync advisories: a compact headline naming
     // the matched sources, flat ▪ bullet rows, a Next: action pointing at
@@ -489,6 +657,15 @@ export class CapabilityAdvisor {
     if (!content) {
       // Pathological budget: header + steer only, refs survive in details.
       content = `${headerLine}\n${STEER_LINE}`;
+    }
+
+    // Echo ledger: every written word we are about to render enters the echo
+    // set. Quoting or parroting this advisory next turn cannot score — the
+    // sentences we speak must not count as the user's intent. Both surface
+    // and lowercase forms are kept, mirroring extraction's casing tolerance.
+    for (const token of splitCapabilityWords(content)) {
+      this.#emitted.add(token);
+      this.#emitted.add(token.toLowerCase());
     }
 
     for (const match of included) {
