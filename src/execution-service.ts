@@ -155,11 +155,23 @@ export class FabricExecutionService {
     const dependencies = await loadRuntimeDependencies();
     const effectiveFullCodeMode =
       this.config.fullCodeMode || this.config.schema.mode === "enforce";
+    const unavailable = new Map(
+      this.registry.unavailableProviders().map((entry) => [entry.name, entry.reason]),
+    );
     const checked = dependencies.typeCheckFabricCode(
       options.code,
-      dependencies.guestTypeDeclarations(effectiveFullCodeMode),
+      dependencies.guestTypeDeclarations(effectiveFullCodeMode, {
+        excludeGlobals: [...unavailable.keys()],
+      }),
     );
     if (checked.errors.length > 0) {
+      for (const error of checked.errors) {
+        const missing = /^Cannot find name '([^']+)'/.exec(error.message);
+        const reason = missing?.[1] ? unavailable.get(missing[1]) : undefined;
+        if (missing && reason) {
+          error.message = `${error.message} Fabric provider "${missing[1]}" is unavailable: ${reason}`;
+        }
+      }
       this.activity?.finish(options.parentToolCallId, false, "Type checking failed");
       return {
         success: false,

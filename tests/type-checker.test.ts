@@ -109,6 +109,27 @@ return { recalled, current, mode: status.mode, hypothesis: hypothesis.hypothesis
     expect(result.errors).toEqual([]);
   });
 
+  it("excludes globals for unavailable providers", () => {
+    const declarations = guestTypeDeclarations(false, { excludeGlobals: ["memory", "state"] });
+    expect(declarations).not.toContain("declare const memory: FabricMemoryApi;");
+    expect(declarations).not.toContain("declare const state: FabricStateApi;");
+    expect(declarations).toContain("declare const schema: FabricSchemaApi");
+
+    const typed = typeCheckFabricCode(
+      'return memory.recall({ query: "x" });',
+      declarations,
+    );
+    expect(typed.errors.some((error) => /Cannot find name 'memory'/.test(error.message))).toBe(
+      true,
+    );
+
+    const untouched = typeCheckFabricCode(
+      'return (await schema.status()).mode;',
+      declarations,
+    );
+    expect(untouched.errors).toEqual([]);
+  });
+
   it("accepts workflow, actor, and mesh primitives", () => {
     const result = typeCheckFabricCode(
       `

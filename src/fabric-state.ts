@@ -311,6 +311,11 @@ export class FabricState {
     if (this.#config.mesh.enabled) {
       this.#registry.register(new MeshProvider(this.#mesh, identity, this.#participants));
       this.#registry.register(new StateProvider(this.#mesh, identity));
+    } else {
+      const meshDisabled =
+        'disabled by configuration (mesh.enabled=false); set "mesh": { "enabled": true } in .pi/fabric.json or the agent fabric.json';
+      this.#registry.markUnavailable("mesh", `${meshDisabled} to enable mesh.* actions`);
+      this.#registry.markUnavailable("state", `${meshDisabled}; state.* actions run on the mesh`);
     }
     this.#schema = new SchemaController(
       context.cwd,
@@ -543,6 +548,11 @@ export class FabricState {
         }),
       };
       this.#registry.register(new MemoryProvider(memoryContext));
+    } else {
+      this.#registry.markUnavailable(
+        "memory",
+        'disabled by configuration (memory.enabled=false); set "memory": { "enabled": true } in .pi/fabric.json or the agent fabric.json to enable memory.* actions',
+      );
     }
     for (const provider of this.#externalProviders.values()) {
       this.#registry.register(provider);

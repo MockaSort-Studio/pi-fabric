@@ -391,4 +391,51 @@ describe("ActionRegistry", () => {
       "Invalid Fabric provider name",
     );
   });
+
+  it("explains why marked providers are unavailable", async () => {
+    const registry = new ActionRegistry();
+    registry.register(provider());
+    registry.markUnavailable("memory", "disabled by configuration (memory.enabled=false)");
+
+    expect(registry.unavailableProviders()).toEqual([
+      { name: "memory", reason: "disabled by configuration (memory.enabled=false)" },
+    ]);
+    await expect(registry.describe("memory.recall", context)).rejects.toThrow(
+      'Fabric provider "memory" is unavailable: disabled by configuration (memory.enabled=false)',
+    );
+  });
+
+  it("lists registered providers for unknown provider names", async () => {
+    const registry = new ActionRegistry();
+    registry.register(provider());
+
+    await expect(registry.describe("memry.recall", context)).rejects.toThrow(
+      "Unknown Fabric provider: memry (registered providers: demo)",
+    );
+  });
+
+  it("rejects marking registered or malformed providers unavailable", () => {
+    const registry = new ActionRegistry();
+    registry.register(provider());
+
+    expect(() => registry.markUnavailable("demo", "off")).toThrow(
+      "Cannot mark a registered Fabric provider unavailable: demo",
+    );
+    expect(() => registry.markUnavailable("Bad Name", "off")).toThrow(
+      "Invalid Fabric provider name",
+    );
+  });
+
+  it("clears the unavailable mark when the provider later registers", async () => {
+    const registry = new ActionRegistry();
+    registry.markUnavailable("demo", "off");
+    expect(registry.unavailableProviders()).toEqual([{ name: "demo", reason: "off" }]);
+
+    registry.register(provider());
+
+    expect(registry.unavailableProviders()).toEqual([]);
+    await expect(registry.describe("demo.echo", context)).resolves.toMatchObject({
+      ref: "demo.echo",
+    });
+  });
 });

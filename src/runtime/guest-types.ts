@@ -1009,10 +1009,26 @@ const FULL_CODE_GLOBAL_DECLARATIONS = [
   "declare const extensions: FabricExtensionsApi;\n",
 ];
 
-export const guestTypeDeclarations = (fullCodeMode: boolean): string =>
-  fullCodeMode
+export interface FabricGuestDeclarationOptions {
+  /** Global names to omit (for example providers disabled by configuration). */
+  excludeGlobals?: readonly string[];
+}
+
+const globalDeclarationLine = (name: string): RegExp =>
+  new RegExp(`^declare const ${name}: [^\\n]*;\\n`, "m");
+
+export const guestTypeDeclarations = (
+  fullCodeMode: boolean,
+  options: FabricGuestDeclarationOptions = {},
+): string => {
+  const base = fullCodeMode
     ? GUEST_TYPE_DECLARATIONS
     : FULL_CODE_GLOBAL_DECLARATIONS.reduce(
         (declarations, declaration) => declarations.replace(declaration, ""),
         GUEST_TYPE_DECLARATIONS,
       );
+  return (options.excludeGlobals ?? []).reduce(
+    (declarations, name) => declarations.replace(globalDeclarationLine(name), ""),
+    base,
+  );
+};

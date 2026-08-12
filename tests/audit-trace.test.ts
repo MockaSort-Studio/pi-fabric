@@ -11,6 +11,7 @@ import {
   executionOutcomeFromError,
   isFabricExecutionTraceV1,
   readFabricExecutionTraceV1,
+  type FabricExecutionFailureStageV1,
 } from "../src/audit/trace.js";
 import { FabricActivityStore } from "../src/activity/store.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
@@ -536,12 +537,21 @@ return true;
     ])).not.toContain("secret");
   });
 
-  it.each([
+  it.each<{
+    name: string;
+    provider: FabricProvider;
+    code: string;
+    stage: FabricExecutionFailureStageV1;
+    expectedError?: string;
+  }>([
     {
       name: "unknown action",
       provider: demoProvider(),
       code: 'return tools.call({ ref: "demo.missing", args: {} });',
       stage: "resolve",
+      // Resolve-stage failures are registry-generated and carry no argument
+      // payloads, so the cause is surfaced in the rendered failure line.
+      expectedError: "Call failed during resolve: Unknown Fabric action: demo.missing",
     },
     {
       name: "argument preparation",
@@ -569,7 +579,7 @@ return true;
       code: 'return tools.call({ ref: "demo.echo", args: { value: "x" } });',
       stage: "invoke",
     },
-  ])("captures $name failures before legacy audits necessarily begin", async ({ provider, code, stage }) => {
+  ])("captures $name failures before legacy audits necessarily begin", async ({ provider, code, stage, expectedError }) => {
     const { service, context } = serviceFor(provider);
     const result = await execute(service, context, code);
 
@@ -580,12 +590,44 @@ return true;
       sequence: 0,
       outcome: "failed",
       failureStage: stage,
-      error: `Call failed during ${stage}`,
+      error: expectedError ?? `Call failed during ${stage}`,
       args: {},
     });
     expect(JSON.stringify(createFabricPersistedExecutionDetails(result))).not.toContain(
       "exploded",
     );
+  });
+
+  it("explains disabled providers in type errors and resolve failures", async () => {
+    const registry = new ActionRegistry();
+    registry.register(demoProvider());
+    registry.markUnavailable(
+      "memory",
+      'disabled by configuration (memory.enabled=false); set "memory": { "enabled": true } in .pi/fabric.json',
+    );
+    const { service, context } = serviceForRegistry(registry);
+
+    const typed = await execute(service, context, 'return memory.recall({ query: "x" });');
+    expect(typed.success).toBe(false);
+    expect(
+      typed.typeErrors?.some((error) =>
+        error.message.includes(
+          'Fabric provider "memory" is unavailable: disabled by configuration (memory.enabled=false)',
+        ),
+      ),
+    ).toBe(true);
+
+    const dynamic = await execute(
+      service,
+      context,
+      'return tools.call({ ref: "memory.recall", args: { query: "x" } });',
+    );
+    expect(dynamic.success).toBe(false);
+    expect(dynamic.trace.operations[0]).toMatchObject({
+      failureStage: "resolve",
+      error:
+        'Call failed during resolve: Fabric provider "memory" is unavailable: disabled by configuration (memory.enabled=false); set "memory": { "enabled": true } in .pi/fabric.json',
+    });
   });
 
   it("records execution guard failures", async () => {

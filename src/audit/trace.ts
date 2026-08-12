@@ -79,6 +79,7 @@ interface MutableOperation {
   projectionRef: string;
   provider?: string;
   action?: string;
+  causeSafe?: boolean;
   args: Sanitized<{ [key: string]: FabricTraceJsonValue }>;
   outcome?: FabricExecutionOutcomeV1;
   failureStage?: FabricExecutionFailureStageV1;
@@ -349,6 +350,11 @@ const lexicalIdentity = (ref: string): { provider?: string; action?: string } =>
   };
 };
 
+// Errors that carry no tool output or argument payloads and are safe to
+// quote in durable traces — currently thrown by the registry when a provider
+// or action cannot be resolved.
+export class FabricResolutionError extends Error {}
+
 const errorCause = (error: unknown): string | undefined => {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
   const trimmed = message?.trim();
@@ -416,8 +422,11 @@ export class FabricExecutionTraceOperationHandle {
   ): void {
     if (!this.operation || this.recorder.sealed) return;
     this.operation.failureStage = stage;
+    if (error instanceof FabricResolutionError) this.operation.causeSafe = true;
     const cause =
-      this.operation.projectionRef === "pi.bash" && stage === "invoke" && outcome === "failed"
+      outcome === "failed" &&
+      (this.operation.causeSafe === true ||
+        (this.operation.projectionRef === "pi.bash" && stage === "invoke"))
         ? errorCause(error)
         : undefined;
     this.operation.error = sanitizeString(
@@ -486,11 +495,11 @@ export class FabricExecutionTraceRecorder {
         operation.outcome = "timed_out";
       }
       if (operation.outcome !== "succeeded") {
-        const preserveBashCause =
-          operation.projectionRef === "pi.bash" &&
-          operation.outcome === "failed" &&
-          operation.error !== undefined;
-        if (!preserveBashCause) {
+        const preserveCause =
+          operation.error !== undefined &&
+          (operation.causeSafe === true ||
+            (operation.projectionRef === "pi.bash" && operation.outcome === "failed"));
+        if (!preserveCause) {
           operation.error = sanitizeString(
             failureMessage(operation.failureStage ?? "invoke", operation.outcome),
             MAX_ERROR_BYTES,

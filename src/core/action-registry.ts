@@ -3,6 +3,7 @@ import { Value } from "typebox/value";
 import { runAbortable, settleWithin } from "../async-settlement.js";
 import {
   executionOutcomeFromError,
+  FabricResolutionError,
   type FabricExecutionTraceOperationHandle,
   type FabricExecutionTraceRecorder,
 } from "../audit/trace.js";
@@ -232,6 +233,7 @@ const validationMessage = (
 
 export class ActionRegistry {
   readonly #providers = new Map<string, FabricProvider>();
+  readonly #unavailable = new Map<string, string>();
 
   constructor(readonly toolResultProxy?: FabricNestedToolResultProxy) {}
 
@@ -243,10 +245,27 @@ export class ActionRegistry {
       throw new Error(`Fabric provider already registered: ${provider.name}`);
     }
     this.#providers.set(provider.name, provider);
+    this.#unavailable.delete(provider.name);
   }
 
   has(name: string): boolean {
     return this.#providers.has(name);
+  }
+
+  markUnavailable(name: string, reason: string): void {
+    if (!providerNamePattern.test(name)) {
+      throw new Error(`Invalid Fabric provider name: ${name}`);
+    }
+    if (this.#providers.has(name)) {
+      throw new Error(`Cannot mark a registered Fabric provider unavailable: ${name}`);
+    }
+    this.#unavailable.set(name, reason);
+  }
+
+  unavailableProviders(): Array<{ name: string; reason: string }> {
+    return [...this.#unavailable.entries()]
+      .map(([name, reason]) => ({ name, reason }))
+      .sort((left, right) => left.name.localeCompare(right.name));
   }
 
   unregister(name: string): FabricProvider | undefined {
@@ -420,7 +439,7 @@ export class ActionRegistry {
     if (ref.includes(".")) {
       const { provider, actionName } = this.#parseRef(ref);
       const descriptor = await provider.describe(actionName, context);
-      if (!descriptor) throw new Error(`Unknown Fabric action: ${ref}`);
+      if (!descriptor) throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
       return resolveDescriptor(provider, descriptor);
     }
     // Bare action names (what the capability advisory prints in its Next:
@@ -445,7 +464,7 @@ export class ActionRegistry {
           matches.map((match) => match.ref).sort().join(", "),
       );
     }
-    throw new Error(`Unknown Fabric action: ${ref}`);
+    throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
   }
 
   async invoke(
@@ -462,7 +481,7 @@ export class ActionRegistry {
       const descriptor = await runAbortable(context.signal, () =>
         provider.describe(actionName, context),
       );
-      if (!descriptor) throw new Error(`Unknown Fabric action: ${ref}`);
+      if (!descriptor) throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
       const action = resolveDescriptor(provider, descriptor);
       traceOperation?.resolved(action.provider, action.name);
 
@@ -646,7 +665,19 @@ export class ActionRegistry {
 
   #requireProvider(name: string): FabricProvider {
     const provider = this.#providers.get(name);
-    if (!provider) throw new Error(`Unknown Fabric provider: ${name}`);
-    return provider;
+    if (provider) return provider;
+    const unavailableReason = this.#unavailable.get(name);
+    if (unavailableReason) {
+      throw new FabricResolutionError(
+        `Fabric provider "${name}" is unavailable: ${unavailableReason}`,
+      );
+    }
+    const registered = [...this.#providers.keys()].sort((left, right) =>
+      left.localeCompare(right),
+    );
+    throw new FabricResolutionError(
+      `Unknown Fabric provider: ${name}` +
+        (registered.length > 0 ? ` (registered providers: ${registered.join(", ")})` : ""),
+    );
   }
 }
