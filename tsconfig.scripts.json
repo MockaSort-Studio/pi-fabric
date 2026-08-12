@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "node_modules/.cache/pi-fabric-surprise",
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": false,
+    "types": ["node"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "scripts/simulate-surprise.ts",
+    "scripts/surprise-lab.ts",
+    "scripts/optimize-surprise.ts"
+  ],
+  "exclude": ["tests/**"]
+}

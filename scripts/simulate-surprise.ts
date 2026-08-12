@@ -15,7 +15,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import readline from "node:readline";
+import type { LabSession } from "./surprise-lab.js";
 
 // Redirect tuning persistence BEFORE anything calls getAgentDir().
 const tmpAgent = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-surprise-sim-"));
@@ -24,6 +24,7 @@ process.env.PI_CODING_AGENT_DIR = tmpAgent;
 const { SurpriseDetector } = await import("../src/core/surprise.js");
 const { SurpriseTuning } = await import("../src/core/surprise-tuning.js");
 const { DEFAULT_FABRIC_CONFIG } = await import("../src/config.js");
+const { evaluateSession, extractLabSession } = await import("./surprise-lab.js");
 
 const args = process.argv.slice(2);
 const flag = (name: string, fallback: number): number => {
@@ -44,75 +45,10 @@ const displayPath = (value: string): string => {
     : value;
 };
 
-interface SessionTool { name: string; args: unknown; isError: boolean }
-interface UserEvent { beforeTurn: number; steer: boolean }
-interface Extracted {
-  cwd: string;
-  startedMs: number;
-  endedMs: number;
-  turns: SessionTool[][];
-  users: UserEvent[];
-  // Gold labels for "a human should intervene", derived from what humans
-  // actually did: mid-run steers, and follow-ups that directly respond to an
-  // errored turn (human-forced recovery).
-  interventions: number[];
-}
+type Extracted = LabSession;
 
-
-
-const extract = async (file: string): Promise<Extracted | undefined> => {
-  const turns: SessionTool[][] = [];
-  const users: UserEvent[] = [];
-  let cwd = "";
-  let startedMs = 0;
-  let endedMs = 0;
-  let pending: { calls: { id: string; name: string; args: unknown }[]; results: Map<string, boolean> } | undefined;
-  const closePending = (): void => {
-    if (!pending) return;
-    turns.push(
-      pending.calls.map((c) => ({ name: c.name, args: c.args, isError: pending?.results.get(c.id) ?? false })),
-    );
-    pending = undefined;
-  };
-  const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
-  for await (const line of rl) {
-    if (line.length > 2_000_000) continue;
-    let entry: any;
-    try { entry = JSON.parse(line); } catch { continue; }
-    if (entry.timestamp) {
-      const ms = Date.parse(entry.timestamp);
-      if (!startedMs) startedMs = ms;
-      endedMs = ms;
-    }
-    if (entry.type === "session") { cwd = entry.cwd ?? ""; continue; }
-    if (entry.type !== "message") continue;
-    const msg = entry.message;
-    if (msg.role === "user") {
-      users.push({ beforeTurn: pending ? turns.length : Math.max(turns.length - (turns.length ? 0 : 0), 0), steer: !!pending });
-      continue;
-    }
-    if (msg.role === "toolResult") {
-      if (pending) pending.results.set(String(msg.toolCallId), !!msg.isError);
-      continue;
-    }
-    if (msg.role === "assistant") {
-      closePending();
-      const calls = (Array.isArray(msg.content) ? msg.content : [])
-        .filter((c: any) => c.type === "toolCall")
-        .map((c: any) => ({ id: String(c.id), name: String(c.name), args: c.arguments }));
-      pending = { calls, results: new Map() };
-    }
-  }
-  closePending();
-  if (!cwd || turns.length === 0) return undefined;
-  const interventions: number[] = [];
-  for (const u of users) {
-    if (u.steer) { interventions.push(u.beforeTurn); continue; }
-    const prev = turns[u.beforeTurn - 1];
-    if (prev?.some((t) => t.isError)) interventions.push(u.beforeTurn);
-  }
-  return { cwd, startedMs, endedMs, turns, users, interventions };
-};
+const extract = async (file: string): Promise<Extracted | undefined> =>
+  extractLabSession(file);
 
 const main = async (): Promise<void> => {
   const rootDir = path.join(REAL_AGENT, "sessions");
@@ -142,9 +78,15 @@ const main = async (): Promise<void> => {
     }
     sessions.sort((a, b) => a.startedMs - b.startedMs);
     if (sessions.length === 0) continue;
-    const cwd = sessions[0].cwd;
+    const firstSession = sessions[0];
+    if (!firstSession) continue;
+    const cwd = firstSession.cwd;
     for (let i = 1; i < sessions.length; i++) {
-      allGapHours.push((sessions[i].startedMs - sessions[i - 1].endedMs) / 3_600_000);
+      const current = sessions[i];
+      const previous = sessions[i - 1];
+      if (current && previous) {
+        allGapHours.push((current.startedMs - previous.endedMs) / 3_600_000);
+      }
     }
 
     const detector = new SurpriseDetector();
@@ -159,13 +101,13 @@ const main = async (): Promise<void> => {
     // Alignment ledger: which fires led an intervention, which interventions
     // got a led fire, and by how many turns. Near-perfect means the advisor
     // spends tokens only where a human correction was coming anyway.
-    const LEAD_WINDOW = 6;
+    const LEAD_WINDOW = 20;
     let interventionsTotal = 0;
     let firesMatched = 0;
     let interventionsMatched = 0;
     let leadSum = 0;
-    let earlyFireCount = 0; let earlyFireAligned = 0;
-    let lateFireCount = 0; let lateFireAligned = 0;
+    let earlyFireCount = 0;
+    let lateFireCount = 0;
     const sessionFireTurns: number[] = [];
     for (const sess of sessions) {
       detector.reset();
@@ -175,10 +117,12 @@ const main = async (): Promise<void> => {
       const fireTurnsAtStart = sessionFireTurns.length;
       for (let t = 0; t < sess.turns.length; t++) {
         for (const u of sess.users.filter((u) => u.beforeTurn === t)) {
-          detector.observeInput(u.steer);
+          detector.observeInput(u.kind === "steer");
           tuning.noteHumanActivity();
         }
-        for (const tool of sess.turns[t]) {
+        const turn = sess.turns[t];
+        if (!turn) continue;
+        for (const tool of turn.tools) {
           detector.observeToolStart(tool.name, tool.args);
           detector.observeToolEnd(tool.isError);
         }
@@ -202,21 +146,26 @@ const main = async (): Promise<void> => {
       const sessionFires = fireNotes.length - fireNotesAtStart > 0
         ? sessionFireTurns.slice(fireTurnsAtStart)
         : [];
-      interventionsTotal += sess.interventions.length;
-      for (const f of sessionFires) {
-        const lead = sess.interventions.find((i) => i >= f && i - f <= LEAD_WINDOW);
-        if (lead !== undefined) { firesMatched++; leadSum += lead - f; }
-        if (f < 10) { earlyFireCount++; if (lead !== undefined) earlyFireAligned++; }
-        else { lateFireCount++; if (lead !== undefined) lateFireAligned++; }
-      }
-      for (const i of sess.interventions) {
-        if (sessionFires.some((f) => f <= i && i - f <= LEAD_WINDOW)) interventionsMatched++;
+      const evaluation = evaluateSession(
+        sess,
+        sessionFires,
+        ["steer", "abort"],
+        LEAD_WINDOW,
+      );
+      interventionsTotal += evaluation.labels;
+      firesMatched += evaluation.matches;
+      interventionsMatched += evaluation.matches;
+      leadSum += evaluation.leadSum;
+      for (const fire of sessionFires) {
+        if (fire < 10) earlyFireCount += 1;
+        else lateFireCount += 1;
       }
     }
     const st = tuning.state();
     sValues.sort((a, b) => a - b);
     const q = (p: number): number => sValues[Math.min(sValues.length - 1, Math.floor(p * sValues.length))] ?? 0;
-    const spanDays = ((sessions[sessions.length - 1].startedMs - sessions[0].startedMs) / 86_400_000).toFixed(0);
+    const lastSession = sessions.at(-1) ?? firstSession;
+    const spanDays = ((lastSession.startedMs - firstSession.startedMs) / 86_400_000).toFixed(0);
     log(`\n## ${displayPath(cwd)} — ${sessions.length} sessions / ${spanDays}d / ${totalTurns} turns`);
     log(`  fires=${fires} rate=${(1000 * fires / Math.max(totalTurns, 1)).toFixed(1)}/1000 turns (budget target: ${CONFIG.budget}/100)`);
     log(`  early-turn fires (t<10): ${earlyFires}/${fires} over ${earlyTurns} early turns (cold-start check)`);
@@ -225,19 +174,22 @@ const main = async (): Promise<void> => {
     log(`  outcomes: confirmed=${confirmed} ignored=${ignored} abstained=${Math.max(0, fires - confirmed - ignored)}`);
     const pct = (n: number, dn: number): string => (dn === 0 ? "—" : `${((100 * n) / dn).toFixed(0)}%`);
     log(`  alignment: interventions=${interventionsTotal} precision=${pct(firesMatched, fires)} (${firesMatched}/${fires}) recall=${pct(interventionsMatched, interventionsTotal)} mean-lead=${firesMatched ? (leadSum / firesMatched).toFixed(1) : "—"} turns (window ${LEAD_WINDOW}t)`);
-    log(`  split: early(t<10) aligned=${pct(earlyFireAligned, earlyFireCount)} (${earlyFireAligned}/${earlyFireCount}) · late aligned=${pct(lateFireAligned, lateFireCount)} (${lateFireAligned}/${lateFireCount})`);
+    log(`  split: early(t<10) fires=${earlyFireCount} · late fires=${lateFireCount}`);
     for (const note of fireNotes.slice(0, 12)) log(note);
     if (fireNotes.length > 12) log(`    … ${fireNotes.length - 12} more fires`);
   }
 
   const buckets: Record<string, number> = { "<1h": 0, "1-6h": 0, "6-36h": 0, "36h-3d": 0, "3-7d": 0, ">7d": 0 };
+  const increment = (key: keyof typeof buckets): void => {
+    buckets[key] = (buckets[key] ?? 0) + 1;
+  };
   for (const g of allGapHours) {
-    if (g < 1) buckets["<1h"]++;
-    else if (g < 6) buckets["1-6h"]++;
-    else if (g < 36) buckets["6-36h"]++;
-    else if (g < 72) buckets["36h-3d"]++;
-    else if (g < 168) buckets["3-7d"]++;
-    else buckets[">7d"]++;
+    if (g < 1) increment("<1h");
+    else if (g < 6) increment("1-6h");
+    else if (g < 36) increment("6-36h");
+    else if (g < 72) increment("36h-3d");
+    else if (g < 168) increment("3-7d");
+    else increment(">7d");
   }
   log(`\n## Inter-session gaps (per project, ${allGapHours.length} gaps)`);
   for (const [k, v] of Object.entries(buckets)) log(`  ${k.padEnd(8)} ${"█".repeat(Math.min(60, v))} ${v}`);

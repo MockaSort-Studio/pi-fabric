@@ -187,9 +187,17 @@ calibration kit: h sits mid-cliff between the S values of turns where you
 *would* have wanted someone to speak up and the background where you
 wouldn't; d sets how transient a disturbance may be before it cools.
 
+## Offline causal experiments
+
+The deterministic experiment runner, causal labeling protocol, negative results,
+and current token-economic frontier are documented in
+[Surprise experiments](surprise-experiments.md). The learned candidates remain
+offline evidence: none replaces the production counting sensor until prospective
+traces satisfy the promotion gates in that document.
+
 ## What this deliberately is not (yet)
 
-- **No learned scorers.** Isolation-forest path lengths and kernel-entropy
+- **No learned scorers in production.** Isolation-forest path lengths and kernel-entropy
   drift of embedded session state are alternative sources of $s_t$ behind the
   same accumulator interface; the gate does not care what produced the
   evidence. The counting estimator stays the default — free, deterministic,
