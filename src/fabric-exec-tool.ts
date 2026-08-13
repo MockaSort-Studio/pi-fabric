@@ -209,40 +209,6 @@ export const createFabricExecTool = (
         rendererState.fabricWriteBindingsCode = code;
         rendererState.fabricWriteBindings = fabricWriteBindings(code);
       }
-      if (mode === "compact") {
-        const display = normalizeRunDisplay(params.display);
-        const header = renderBoundedLines(
-          [
-            theme.fg("toolTitle", theme.bold(safeTerminalText(display?.name?.trim() || "Tool"))),
-            ...(display?.description
-              ? [theme.fg("dim", safeTerminalText(display.description))]
-              : []),
-          ],
-          theme,
-          codePreviewSettings.diffIntensity,
-        );
-        const writePreview = context.executionStarted
-          ? null
-          : renderFabricWriteArgumentPreview(
-              {
-                bindings: rendererState.fabricWriteBindings ?? [],
-                strings: params.strings,
-                expanded: context.expanded,
-                cwd: context.cwd,
-                settings: codePreviewSettings,
-                spinner,
-              },
-              theme,
-              context.invalidate,
-            );
-        if (!writePreview) return header;
-        const composite = new Container();
-        composite.addChild(header);
-        composite.addChild(new Text("\n", 0, 0));
-        composite.addChild(writePreview);
-        return composite;
-      }
-
       const writePreview = context.executionStarted
         ? null
         : renderFabricWriteArgumentPreview(
@@ -257,6 +223,25 @@ export const createFabricExecTool = (
             theme,
             context.invalidate,
           );
+      if (mode === "compact") {
+        const display = normalizeRunDisplay(params.display);
+        const header = renderBoundedLines(
+          [
+            theme.fg("toolTitle", theme.bold(safeTerminalText(display?.name?.trim() || "Tool"))),
+            ...(display?.description
+              ? [theme.fg("dim", safeTerminalText(display.description))]
+              : []),
+          ],
+          theme,
+          codePreviewSettings.diffIntensity,
+        );
+        if (!writePreview) return header;
+        const composite = new Container();
+        composite.addChild(header);
+        composite.addChild(new Text("\n", 0, 0));
+        composite.addChild(writePreview);
+        return composite;
+      }
 
       const lines = safeTerminalText(code).split("\n");
       const runDisplay = normalizeRunDisplay(params.display);
@@ -400,15 +385,9 @@ export const createFabricExecTool = (
       if (isPartial) {
         const progress = details.progress;
         if (audits.length === 0) {
+          const label = compact ? "Running…" : progress ?? "Running Fabric program…";
           return trackRows(
-            new Text(
-              theme.fg(
-                "warning",
-                `◆ ${safeTerminalText(progress ?? "Running Fabric program…")}`,
-              ),
-              0,
-              0,
-            ),
+            new Text(theme.fg("warning", `◆ ${safeTerminalText(label)}`), 0, 0),
           );
         }
         if (audits.length === 1) {

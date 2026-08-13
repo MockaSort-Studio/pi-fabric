@@ -266,6 +266,10 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           context.ui.notify("Choose either --global or --project.", "warning");
           return;
         }
+        if (flags.length > 1) {
+          context.ui.notify("Usage: /fabric display <full|compact> [--global|--project]", "warning");
+          return;
+        }
         const projectTrusted = context.isProjectTrusted();
         if (project && !projectTrusted) {
           context.ui.notify("Project scope is unavailable for an untrusted project.", "error");

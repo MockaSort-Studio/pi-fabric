@@ -377,6 +377,11 @@ describe("/fabric command", () => {
     );
     await handler!("display compact --global --project", context);
     expect(notify).toHaveBeenLastCalledWith("Choose either --global or --project.", "warning");
+    await handler!("display compact --global --global", context);
+    expect(notify).toHaveBeenLastCalledWith(
+      "Usage: /fabric display <full|compact> [--global|--project]",
+      "warning",
+    );
     await handler!("display compact --project", context);
     expect(notify).toHaveBeenLastCalledWith(
       "Project scope is unavailable for an untrusted project.",

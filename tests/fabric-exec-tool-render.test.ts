@@ -72,6 +72,8 @@ const renderResult = (
   renderContext(args, { expanded: options.expanded ?? false, isPartial: options.partial ?? false, ...options.context }) as never,
 ).render(options.width ?? 120).join("\n");
 
+const nestedRows = (rendered: string): string[] => rendered.split("\n").slice(1);
+
 describe("registered fabric_exec compact transcript rendering", () => {
   it("keeps full source while compact elevates intent and falls back to Tool for absent or blank names", () => {
     const args = {
@@ -230,7 +232,7 @@ describe("registered fabric_exec compact transcript rendering", () => {
     expect(compact.split("\n").slice(1)).toEqual(full.split("\n").slice(1));
   });
 
-  it("uses Tools for live grouped activity without changing its nested calls", () => {
+  it("uses a compact pre-tool live status and Tools for grouped activity without changing its nested calls", () => {
     const args = { code: "await Promise.all([]);" };
     const details = {
       audits: [
@@ -241,12 +243,21 @@ describe("registered fabric_exec compact transcript rendering", () => {
     };
     const full = renderResult(toolFor(stateFor("full")), args, details, "", { partial: true });
     const compact = renderResult(toolFor(stateFor("compact")), args, details, "", { partial: true });
+    const compactBeforeFirstTool = renderResult(
+      toolFor(stateFor("compact")),
+      args,
+      { progress: "Running Fabric program…", audits: [], phases: [] },
+      "",
+      { partial: true },
+    );
 
     expect(full).toContain("Fabric running");
     expect(compact).toContain("Tools running");
     expect(full).toContain("live-string-headline");
     expect(compact).toContain("live-string-headline");
     expect(compact.split("\n").slice(1)).toEqual(full.split("\n").slice(1));
+    expect(compactBeforeFirstTool).toContain("Running…");
+    expect(compactBeforeFirstTool).not.toContain("Fabric program");
   });
 
   it("retains specialized write previews while compact hides outer source", () => {
@@ -266,6 +277,152 @@ describe("registered fabric_exec compact transcript rendering", () => {
     expect(preview).toContain("README.md");
     expect(preview).toContain("Visible write preview");
     expect(preview).not.toContain("await pi.write");
+  });
+
+  it("keeps specialized collapsed and expanded core detail plus hidden-call bounds unchanged", () => {
+    const args = { code: "await Promise.all([]);" };
+    const details = {
+      success: true,
+      audits: [
+        {
+          ref: "pi.read",
+          provider: "pi",
+          tool: "read",
+          args: { path: "src/example.ts" },
+          result: "export const preview = true;",
+          success: true,
+        },
+        {
+          ref: "pi.grep",
+          provider: "pi",
+          tool: "grep",
+          args: { pattern: "needle", path: "src", literal: true },
+          result: "src/example.ts:3: needle\nsrc/example.ts-4- context",
+          success: true,
+        },
+        {
+          ref: "pi.find",
+          provider: "pi",
+          tool: "find",
+          args: { pattern: "*.ts", path: "src" },
+          result: "src/example.ts",
+          success: true,
+        },
+        {
+          ref: "pi.ls",
+          provider: "pi",
+          tool: "ls",
+          args: { path: "src" },
+          result: "example.ts",
+          success: true,
+        },
+        {
+          ref: "pi.edit",
+          provider: "pi",
+          tool: "edit",
+          args: { path: "src/example.ts", edits: [{ oldText: "before", newText: "after" }] },
+          result: { details: { diff: "-before\n+after" } },
+          success: true,
+        },
+        {
+          ref: "pi.write",
+          provider: "pi",
+          tool: "write",
+          args: { path: "src/new.ts", content: "export const preview = true;" },
+          preview: { details: { codePreviewBeforeWrite: { kind: "content", content: "" } }, writeBeforeCaptured: true },
+          success: true,
+        },
+        ...Array.from({ length: 7 }, (_, index) => ({
+          ref: "extensions.remote",
+          provider: "extensions",
+          tool: "remote",
+          args: { strings: `hidden-call-${index}` },
+          success: true,
+        })),
+      ],
+      phases: [],
+    };
+
+    for (const expanded of [false, true]) {
+      const full = renderResult(toolFor(stateFor("full")), args, details, "", { expanded, theme: semanticTheme });
+      const compact = renderResult(toolFor(stateFor("compact")), args, details, "", { expanded, theme: semanticTheme });
+      expect(nestedRows(compact)).toEqual(nestedRows(full));
+    }
+  });
+
+  it("keeps agent and actor preview trees plus failed nested calls unchanged", () => {
+    const args = { code: "await agents.wait({ id: 'worker' });" };
+    const details = {
+      success: false,
+      audits: [
+        {
+          ref: "agents.wait",
+          provider: "agents",
+          tool: "wait",
+          args: { id: "worker" },
+          success: true,
+          preview: {
+            kind: "fabric-agent-tools",
+            id: "worker",
+            name: "researcher",
+            status: "completed",
+            owner: "agent",
+            tools: [
+              {
+                id: "worker-edit",
+                kind: "tool",
+                label: "edit",
+                toolName: "edit",
+                status: "completed",
+                args: { path: "src/worker.ts", edits: [{ oldText: "old", newText: "new" }] },
+                result: { details: { diff: "-old\n+new" } },
+              },
+            ],
+            agents: [
+              {
+                id: "actor",
+                name: "reviewer",
+                status: "failed",
+                owner: "actor",
+                currentTool: "bash",
+                tools: [
+                  {
+                    id: "actor-bash",
+                    kind: "tool",
+                    label: "bash",
+                    toolName: "bash",
+                    status: "failed",
+                    args: { command: "echo actor" },
+                    result: { output: "actor failure" },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        {
+          ref: "extensions.remote",
+          provider: "extensions",
+          tool: "remote",
+          args: { strings: "failed-child" },
+          success: false,
+          error: "remote child failed",
+        },
+      ],
+      phases: [],
+    };
+    for (const expanded of [false, true]) {
+      const full = renderResult(toolFor(stateFor("full")), args, details, "outer failure", {
+        expanded,
+        theme: semanticTheme,
+      });
+      const compact = renderResult(toolFor(stateFor("compact")), args, details, "outer failure", {
+        expanded,
+        theme: semanticTheme,
+      });
+
+      expect(nestedRows(compact)).toEqual(nestedRows(full));
+    }
   });
 
   it("invalidates completed cards so their current display preference redraws immediately", () => {
