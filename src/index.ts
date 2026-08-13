@@ -62,6 +62,7 @@ import {
 } from "./protocol.js";
 import type { AgentToolResultMessage } from "./agents/types.js";
 import { FabricUiController } from "./ui/controller.js";
+import { FabricToolDisplayController } from "./ui/tool-display.js";
 import { configureHighlighting } from "./ui/highlight.js";
 import { formatFabricValue } from "./ui/structured.js";
 import { truncateMiddle } from "./util.js";
@@ -146,6 +147,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   const pendingHandoffs = new Map<string, PendingFabricHandoff>();
   const toolOwnership = new FabricToolOwnership(pi);
   const fabricUi = new FabricUiController(state, codePreviewSettings);
+  const toolDisplay = new FabricToolDisplayController();
 
   const capturePolicy = () => effectiveToolCaptureConfig(state.config);
   // Advisor slices refresh independently: captured tools only while they are
@@ -216,6 +218,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     codePreviewSettings,
     pendingHandoffs,
     decorateShell,
+    toolDisplay,
   );
   const refreshCodePreviewSettings = (): void => {
     Object.assign(codePreviewSettings, state.config.codePreview);
@@ -365,6 +368,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   pi.on("session_start", async (_event, context) => {
     pendingHandoffs.clear();
     directToolApproval.clear();
+    toolDisplay.clear();
     fabricUi.stop();
     suspendToolCapture();
     capabilityAdvisor.reset();
@@ -382,7 +386,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       refreshCodePreviewSettings();
       Object.assign(
         fabricTool,
-        createFabricExecTool(state, codePreviewSettings, pendingHandoffs, decorateShell),
+        createFabricExecTool(state, codePreviewSettings, pendingHandoffs, decorateShell, toolDisplay),
       );
     } catch (error) {
       console.warn("[pi-fabric] Failed to refresh code preview settings.", error);
@@ -683,6 +687,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     try {
       pendingHandoffs.clear();
       directToolApproval.clear();
+      toolDisplay.clear();
       uninstallHaltOnEscape();
       fabricUi.stop();
       suspendToolCapture();
@@ -710,6 +715,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     suspendToolCapture,
     autoArmPrewalk,
     refreshCodePreviewSettings,
+    refreshToolDisplay: () => toolDisplay.refresh(),
   });
 }
 

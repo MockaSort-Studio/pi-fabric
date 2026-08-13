@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { highlightCode, languageFromPath } from "./highlight.js";
 import { headlineArg } from "../core/call-preview.js";
-import { coreToolTitle, renderCoreToolBody } from "./core-tool-render.js";
+import { coreToolTitle, isCoreToolAudit, renderCoreToolBody } from "./core-tool-render.js";
 import { isFabricAgentToolPreview, type FabricAgentToolPreviewNode, type FabricTranscriptEntry } from "./transcript.js";
 import { fabricStringLiterals, fabricWriteBindings, type FabricWriteBinding } from "./fabric-code-parser.js";
 export { fabricWriteBindings, type FabricWriteBinding } from "./fabric-code-parser.js";
@@ -98,8 +98,12 @@ export const safeTerminalText = (value: string): string =>
     return `\\x${code}`;
   });
 
-const truncateBoundedLine = (line: string, width: number): string => {
-  const truncated = truncateToWidth(line, width, "");
+const truncateBoundedLine = (
+  line: string,
+  width: number,
+  marker = "",
+): string => {
+  const truncated = truncateToWidth(line, width, marker);
   if (!truncated.endsWith(FULL_SGR_RESET)) return truncated;
 
   // truncateToWidth adds a full reset when clipping. Inside Pi's default tool Box,
@@ -116,6 +120,7 @@ class BoundedLineList implements Component {
     private readonly theme?: Theme,
     private readonly diffIntensity: DiffBackgroundIntensity = "off",
     private readonly wrapLineIndexes?: ReadonlySet<number>,
+    private readonly foldLineIndexes?: ReadonlySet<number>,
     private readonly inheritBackground = false,
   ) {}
 
@@ -138,6 +143,14 @@ class BoundedLineList implements Component {
           renderedRows = wrapped.map(
             (row, index) => index === 0 ? row : continuationIndent + row,
           );
+        } else if (this.foldLineIndexes?.has(lineIndex) && visibleWidth(line) > width) {
+          const hint = this.theme
+            ? this.theme.fg("dim", `… detail hidden · ${expandHint(this.theme)}`)
+            : "… detail hidden";
+          renderedRows = [
+            truncateBoundedLine(line, width, "…"),
+            truncateBoundedLine(hint, width),
+          ];
         } else renderedRows = [truncateBoundedLine(line, width)];
         rows.push(...(
           this.inheritBackground
@@ -176,6 +189,7 @@ class BoundedLineList implements Component {
       this.theme,
       this.diffIntensity,
       this.wrapLineIndexes,
+      this.foldLineIndexes,
       true,
     );
   }
@@ -209,7 +223,14 @@ export const renderBoundedLines = (
   theme?: Theme,
   diffIntensity: DiffBackgroundIntensity = "off",
   wrapLineIndexes?: ReadonlySet<number>,
-): Component => new BoundedLineList(lines, theme, diffIntensity, wrapLineIndexes);
+  foldLineIndexes?: ReadonlySet<number>,
+): Component => new BoundedLineList(
+  lines,
+  theme,
+  diffIntensity,
+  wrapLineIndexes,
+  foldLineIndexes,
+);
 
 export const fabricMulticallCallLimit = (expanded: boolean): number =>
   expanded ? EXPANDED_MULTICALL_LIMIT : COLLAPSED_MULTICALL_LIMIT;
@@ -603,12 +624,18 @@ const callHeadlinePreview = (audit: FabricRenderAudit): string | undefined => {
     || structuralCallDetail(provider, tool, args, audit.result);
 };
 
+type NestedCallTitleOptions = {
+  hideStrings?: boolean;
+  compact?: boolean;
+};
+
 /** Compact one-line title for a nested Fabric call, e.g. `read src/index.ts` or `$ ls -la`. */
 export function nestedCallTitle(
   audit: FabricRenderAudit,
   theme: Theme,
   invalidate?: () => void,
-  core?: { cwd: string; settings: CodePreviewSettings },
+  core?: { cwd: string; settings: CodePreviewSettings; compact?: boolean },
+  options: NestedCallTitleOptions = {},
 ): string {
   const coreTitle = core
     ? coreToolTitle(audit, theme, { ...core, ...(invalidate ? { invalidate } : {}) })
@@ -618,23 +645,28 @@ export function nestedCallTitle(
   const provider = audit.provider ?? ref.split(".")[0] ?? ref;
   const tool = audit.tool ?? ref.split(".")[1] ?? ref;
   const title = theme.fg("toolTitle", theme.bold(tool));
-  const args = audit.args ?? {};
+  const rawArgs = audit.args ?? {};
+  const args = options.hideStrings
+    ? Object.fromEntries(Object.entries(rawArgs).filter(([key]) => key !== "strings"))
+    : rawArgs;
   const providerDetail = providerCallDetail(
     provider,
     tool,
     args,
     audit.result,
     audit.preview,
-    audit.previewHeadline,
+    options.hideStrings ? undefined : audit.previewHeadline,
   );
   if (providerDetail) return `${title} ${theme.fg("accent", providerDetail)}`;
   const command = argString(args, "command");
   if (command) {
     const firstLine = command.split("\n")[0] ?? "";
-    const highlighted =
-      firstLine.length > 0 ? highlightCode(firstLine, "bash", invalidate) : null;
-    const cmd =
-      highlighted && highlighted[0] ? highlighted[0] : theme.fg("accent", firstLine);
+    const highlighted = !options.compact && firstLine.length > 0
+      ? highlightCode(firstLine, "bash", invalidate)
+      : null;
+    const cmd = highlighted && highlighted[0]
+      ? highlighted[0]
+      : theme.fg(options.compact ? "dim" : "accent", firstLine);
     return `${title} ${theme.fg("dim", "$")} ${cmd}`;
   }
   const path = argString(args, "path");
@@ -647,11 +679,87 @@ export function nestedCallTitle(
   else {
     detail = headlineArg(args)
       || structuralCallDetail(provider, tool, args, audit.result)
-      || audit.previewHeadline
+      || (options.hideStrings ? "" : audit.previewHeadline)
       || "";
   }
   return detail ? `${title} ${theme.fg("accent", detail)}` : title;
 }
+
+const COMPACT_DYNAMIC_ARGUMENT_CHARS = 16_000;
+const COMPACT_DYNAMIC_COLLAPSED_CHARS = 320;
+const COMPACT_DYNAMIC_MAX_DEPTH = 8;
+const COMPACT_DYNAMIC_MAX_KEYS = 64;
+const COMPACT_DYNAMIC_MAX_ITEMS = 64;
+
+const compactDynamicValue = (
+  value: unknown,
+  depth = 0,
+  ancestors = new Set<object>(),
+): unknown => {
+  if (value === null || typeof value === "boolean" || typeof value === "number") return value;
+  if (typeof value === "string") {
+    return value.length <= COMPACT_DYNAMIC_ARGUMENT_CHARS
+      ? value
+      : `${value.slice(0, COMPACT_DYNAMIC_ARGUMENT_CHARS - 1)}…`;
+  }
+  if (typeof value !== "object" || depth >= COMPACT_DYNAMIC_MAX_DEPTH) return String(value);
+  if (ancestors.has(value)) return "[circular]";
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const items = value
+        .slice(0, COMPACT_DYNAMIC_MAX_ITEMS)
+        .map((item) => compactDynamicValue(item, depth + 1, ancestors));
+      if (value.length > items.length) items.push(`[${value.length - items.length} items omitted]`);
+      return items;
+    }
+    const output: Record<string, unknown> = {};
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => key !== "strings")
+      .slice(0, COMPACT_DYNAMIC_MAX_KEYS);
+    for (const [key, item] of entries) output[key] = compactDynamicValue(item, depth + 1, ancestors);
+    const keyCount = Object.keys(value as Record<string, unknown>).filter((key) => key !== "strings").length;
+    if (keyCount > entries.length) output._omitted = `${keyCount - entries.length} keys omitted`;
+    return output;
+  } finally {
+    ancestors.delete(value);
+  }
+};
+
+const compactDynamicArguments = (args: Record<string, unknown>): Record<string, unknown> => {
+  const value = compactDynamicValue(args);
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+};
+
+export const isCompactDynamicAudit = (audit: FabricRenderAudit): boolean => {
+  if (isCoreToolAudit(audit)) return false;
+  const provider = audit.provider ?? audit.ref.split(".")[0] ?? "";
+  return provider !== "agents" && provider !== "mesh";
+};
+
+const compactJson = (args: Record<string, unknown>, expanded: boolean): string => {
+  try {
+    return JSON.stringify(compactDynamicArguments(args), null, expanded ? 2 : undefined) ?? "{}";
+  } catch {
+    return "[arguments unavailable]";
+  }
+};
+
+export const renderCompactDynamicArguments = (
+  audit: FabricRenderAudit,
+  theme: Theme,
+  expanded: boolean,
+): { body: string; hidden: number } | null => {
+  const args = compactDynamicArguments(audit.args ?? {});
+  if (Object.keys(args).length === 0) return null;
+  const json = compactJson(args, expanded);
+  const max = expanded ? COMPACT_DYNAMIC_ARGUMENT_CHARS : COMPACT_DYNAMIC_COLLAPSED_CHARS;
+  const hidden = json.length > max ? 1 : 0;
+  const shown = hidden > 0 ? `${json.slice(0, Math.max(1, max - 1))}…` : json;
+  return { body: theme.fg("toolOutput", safeTerminalText(shown)), hidden };
+};
 
 const transcriptToolAudit = (entry: FabricTranscriptEntry): FabricRenderAudit => {
   const rawName = entry.toolName ?? entry.label;
@@ -686,8 +794,10 @@ const AGENT_PREVIEW_RENDER_MAX_DEPTH = 6;
 type AgentToolPreviewRenderOptions = {
   expanded: boolean;
   compact?: boolean | undefined;
+  compactToolDetails?: boolean | undefined;
+  hideStrings?: boolean | undefined;
   showTools?: boolean | undefined;
-  core?: { cwd: string; settings: CodePreviewSettings } | undefined;
+  core?: { cwd: string; settings: CodePreviewSettings; compact?: boolean } | undefined;
   invalidate?: (() => void) | undefined;
 };
 
@@ -703,6 +813,7 @@ const previewStatusGlyph = (status: string | undefined, theme: Theme): string =>
 const descendantBreadcrumb = (
   node: FabricAgentToolPreviewNode,
   theme: Theme,
+  options: Pick<AgentToolPreviewRenderOptions, "core" | "compactToolDetails" | "hideStrings">,
 ): string | undefined => {
   let tail: FabricAgentToolPreviewNode | undefined =
     node.agents?.find((child) => child.status === "running") ?? node.agents?.[0];
@@ -724,7 +835,16 @@ const descendantBreadcrumb = (
     .map((name) => theme.fg("accent", safeTerminalText(name)))
     .join(theme.fg("dim", " › "));
   const tool = shownTool
-    ? theme.fg("dim", " › ") + nestedCallTitle(transcriptToolAudit(shownTool), theme)
+    ? theme.fg("dim", " › ") + nestedCallTitle(
+      transcriptToolAudit(shownTool),
+      theme,
+      undefined,
+      options.compactToolDetails ? options.core : undefined,
+      {
+        ...(options.hideStrings ? { hideStrings: true } : {}),
+        ...(options.compactToolDetails ? { compact: true } : {}),
+      },
+    )
     : "";
   // Only abnormal states earn a glyph; a terminal "›" would duplicate the
   // preview-line chevron this crumb is appended after.
@@ -741,7 +861,15 @@ export const renderAgentToolPreviewLines = (
   options: AgentToolPreviewRenderOptions,
 ): string[] => {
   if (!isFabricAgentToolPreview(audit.preview)) return [];
-  return renderAgentToolPreviewNodeLines(audit.preview, theme, options, 0);
+  return renderAgentToolPreviewNodeLines(
+    audit.preview,
+    theme,
+    {
+      ...options,
+      compactToolDetails: options.compactToolDetails ?? options.core?.compact ?? false,
+    },
+    0,
+  );
 };
 
 const renderAgentToolPreviewNodeLines = (
@@ -779,7 +907,7 @@ const renderAgentToolPreviewNodeLines = (
     options.showTools !== false &&
     preview.agents !== undefined &&
     preview.agents.length > 0
-      ? descendantBreadcrumb(preview, theme)
+      ? descendantBreadcrumb(preview, theme, options)
       : undefined;
   const runningTool = tools.slice().reverse().find((entry) => entry.status === "running");
   const latestTool = tools.at(-1);
@@ -813,6 +941,10 @@ const renderAgentToolPreviewNodeLines = (
       theme,
       options.invalidate,
       options.core,
+      {
+        ...(options.hideStrings ? { hideStrings: true } : {}),
+        ...(options.compactToolDetails ? { compact: true } : {}),
+      },
     );
     if (lines.length === 0) {
       lines.push(`${chevron} ${title}`);
@@ -834,6 +966,7 @@ const renderAgentToolPreviewNodeLines = (
       settings: options.core.settings,
       expanded: true,
       maxLines: EXPANDED_AGENT_TOOL_BODY_LINES,
+      ...(options.core.compact ? { compact: true } : {}),
       ...(options.invalidate ? { invalidate: options.invalidate } : {}),
     });
     if (!body) continue;
@@ -892,9 +1025,10 @@ export interface FabricMulticallPartialInput {
   progress?: string | undefined;
   expanded: boolean;
   preview?: FabricMulticallPreview | undefined;
-  core?: { cwd: string; settings: CodePreviewSettings } | undefined;
+  core?: { cwd: string; settings: CodePreviewSettings; compact?: boolean } | undefined;
   showAgentToolPreview?: boolean | undefined;
   spinner?: string | undefined;
+  compactDynamic?: boolean | undefined;
 }
 
 export const singleCallProgressLine = (
@@ -927,6 +1061,7 @@ export const renderFabricMulticallPartial = (
 
   const rows = [header];
   const wrapLineIndexes = input.expanded ? new Set<number>() : undefined;
+  const foldLineIndexes = input.expanded ? undefined : new Set<number>();
   if (input.phases.length > 0) {
     rows.push(theme.fg("dim", input.phases.map((phase) => `◆ ${phase}`).join("  ")));
   }
@@ -944,11 +1079,18 @@ export const renderFabricMulticallPartial = (
     const previewLines = renderAgentToolPreviewLines(audit, theme, {
       expanded: input.expanded,
       compact: !input.expanded,
+      ...(input.compactDynamic ? { hideStrings: true } : {}),
       showTools: input.showAgentToolPreview,
       core: input.core,
       ...(invalidate ? { invalidate } : {}),
     });
-    let callRow = `${glyph} ${nestedCallTitle(audit, theme, invalidate, input.core)}`;
+    let callRow = `${glyph} ${nestedCallTitle(
+      audit,
+      theme,
+      invalidate,
+      input.core,
+      input.compactDynamic ? { hideStrings: true } : {},
+    )}`;
     if (audit.success === false && audit.error) {
       callRow += ` ${theme.fg("dim", "›")} ${theme.fg("error", truncateOneLine(safeTerminalText(audit.error), 240))}`;
     } else if (previewLines[0]) {
@@ -956,14 +1098,29 @@ export const renderFabricMulticallPartial = (
     }
     if (previewLines.length > 0) wrapLineIndexes?.add(rows.length);
     rows.push(callRow);
-    if (audit.success !== false && input.preview?.auditIndex === auditIndex) {
-      for (const line of input.preview.body.split("\n")) rows.push(`  ${line}`);
-      if (input.preview.hidden > 0) {
+    const dynamicBody = input.compactDynamic && isCompactDynamicAudit(audit)
+      ? renderCompactDynamicArguments(audit, theme, input.expanded)
+      : undefined;
+    const body = dynamicBody ?? (
+      audit.success !== false && input.preview?.auditIndex === auditIndex
+        ? input.preview
+        : undefined
+    );
+    if (body) {
+      for (const row of body.body.split("\n")) {
+        if (dynamicBody && input.expanded) wrapLineIndexes?.add(rows.length);
+        if (dynamicBody && !input.expanded && body.hidden === 0) {
+          foldLineIndexes?.add(rows.length);
+        }
+        rows.push(`  ${row}`);
+      }
+      if (body.hidden > 0) {
+        const label = dynamicBody
+          ? `  … ${body.hidden} detail hidden`
+          : `  … ${body.hidden} more ${body.hidden === 1 ? "line" : "lines"}`;
         rows.push(
-          theme.fg(
-            "dim",
-            `  … ${input.preview.hidden} more ${input.preview.hidden === 1 ? "line" : "lines"}`,
-          ),
+          theme.fg("dim", label) +
+            (dynamicBody && !input.expanded ? theme.fg("dim", " · ") + expandHint(theme) : ""),
         );
       }
     }
@@ -988,6 +1145,7 @@ export const renderFabricMulticallPartial = (
     theme,
     input.core?.settings.diffIntensity ?? "off",
     wrapLineIndexes,
+    foldLineIndexes,
   );
 };
 

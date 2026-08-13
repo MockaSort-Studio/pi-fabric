@@ -1,7 +1,8 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import type { CapturedToolCatalog } from "../capture/catalog.js";
 import type { FabricActorHostEvent } from "../actors/types.js";
+import { saveFabricConfig, type FabricConfigScope } from "../config.js";
 import type { FabricState } from "../fabric-state.js";
 import { armFabricPrewalkSession } from "../prewalk/arm.js";
 import { truncateMiddle } from "../util.js";
@@ -18,6 +19,7 @@ interface FabricCommandDeps {
   suspendToolCapture: () => void;
   autoArmPrewalk: (context: ExtensionContext) => Promise<void>;
   refreshCodePreviewSettings?: () => void;
+  refreshToolDisplay?: () => void;
 }
 
 const extractContentText = (content: unknown): string => {
@@ -110,6 +112,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         "status",
         "dashboard",
         "settings",
+        "display",
         "prewalk",
         "reload",
         "providers",
@@ -146,6 +149,15 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
       }
       const subcommand = argumentPrefix.slice(0, firstSpace);
       const idPrefix = argumentPrefix.slice(firstSpace + 1);
+      if (subcommand === "display") {
+        const args = idPrefix.trim().split(/\s+/).filter(Boolean);
+        const selectingMode = args.length === 0 || (args.length === 1 && !/\s$/.test(idPrefix));
+        const flagPrefix = /\s$/.test(idPrefix) ? "" : args.at(-1) ?? "";
+        const values = selectingMode
+          ? ["full", "compact"].filter((value) => value.startsWith(args[0] ?? ""))
+          : ["--global", "--project"].filter((value) => value.startsWith(flagPrefix));
+        return values.length > 0 ? values.map((value) => ({ value, label: value })) : null;
+      }
       if (!state.initialized) return null;
       if (subcommand === "import") {
         const items: AutocompleteItem[] = [];
@@ -231,10 +243,47 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           state,
           applyFabricMode,
           capturedTools,
-          ...(deps.refreshCodePreviewSettings
-            ? { onConfigApplied: deps.refreshCodePreviewSettings }
-            : {}),
+          onConfigApplied: () => {
+            deps.refreshCodePreviewSettings?.();
+            deps.refreshToolDisplay?.();
+          },
         });
+        return;
+      }
+      if (command === "display") {
+        const mode = argumentsList[0];
+        const flags = argumentsList.slice(1);
+        if (
+          (mode !== "full" && mode !== "compact") ||
+          flags.some((flag) => flag !== "--global" && flag !== "--project")
+        ) {
+          context.ui.notify("Usage: /fabric display <full|compact> [--global|--project]", "warning");
+          return;
+        }
+        const global = flags.includes("--global");
+        const project = flags.includes("--project");
+        if (global && project) {
+          context.ui.notify("Choose either --global or --project.", "warning");
+          return;
+        }
+        const projectTrusted = context.isProjectTrusted();
+        if (project && !projectTrusted) {
+          context.ui.notify("Project scope is unavailable for an untrusted project.", "error");
+          return;
+        }
+        const scope: FabricConfigScope = global ? "global" : project ? "project" : projectTrusted ? "project" : "global";
+        try {
+          saveFabricConfig(
+            { cwd: context.cwd, agentDir: getAgentDir(), projectTrusted, scope },
+            { ui: { toolDisplay: mode } },
+          );
+        } catch (error) {
+          context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+          return;
+        }
+        state.reloadConfig(context);
+        deps.refreshToolDisplay?.();
+        context.ui.notify(`Fabric tool display: ${mode} (${scope})`, "info");
         return;
       }
       if (command === "prewalk") {

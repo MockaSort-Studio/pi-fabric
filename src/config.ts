@@ -25,6 +25,7 @@ export type FabricAgentTransport =
   | "herdr";
 export type FabricAgentRunner = "pi" | "claude" | "veda";
 export type FabricUiWidgetMode = "auto" | "always" | "hidden";
+type FabricToolDisplayMode = "full" | "compact";
 export type FabricResultFormat = "auto" | "yaml" | "json" | "text";
 export type FabricPrewalkMode = "in-place" | "trajectory";
 export type FabricExecutorRuntime = "quickjs" | "node-process";
@@ -173,6 +174,7 @@ interface FabricUiConfig {
   eventHistory: number;
   haltOnEscape: boolean;
   showAgentToolPreview: boolean;
+  toolDisplay: FabricToolDisplayMode;
   updateDebounceMs: number;
 }
 
@@ -356,6 +358,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     eventHistory: 80,
     haltOnEscape: true,
     showAgentToolPreview: true,
+    toolDisplay: "full",
     updateDebounceMs: 100,
   },
   compaction: {
@@ -509,6 +512,11 @@ const objectValue = (value: unknown): Record<string, unknown> =>
 
 const widgetModeValue = (value: unknown, fallback: FabricUiWidgetMode): FabricUiWidgetMode =>
   value === "auto" || value === "always" || value === "hidden" ? value : fallback;
+
+const toolDisplayModeValue = (
+  value: unknown,
+  fallback: FabricToolDisplayMode,
+): FabricToolDisplayMode => value === "full" || value === "compact" ? value : fallback;
 
 const executorRuntimeValue = (
   value: unknown,
@@ -851,6 +859,10 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       showAgentToolPreview: booleanValue(
         ui.showAgentToolPreview ?? ui.showNestedToolCalls,
         DEFAULT_FABRIC_CONFIG.ui.showAgentToolPreview,
+      ),
+      toolDisplay: toolDisplayModeValue(
+        ui.toolDisplay,
+        DEFAULT_FABRIC_CONFIG.ui.toolDisplay,
       ),
       // Renamed from ui.nestedToolDebounceMs (v3): the window coalesces every
       // live fabric_exec card update — nested calls, progress, agent previews.

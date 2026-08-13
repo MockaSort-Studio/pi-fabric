@@ -36,6 +36,7 @@ export interface CoreToolRenderOptions {
   expanded: boolean;
   maxLines: number;
   invalidate?: () => void;
+  compact?: boolean;
 }
 
 export interface RenderedCoreToolBody {
@@ -1376,11 +1377,11 @@ const renderBash = (
   // can't drift into the plain fallback as duplicated lines.
   const displayCommand = escapeControlChars(command.replace(/\r\n/g, "\n"));
   const commandLines = displayCommand.split("\n");
-  const highlightedCommand = command
+  const highlightedCommand = !options.compact && command
     ? highlightCode(displayCommand, "bash", options.invalidate)
     : null;
   const lines = commandLines.slice(1).map((line, index) =>
-    `${theme.fg("dim", "  ")}${highlightedCommand?.[index + 1] ?? theme.fg("accent", line)}`,
+    `${theme.fg("dim", "  ")}${highlightedCommand?.[index + 1] ?? theme.fg(options.compact ? "dim" : "accent", line)}`,
   );
   const output = resultOutput(audit)?.replace(/\r?\n$/, "") ?? "";
   if (!output || output === "(no output)") {
@@ -1477,7 +1478,7 @@ export const renderCoreToolBody = (
 export const coreToolTitle = (
   audit: FabricRenderAudit,
   theme: Theme,
-  options: Pick<CoreToolRenderOptions, "cwd" | "settings" | "invalidate">,
+  options: Pick<CoreToolRenderOptions, "cwd" | "settings" | "invalidate" | "compact">,
 ): string | null => {
   observePiTheme(theme);
   if (!coreToolRendererEnabled(audit, options.settings) || !audit.tool) return null;
@@ -1497,10 +1498,12 @@ export const coreToolTitle = (
   if (audit.tool === "bash") {
     const command = bashCommand(audit);
     const firstLine = command.split("\n")[0] ?? "";
-    const highlighted = firstLine ? highlightCode(firstLine, "bash", options.invalidate)?.[0] : undefined;
+    const highlighted = !options.compact && firstLine
+      ? highlightCode(firstLine, "bash", options.invalidate)?.[0]
+      : undefined;
     const timeout = numberOf(audit.args?.timeout);
     const warnings = options.settings.bashWarnings ? bashWarnings(command) : [];
-    return `${title} ${theme.fg("dim", "$")} ${highlighted ?? theme.fg("accent", escapeControlChars(firstLine))}${metadata(theme, [
+    return `${title} ${theme.fg("dim", "$")} ${highlighted ?? theme.fg(options.compact ? "dim" : "accent", escapeControlChars(firstLine))}${metadata(theme, [
       timeout !== undefined ? `timeout ${timeout}s` : undefined,
       warnings.length > 0 ? `⚠ ${warnings.join(", ")}` : undefined,
       timing,

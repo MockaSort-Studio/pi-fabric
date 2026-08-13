@@ -57,6 +57,7 @@ const APPROVAL_MODES = ["allow", "ask", "auto", "deny"] as const;
 const RUNNERS = ["pi", "claude", "veda"] as const;
 const TRANSPORTS = ["auto", "process", "tmux", "screen", "localterm", "herdr"] as const;
 const WIDGET_MODES = ["auto", "always", "hidden"] as const;
+const TOOL_DISPLAY_MODES = ["full", "compact"] as const;
 const ADVISORY_MODES = ["hidden", "enabled", "disabled"] as const satisfies readonly FabricCapabilityAdvisoryMode[];
 const ADVISORY_THRESHOLDS = ["0.6", "0.9", "1.4", "2.0"] as const;
 const ADVISORY_SESSION_CAPS = ["1", "3", "5", "10"] as const;
@@ -1449,6 +1450,10 @@ export const buildFabricSettingsItems = (
           setting("ui.widget", "Widget", config.ui.widget, {
             description: "When to show the activity widget above the editor.",
             values: WIDGET_MODES,
+          }),
+          setting("ui.toolDisplay", "Tool display", config.ui.toolDisplay, {
+            description: "Show full Fabric TypeScript or a compact intent-and-tools transcript.",
+            values: TOOL_DISPLAY_MODES,
           }),
           setting(
             "ui.showAgentToolPreview",
