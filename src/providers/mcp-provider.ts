@@ -1,9 +1,8 @@
 import path from "node:path";
-import {
-  createRuntime,
-  type Runtime,
-  type ServerDefinition,
-  type ServerToolInfo,
+import type {
+  Runtime,
+  ServerDefinition,
+  ServerToolInfo,
 } from "mcporter";
 import type { FabricMcpConfig } from "../config.js";
 import type {
@@ -119,28 +118,9 @@ const normalizeMcpResult = (result: unknown): unknown => {
   };
 };
 
-// Re-exported from ref-names so existing importers (host index, advisory,
-// ash-replay) keep their paths; that module documents the shared contract.
-export { sanitizeMcpRefPart };
-
-// Advisory-facing view of an MCP descriptor: namespace gains the "mcp:"
-// marker (distinct from extension source namespaces) and the action name uses
-// the sanitized call path the model actually types in fabric_exec.
-export const toMcpAdvisoryDescriptor = (
-  descriptor: FabricActionDescriptor,
-): FabricActionDescriptor => {
-  const server = descriptor.namespace ?? "";
-  const prefix = `${server}.`;
-  const toolName = descriptor.name.startsWith(prefix)
-    ? descriptor.name.slice(prefix.length)
-    : descriptor.name;
-  const safeServer = sanitizeMcpRefPart(server);
-  return {
-    ...descriptor,
-    name: `${safeServer}.${sanitizeMcpRefPart(toolName)}`,
-    namespace: `mcp:${safeServer}`,
-  };
-};
+// Keep the existing advisory import path stable while the host startup graph
+// uses the dependency-light source module directly.
+export { toMcpAdvisoryDescriptor } from "./mcp-advisory.js";
 
 export interface McpProviderHooks {
   /** Full provider-fidelity descriptor slice after any tool-list change. */
@@ -198,6 +178,7 @@ export class McpProvider implements FabricProvider {
   readonly name = "mcp";
   readonly description = "External MCP tools discovered and pooled by mcporter";
   #runtime: Runtime | undefined;
+  #runtimeCreation: { generation: number; promise: Promise<Runtime> } | undefined;
   readonly #toolMetadata = new Map<
     string,
     { expiresAt: number; promise: Promise<ServerToolInfo[]> }
@@ -761,22 +742,45 @@ export class McpProvider implements FabricProvider {
   }
 
   async #getRuntime(): Promise<Runtime> {
-    if (!this.#runtime) {
-      this.#runtime = await createRuntime({
+    if (this.#closed) throw new Error("MCP provider is closed");
+    if (this.#runtime) return this.#runtime;
+    const generation = this.#generation;
+    if (this.#runtimeCreation?.generation === generation) {
+      return this.#runtimeCreation.promise;
+    }
+    const promise = import("mcporter")
+      .then(({ createRuntime }) => createRuntime({
         rootDir: this.cwd,
         ...(this.config.configPath ? { configPath: this.config.configPath } : {}),
         clientInfo: { name: "pi-fabric", version: "0.1.0" },
+      }))
+      .then(async (runtime) => {
+        if (this.#closed || generation !== this.#generation) {
+          await runtime.close().catch(() => undefined);
+          throw new Error("MCP runtime creation was superseded");
+        }
+        this.#runtime = runtime;
+        return runtime;
       });
-    }
-    return this.#runtime;
+    const creation = { generation, promise };
+    this.#runtimeCreation = creation;
+    void promise.finally(() => {
+      if (this.#runtimeCreation === creation) this.#runtimeCreation = undefined;
+    }).catch(() => undefined);
+    return promise;
   }
 
   async #resetRuntime(): Promise<void> {
     this.#generation += 1;
     const runtime = this.#runtime;
+    const creation = this.#runtimeCreation?.promise;
     this.#runtime = undefined;
+    this.#runtimeCreation = undefined;
     this.#toolMetadata.clear();
-    await runtime?.close();
+    await Promise.allSettled([
+      runtime?.close() ?? Promise.resolve(),
+      creation?.then(() => undefined, () => undefined) ?? Promise.resolve(),
+    ]);
   }
 
   #serverDefinition(args: Record<string, unknown>): ServerDefinition {

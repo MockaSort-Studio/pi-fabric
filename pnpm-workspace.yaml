@@ -3,6 +3,7 @@ packages:
 
 allowBuilds:
   "@google/genai": true
+  esbuild: true
   protobufjs: true
 
 minimumReleaseAgeExclude:
@@ -16,4 +17,5 @@ minimumReleaseAgeExclude:
 
 onlyBuiltDependencies:
   - "@google/genai"
+  - esbuild
   - protobufjs

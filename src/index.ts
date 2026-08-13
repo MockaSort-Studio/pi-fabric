@@ -49,10 +49,8 @@ import {
   capturedToolNamespace,
   listCapturedToolDescriptors,
 } from "./providers/captured-tools-provider.js";
-import {
-  sanitizeMcpRefPart,
-  toMcpAdvisoryDescriptor,
-} from "./providers/mcp-provider.js";
+import { toMcpAdvisoryDescriptor } from "./providers/mcp-advisory.js";
+import { sanitizeMcpRefPart } from "./ref-names.js";
 import { createFabricExecTool } from "./fabric-exec-tool.js";
 import { FabricState } from "./fabric-state.js";
 import { piHostCompatibilityWarning } from "./host-compatibility.js";
@@ -76,11 +74,14 @@ import { fileURLToPath } from "node:url";
 // same fabric-exec / fabric-advisor / fabric-council skill references as the
 // main agent, which gets them through the package manifest.
 const FABRIC_EXTENSION_ENTRY_PATH = path.resolve(fileURLToPath(import.meta.url));
-const FABRIC_SKILLS_DIR = path.resolve(
-  path.dirname(FABRIC_EXTENSION_ENTRY_PATH),
-  "..",
-  "skills",
-);
+const FABRIC_ENTRY_DIR = path.dirname(FABRIC_EXTENSION_ENTRY_PATH);
+const FABRIC_RUNTIME_PATHS = {
+  extension: FABRIC_EXTENSION_ENTRY_PATH,
+  worker: path.join(FABRIC_ENTRY_DIR, "worker.js"),
+  residentHost: path.join(FABRIC_ENTRY_DIR, "residency", "host.js"),
+  skills: path.resolve(FABRIC_ENTRY_DIR, "..", "skills"),
+};
+const FABRIC_SKILLS_DIR = FABRIC_RUNTIME_PATHS.skills;
 
 const registrationFrom = (value: unknown): FabricProviderRegistration | undefined => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
@@ -137,6 +138,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         }
       },
     },
+    { paths: FABRIC_RUNTIME_PATHS },
   );
   const directToolApproval = new FabricDirectToolApproval(
     pi,
@@ -153,7 +155,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   // visible); the MCP descriptor-cache slice whenever mcp.advisory is on —
   // MCP tools never have native visibility, so the gate is capture-agnostic.
   const refreshAdvisorSources = (): void => {
-    if (!state.initialized) return;
+    if (!state.cwd) return;
     const policy = capturePolicy();
     capabilityAdvisor.setSource(
       "captured",
@@ -185,7 +187,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   // for state to be ready rather than reading an uninitialized config.
   const { reassert: reassertToolOwnership, schedule: scheduleOwnershipReassert } =
     createToolOwnershipReassertion({
-      ready: () => state.initialized,
+      ready: () => state.cwd !== undefined,
       active: () => {
         const policy = capturePolicy();
         return policy.enabled && policy.hideFromModel && fabricOwnsModelTools();
@@ -362,9 +364,26 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     context.ui.notify(skipReason, "warning");
   };
 
+  const cleanupActivationSideEffects = (): void => {
+    uninstallHaltOnEscape();
+    fabricUi.stop();
+  };
+  state.setActivationHook(async (context) => {
+    refreshCodePreviewSettings();
+    Object.assign(
+      fabricTool,
+      createFabricExecTool(state, codePreviewSettings, pendingHandoffs, decorateShell),
+    );
+    await autoArmPrewalk(context);
+    applyFabricMode();
+    fabricUi.start(context);
+    installHaltOnEscape(context);
+  }, cleanupActivationSideEffects);
+
   pi.on("session_start", async (_event, context) => {
     pendingHandoffs.clear();
     directToolApproval.clear();
+    uninstallHaltOnEscape();
     fabricUi.stop();
     suspendToolCapture();
     capabilityAdvisor.reset();
@@ -377,22 +396,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         if (context.hasUI) context.ui.notify(warning, "warning");
       }
     }
-    await state.initialize(context);
-    try {
-      refreshCodePreviewSettings();
-      Object.assign(
-        fabricTool,
-        createFabricExecTool(state, codePreviewSettings, pendingHandoffs, decorateShell),
-      );
-    } catch (error) {
-      console.warn("[pi-fabric] Failed to refresh code preview settings.", error);
-    }
+    await state.bootstrap(context);
+    refreshCodePreviewSettings();
     applyFabricMode();
-    fabricUi.start(context);
-    // After initialize() (which cancels any prior arm) so alwaysRearm opens
-    // the fresh session armed.
-    await autoArmPrewalk(context);
-    installHaltOnEscape(context);
+    if (state.shouldEagerlyActivate(context)) await state.ensure(context);
   });
 
   // Branch changes move the leaf: ash, emitted echoes, and spent advisory
@@ -421,14 +428,16 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   });
 
   pi.on("turn_end", async (event, context) => {
-    if (!state.initialized) return;
     // Furnace feedback: did the just-fired advisory lead to captured tool use?
     capabilityAdvisor.endTurn();
-    await state.publishHostLifecycle("pi.turn_end", event);
+    if (state.initialized) await state.publishHostLifecycle("pi.turn_end", event);
   });
 
   pi.on("agent_settled", async (event, context) => {
-    if (!state.initialized) return;
+    if (!state.initialized) {
+      await compactAtConfiguredThreshold(context, state.config);
+      return;
+    }
     const sessionId = context.sessionManager.getSessionId();
     const settledInPlace = await settleInPlacePrewalk(state.prewalk, pi, context, {
       compactOnReturn: state.config.prewalk.compactOnReturn,
@@ -567,19 +576,19 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   // pi-core's own summarization proceeds normally.
   registerCompactionHook(pi, {
     getEngine: () =>
-      state.initialized
+      state.cwd
         ? state.config.compaction.engine
         : DEFAULT_FABRIC_CONFIG.compaction.engine,
     getTargetContextRatio: () =>
-      state.initialized
+      state.cwd
         ? state.config.compaction.targetContextRatio
         : DEFAULT_FABRIC_CONFIG.compaction.targetContextRatio,
     getThresholdContextRatio: (modelKey) =>
-      state.initialized
+      state.cwd
         ? state.config.compaction.thresholds[modelKey]
         : DEFAULT_FABRIC_CONFIG.compaction.thresholds[modelKey],
     getThresholdTokens: (modelKey) =>
-      state.initialized
+      state.cwd
         ? state.config.compaction.tokenThresholds[modelKey]
         : DEFAULT_FABRIC_CONFIG.compaction.tokenThresholds[modelKey],
   });
@@ -615,10 +624,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   });
 
   pi.on("before_agent_start", async (event) => {
-    const fullCodeMode = state.initialized
+    const fullCodeMode = state.cwd
       ? state.config.fullCodeMode
       : DEFAULT_FABRIC_CONFIG.fullCodeMode;
-    const schemaMode = state.initialized
+    const schemaMode = state.cwd
       ? state.config.schema.mode
       : DEFAULT_FABRIC_CONFIG.schema.mode;
     const effectiveFullCodeMode = fullCodeMode || schemaMode === "enforce";
@@ -650,7 +659,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     // reaches for extensions.* / mcp.* instead of re-implementing them. Slice
     // membership already encodes visibility (captured tools only while
     // hidden; MCP while mcp.advisory is on), so any non-empty index fires.
-    const captureSnapshot = state.initialized ? capturePolicy() : undefined;
+    const captureSnapshot = state.cwd ? capturePolicy() : undefined;
     const advisory =
       captureSnapshot && capabilityAdvisor.hasSources()
         ? capabilityAdvisor.evaluate(event.prompt, captureSnapshot.advisory)
@@ -680,16 +689,16 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
 
   pi.on("session_shutdown", async () => {
     unsubscribeProviderRegistration();
+    pendingHandoffs.clear();
+    directToolApproval.clear();
     try {
-      pendingHandoffs.clear();
-      directToolApproval.clear();
+      await state.shutdown();
+    } finally {
       uninstallHaltOnEscape();
       fabricUi.stop();
       suspendToolCapture();
       toolOwnership.release();
       fabricToolLifecycle.clear();
-      await state.shutdown();
-    } finally {
       toolCapture.dispose();
     }
   });
@@ -708,7 +717,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     capturedTools,
     applyFabricMode,
     suspendToolCapture,
-    autoArmPrewalk,
     refreshCodePreviewSettings,
   });
 }
