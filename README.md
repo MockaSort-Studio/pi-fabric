@@ -113,7 +113,7 @@ Fabric adds a live activity surface to Pi, no extra extension required:
 - A compact widget above the chat (like `pi-supervisor`) whose header follows the current phase while its rows show active/completed agents, active actors, and their recent nested tool or code-change activity.
 - `/fabric` (or `/fabric dashboard`) — **Activity** and **Topology** views where the user-facing Pi session is always present as **Main**. Queue/steer Main, active children, actors, and observed mesh agents; navigate a spring-followed unified topology of runs and project mesh, with paged transcripts, topics, state, and routes.
 - `/fabric settings` — mirrors Pi's `/settings` and writes changes to `fabric.json`.
-- `/fabric display full|compact` — switches the `fabric_exec` transcript between the default full source view and compact intent-and-tools view.
+- `Tool display` (`full` or `compact`) is configured under `/fabric settings` → **UI**; compact elevates the declared display intent, hides the outer TypeScript, and applies to the current transcript immediately.
 
 See the [interface & commands reference](docs/interface.md) for every view, keybinding, and slash command.
 

@@ -93,7 +93,6 @@ async invoke(actionName, args, context) {
 /fabric status
 /fabric dashboard
 /fabric settings
-/fabric display <full|compact> [--global|--project]
 /fabric reload
 /fabric providers
 /fabric captured [query]
@@ -103,8 +102,6 @@ async invoke(actionName, args, context) {
 /fabric attach <agent-id>
 /fabric stop <actor-or-agent-id>
 ```
-
-`/fabric display` defaults to project scope in trusted projects and global scope otherwise; `--global` and `--project` select a layer explicitly. A successful change persists the preference and redraws current Fabric cards immediately.
 
 Actor slash commands mirror the [global template API](agents.md#global-actor-templates): `/fabric global` lists templates, `/fabric import <name> [as <new>]` stamps one into the project, and `/fabric export <id> [--overwrite]` promotes a project actor. `/fabric log <id>` previews an actor or run transcript; `/fabric export-log <id> [path]` writes the raw `session.jsonl` plus retained `runs/` to disk.
 
