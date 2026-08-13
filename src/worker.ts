@@ -440,6 +440,9 @@ const main = async (): Promise<void> => {
   // before Pi core compacts. When maxTokens is set and the child's cumulative
   // token usage crosses it, terminate the child like a timeout so the run
   // settles with a terminal status instead of burning to the hour deadline.
+  // The error string is model-facing: the parent agent reads it verbatim, so it
+  // must name the config key and remedy, and front-load the numbers before TUI
+  // truncation.
   const enforceTokenLimit = (): void => {
     if (terminalStatus || !options.maxTokens || options.maxTokens <= 0) return;
     const total =
@@ -449,7 +452,10 @@ const main = async (): Promise<void> => {
       record.usage.cacheWrite;
     if (total <= options.maxTokens) return;
     terminalStatus = "timed_out";
-    terminalError = `Fabric token limit reached: ${total} tokens (limit ${options.maxTokens}); terminating child`;
+    terminalError =
+      `Fabric token limit reached: ${total} tokens (limit ${options.maxTokens} set by agents.maxTokensPerChild); terminating child. ` +
+      `The count is cumulative across the run and includes cache reads/writes, so it grows every turn; ` +
+      `raise or disable agents.maxTokensPerChild in /fabric settings (0 disables), or split the task into smaller agent runs.`;
     terminateChild(child, "SIGTERM");
     setTimeout(() => terminateChild(child, "SIGKILL"), KILL_GRACE_MS).unref();
     child.stdin?.end();

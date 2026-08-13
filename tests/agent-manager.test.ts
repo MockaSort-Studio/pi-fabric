@@ -912,6 +912,10 @@ describe("AgentManager", () => {
     expect(result.status).toBe("timed_out");
     expect(result.error ?? "").toMatch(/token limit/i);
     expect(result.error ?? "").toMatch(/7 tokens/);
+    // The parent model reads this error verbatim: it must name the config key
+    // and remedy so the failure is actionable without reading worker.ts.
+    expect(result.error ?? "").toContain("agents.maxTokensPerChild");
+    expect(result.error ?? "").toContain("/fabric settings");
   });
 });
 
