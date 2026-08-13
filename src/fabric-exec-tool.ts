@@ -46,8 +46,6 @@ import {
   restoreLegacyBashCommands,
   safeTerminalText,
   singleCallProgressLine,
-  isCompactDynamicAudit,
-  renderCompactDynamicArguments,
   type FabricAgentPreview,
   type FabricCallHeadlinePreview,
   type FabricCoreToolPreview,
@@ -92,158 +90,22 @@ type FabricToolDisplayMode = "full" | "compact";
 const toolDisplayMode = (state: FabricState): FabricToolDisplayMode =>
   state.initialized ? state.config.ui.toolDisplay : DEFAULT_FABRIC_CONFIG.ui.toolDisplay;
 
+const compactResultHeader = (
+  theme: Theme,
+  audits: FabricRenderAudit[],
+  failed: boolean,
+): string => {
+  const failedCalls = audits.filter((audit) => audit.success === false).length;
+  const isFailed = failed || failedCalls > 0;
+  return theme.fg(isFailed ? "error" : "success", `${isFailed ? "✗" : "✓"} Tools`) +
+    theme.fg(
+      "dim",
+      ` · ${countLabel(audits.length, "call")}${failedCalls > 0 ? ` · ${failedCalls} failed` : ""}`,
+    );
+};
+
 const countLabel = (count: number, singular: string): string =>
   `${count} ${count === 1 ? singular : `${singular}s`}`;
-
-type CompactResultInput = {
-  audits: FabricRenderAudit[];
-  output: string;
-  failed: boolean;
-  phases: string[];
-  expanded: boolean;
-  details: { error?: string };
-  theme: Theme;
-  core: { cwd: string; settings: CodePreviewSettings; compact?: boolean };
-  showAgentToolPreview: boolean;
-  spinner: string;
-  renderBody: (audit: FabricRenderAudit, limit: number) => { body: string; hidden: number } | null;
-  styleOutputLines: (lines: string[]) => string[];
-  trackRows: (component: Component) => Component;
-  invalidate: (() => void) | undefined;
-};
-
-const renderCompactResult = (input: CompactResultInput): Component => {
-  const { audits, output, failed, phases, expanded, details, theme, core, showAgentToolPreview, spinner, renderBody, styleOutputLines, trackRows, invalidate } = input;
-  const rows: string[] = [];
-  const dynamicRows = new Set<number>();
-  const dynamicFoldRows = expanded ? undefined : new Set<number>();
-  if (audits.length === 0) {
-    rows.push(theme.fg(failed ? "error" : "success", failed ? "✗ Failed" : "✓ Done"));
-    if (failed && details.error) rows.push(theme.fg("error", safeTerminalText(details.error)));
-  } else {
-    const failedCalls = audits.filter((audit) => audit.success === false).length;
-    rows.push(
-      theme.fg(failed || failedCalls > 0 ? "error" : "success", `${failed || failedCalls > 0 ? "✗" : "✓"} Tools`) +
-        theme.fg(
-          "dim",
-          ` · ${countLabel(audits.length, "call")}${failedCalls > 0 ? ` · ${failedCalls} failed` : ""}${phases.length > 0 ? ` · ${countLabel(phases.length, "phase")}` : ""}`,
-        ),
-    );
-    if (phases.length > 0) {
-      rows.push(theme.fg("dim", phases.map((phase) => `◆ ${phase}`).join("  ")));
-    }
-    const limit = fabricMulticallCallLimit(expanded);
-    const shown = audits.slice(0, limit);
-    const collapsedWritePreviewIndex = !expanded && audits.length > 1
-      ? (() => {
-          for (let index = shown.length - 1; index >= 0; index--) {
-            const audit = shown[index]!;
-            if (audit.tool === "write" && audit.success !== false) return index;
-          }
-          return undefined;
-        })()
-      : undefined;
-    for (let auditIndex = 0; auditIndex < shown.length; auditIndex++) {
-      const audit = shown[auditIndex]!;
-      if (expanded && rows.length > 1 && !isCompactDynamicAudit(audit)) rows.push("");
-      const glyph = audit.success === undefined
-        ? theme.fg("warning", spinner)
-        : audit.success === false
-          ? theme.fg("error", "✗")
-          : theme.fg("dim", "›");
-      const previewLines = renderAgentToolPreviewLines(audit, theme, {
-        expanded,
-        compact: !expanded,
-        hideStrings: true,
-        showTools: showAgentToolPreview,
-        core,
-        ...(invalidate ? { invalidate } : {}),
-      });
-      let line = `${glyph} ${nestedCallTitle(audit, theme, invalidate, core, { hideStrings: true })}`;
-      if (previewLines[0] && audit.success !== false) line += ` ${previewLines[0]}`;
-      rows.push(line);
-      const dynamic = isCompactDynamicAudit(audit);
-      if (audit.success === false && audit.error) {
-        rows.push(`  ${theme.fg("error", safeTerminalText(audit.error))}`);
-        if (!dynamic) continue;
-      }
-      if (previewLines.length > 1) rows.push(...previewLines.slice(1));
-      const showBody = previewLines.length === 0 && (
-        expanded || audits.length === 1 || auditIndex === collapsedWritePreviewIndex || dynamic
-      );
-      const body = showBody
-        ? renderBody(
-            audit,
-            audits.length === 1
-              ? 200
-              : expanded
-                ? 40
-                : auditIndex === collapsedWritePreviewIndex
-                  ? 10
-                  : 1,
-          )
-        : null;
-      if (body) {
-        for (const bodyLine of body.body.split("\n")) {
-          if (expanded && dynamic) dynamicRows.add(rows.length);
-          if (!expanded && dynamic && body.hidden === 0) dynamicFoldRows?.add(rows.length);
-          rows.push(`  ${bodyLine}`);
-        }
-        if (body.hidden > 0) {
-          rows.push(
-            theme.fg("dim", `  … ${countLabel(body.hidden, dynamic ? "detail" : "line")} hidden`) +
-              (expanded ? "" : theme.fg("dim", " · ") + expandHint(theme)),
-          );
-        }
-        if (audits.length === 1) {
-          const readHint = modelReadHint(audits, output, theme);
-          if (readHint) rows.push(readHint);
-        }
-      } else if (
-        audits.length === 1 &&
-        previewLines.length === 0 &&
-        isCoreToolAudit(audit) &&
-        !expanded &&
-        !coreToolPreviewEnabled(audit, core.settings)
-      ) {
-        rows.push(`  ${arcItemStyled(theme, expandHint(theme))}`);
-      }
-    }
-    if (audits.length > shown.length) {
-      rows.push(
-        theme.fg("dim", `… ${countLabel(audits.length - shown.length, "nested call")} hidden`) +
-          (expanded ? "" : theme.fg("dim", " · ") + expandHint(theme)),
-      );
-    }
-    if (audits.length > 1) {
-      const readHint = modelReadHint(audits, output, theme);
-      if (readHint) rows.push(readHint);
-    }
-  }
-  if ((failed || expanded) && output) {
-    const outputLines = safeTerminalText(output).split("\n");
-    const shown = outputLines.slice(0, expanded ? 200 : 6);
-    if (shown.length > 0) {
-      if (expanded) rows.push(theme.fg("dim", "↩ return"));
-      rows.push(...styleOutputLines(shown));
-      if (outputLines.length > shown.length) {
-        rows.push(
-          theme.fg("dim", `… ${countLabel(outputLines.length - shown.length, "line")} hidden`) +
-            (expanded ? "" : theme.fg("dim", " · ") + expandHint(theme)),
-        );
-      }
-    }
-  }
-  return trackRows(
-    renderBoundedLines(
-      rows,
-      theme,
-      core.settings.diffIntensity,
-      dynamicRows,
-      dynamicFoldRows,
-    ),
-  );
-};
 
 export const createFabricExecTool = (
   state: FabricState,
@@ -351,7 +213,7 @@ export const createFabricExecTool = (
         const display = normalizeRunDisplay(params.display);
         const header = renderBoundedLines(
           [
-            theme.fg("toolTitle", theme.bold(safeTerminalText(display?.name ?? "Tool"))),
+            theme.fg("toolTitle", theme.bold(safeTerminalText(display?.name?.trim() || "Tool"))),
             ...(display?.description
               ? [theme.fg("dim", safeTerminalText(display.description))]
               : []),
@@ -499,9 +361,8 @@ export const createFabricExecTool = (
       const nl = "\n";
       const allRowIndexes = (lines: string[], enabled: boolean): ReadonlySet<number> | undefined =>
         enabled ? new Set(lines.map((_line, index) => index)) : undefined;
-      const mode = toolDisplayMode(state);
-      const compact = mode === "compact";
-      const corePreviewContext = { cwd: context.cwd, settings: codePreviewSettings, ...(compact ? { compact: true } : {}) };
+      const compact = toolDisplayMode(state) === "compact";
+      const corePreviewContext = { cwd: context.cwd, settings: codePreviewSettings };
       const showAgentToolPreview = state.initialized
         ? state.config.ui.showAgentToolPreview
         : DEFAULT_FABRIC_CONFIG.ui.showAgentToolPreview;
@@ -510,16 +371,12 @@ export const createFabricExecTool = (
         audit: FabricRenderAudit,
         limit: number,
       ): { body: string; hidden: number } | null => {
-        if (compact && isCompactDynamicAudit(audit)) {
-          return renderCompactDynamicArguments(audit, theme, expanded);
-        }
         const core = renderCoreToolBody(audit, theme, {
           cwd: context.cwd,
           settings: codePreviewSettings,
           expanded,
           maxLines: limit,
           ...(context?.invalidate ? { invalidate: context.invalidate } : {}),
-          ...(compact ? { compact: true } : {}),
         });
         if (core) return { body: core.lines.join(nl), hidden: core.hidden };
         if (coreToolRendererEnabled(audit, codePreviewSettings)) return null;
@@ -562,17 +419,9 @@ export const createFabricExecTool = (
               : audit.success === false
                 ? theme.fg("error", "✗")
                 : theme.fg("dim", "›");
-          let text = `${glyph} ${nestedCallTitle(
-            audit,
-            theme,
-            context?.invalidate,
-            corePreviewContext,
-            compact ? { hideStrings: true } : {},
-          )}`;
-          let dynamicFoldLine: number | undefined;
+          let text = `${glyph} ${nestedCallTitle(audit, theme, context?.invalidate, corePreviewContext)}`;
           const previewLines = renderAgentToolPreviewLines(audit, theme, {
             expanded,
-            ...(compact ? { hideStrings: true } : {}),
             showTools: showAgentToolPreview,
             core: corePreviewContext,
             ...(context?.invalidate ? { invalidate: context.invalidate } : {}),
@@ -586,9 +435,6 @@ export const createFabricExecTool = (
               expanded || coreToolRendererEnabled(audit, codePreviewSettings) ? 200 : 10,
             );
             if (rendered) {
-              if (compact && isCompactDynamicAudit(audit) && !expanded && rendered.hidden === 0) {
-                dynamicFoldLine = text.split(nl).length;
-              }
               text += nl + rendered.body;
               if (rendered.hidden > 0) {
                 text += nl + theme.fg("dim", `… ${countLabel(rendered.hidden, "line")}`);
@@ -611,16 +457,12 @@ export const createFabricExecTool = (
             if (previewLines.length > 1) text += nl + previewLines.slice(1).join(nl);
           }
           const textLines = text.split(nl);
-          const foldLineIndexes = dynamicFoldLine === undefined
-            ? undefined
-            : new Set([dynamicFoldLine]);
           return trackRows(
             renderBoundedLines(
               textLines,
               theme,
               codePreviewSettings.diffIntensity,
               allRowIndexes(textLines, previewLines.length > 0),
-              foldLineIndexes,
             ),
           );
         }
@@ -645,7 +487,7 @@ export const createFabricExecTool = (
               core: corePreviewContext,
               showAgentToolPreview,
               spinner,
-              ...(compact ? { compactDynamic: true } : {}),
+              ...(compact ? { activityLabel: "Tools" } : {}),
             },
             theme,
             context?.invalidate,
@@ -692,25 +534,6 @@ export const createFabricExecTool = (
       };
       const failed = details.success === false;
 
-      if (compact) {
-        return renderCompactResult({
-          audits,
-          output,
-          failed,
-          phases,
-          expanded,
-          details,
-          theme,
-          core: corePreviewContext,
-          showAgentToolPreview,
-          spinner,
-          renderBody,
-          styleOutputLines,
-          trackRows,
-          invalidate: context.invalidate,
-        });
-      }
-
       if (audits.length === 0) {
         if (failed && details.error) {
           return trackRows(
@@ -721,11 +544,25 @@ export const createFabricExecTool = (
             ),
           );
         }
-        if (!output) return trackRows(new Text(theme.fg("dim", "✓ Fabric"), 0, 0));
+        if (compact && !failed && !expanded) {
+          return trackRows(new Text(theme.fg("success", "✓ Done"), 0, 0));
+        }
+        if (!output) {
+          return trackRows(new Text(
+            compact
+              ? theme.fg(failed ? "error" : "success", failed ? "✗ Failed" : "✓ Done")
+              : theme.fg("dim", "✓ Fabric"),
+            0,
+            0,
+          ));
+        }
         const lines = safeTerminalText(output).split(nl);
         const limit = expanded ? Math.min(lines.length, 200) : 12;
         const shown = lines.slice(0, limit);
         let text = styleOutputLines(shown).join(nl);
+        if (compact) {
+          text = theme.fg(failed ? "error" : "success", failed ? "✗ Failed" : "✓ Done") + nl + text;
+        }
         if (lines.length > shown.length) {
           text += nl + theme.fg("dim", `… ${countLabel(lines.length - shown.length, "line")}`);
           if (!expanded) text += theme.fg("dim", " · ") + expandHint(theme);
@@ -737,13 +574,19 @@ export const createFabricExecTool = (
 
       if (audits.length === 1) {
         const audit = audits[0]!;
-        let text = nestedCallTitle(audit, theme, context?.invalidate, corePreviewContext);
+        let text = compact
+          ? `${compactResultHeader(theme, audits, failed)}${nl}${nestedCallTitle(
+              audit,
+              theme,
+              context?.invalidate,
+              corePreviewContext,
+            )}`
+          : nestedCallTitle(audit, theme, context?.invalidate, corePreviewContext);
         const previewLines = renderAgentToolPreviewLines(audit, theme, {
           expanded,
           showTools: showAgentToolPreview,
           core: corePreviewContext,
           ...(context?.invalidate ? { invalidate: context.invalidate } : {}),
-          ...(compact ? { compact: true } : {}),
         });
         if (audit.success === false) {
           if (audit.error) {
@@ -772,7 +615,12 @@ export const createFabricExecTool = (
           !coreToolPreviewEnabled(audit, codePreviewSettings)
         ) {
           text += nl + arcItemStyled(theme, expandHint(theme));
-        } else if (previewLines.length === 0 && output && !isCoreToolAudit(audit)) {
+        } else if (
+          previewLines.length === 0 &&
+          output &&
+          !isCoreToolAudit(audit) &&
+          (!compact || failed || expanded)
+        ) {
           const lines = safeTerminalText(output).split(nl);
           const outLimit = expanded ? Math.min(lines.length, 200) : 12;
           const outShown = lines.slice(0, outLimit);
@@ -803,11 +651,13 @@ export const createFabricExecTool = (
         failedCalls > 0 ? `${failedCalls} failed` : undefined,
         phases.length > 0 ? countLabel(phases.length, "phase") : undefined,
       ].filter((value): value is string => Boolean(value));
-      let text = theme.fg(
-        statusColor,
-        `${failed ? "✗" : "✓"} Fabric ${status}`,
-      );
-      if (metadata.length > 0) text += theme.fg("dim", ` · ${metadata.join(" · ")}`);
+      let text = compact
+        ? compactResultHeader(theme, audits, failed)
+        : theme.fg(
+            statusColor,
+            `${failed ? "✗" : "✓"} Fabric ${status}`,
+          );
+      if (!compact && metadata.length > 0) text += theme.fg("dim", ` · ${metadata.join(" · ")}`);
       if (phases.length > 0)
         text += nl + theme.fg("dim", phases.map((phase) => `◆ ${phase}`).join("  "));
 
@@ -843,7 +693,6 @@ export const createFabricExecTool = (
           showTools: showAgentToolPreview,
           core: corePreviewContext,
           ...(context?.invalidate ? { invalidate: context.invalidate } : {}),
-          ...(compact ? { compact: true } : {}),
         });
         let callRow = `${glyph} ${nestedCallTitle(audit, theme, context?.invalidate, corePreviewContext)}`;
         if (previewLines[0] && audit.success !== false) {

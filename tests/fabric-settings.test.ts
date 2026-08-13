@@ -361,18 +361,15 @@ describe("FabricSettingsComponent", () => {
     expect(lines).toContain("session.jsonl");
   });
 
-  it("surfaces tool display, nested-tool visibility, and the global debounce in UI settings", () => {
-    const items = buildItems();
-    const ui = items.find((item) => item.id === "ui");
-    expect(ui?.submenu).toBeDefined();
-    const section = ui!.submenu!("", () => {}) as any;
-    const display = section.settingsList.items.find((item: { id: string }) => item.id === "ui.toolDisplay");
-    const lines = section.render(80).join("\n");
-    expect(display).toMatchObject({
-      label: "Tool display",
-      currentValue: "full",
-      values: ["full", "compact"],
-    });
+  it("presents the Tool display row in the UI settings section", () => {
+    const component = new FabricSettingsComponent(theme, buildItems(), () => {}, () => {});
+
+    component.handleInput("ui");
+    expect(component.render(80).join("\n")).toContain("→ UI ›");
+    component.handleInput("\r");
+    const lines = component.render(80).join("\n");
+    expect(lines).toContain("Tool display");
+    expect(lines).toContain("full");
     expect(lines).toContain("Agent tool preview");
     expect(lines).toContain("Update debounce");
     expect(lines).toContain("100ms");
@@ -788,16 +785,11 @@ describe("FabricSettingsComponent", () => {
           notify: vi.fn(),
           custom: vi.fn(async (factory) => {
             const component = factory({}, theme, {}, () => {}) as FabricSettingsComponent;
-            const rootList = component.settingsList as any;
-            rootList.selectedIndex = rootList.items.findIndex(
-              (item: { id: string }) => item.id === "ui",
-            );
-            rootList.activateItem();
-            const uiList = rootList.submenuComponent.settingsList as any;
-            uiList.selectedIndex = uiList.items.findIndex(
-              (item: { id: string }) => item.id === "ui.toolDisplay",
-            );
-            uiList.activateItem();
+            component.handleInput("ui");
+            component.handleInput("\r");
+            component.handleInput("\x1b[B");
+            component.handleInput("\x1b[B");
+            component.handleInput("\r");
           }),
         },
       } as unknown as ExtensionContext;
