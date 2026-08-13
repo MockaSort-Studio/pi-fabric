@@ -12,6 +12,7 @@ import type {
   FabricProvider,
   FabricProviderListRequest,
 } from "../protocol.js";
+import { sanitizeMcpRefPart } from "../ref-names.js";
 import {
   hashServerDefinition,
   MCP_DESCRIPTOR_CACHE_VERSION,
@@ -118,13 +119,9 @@ const normalizeMcpResult = (result: unknown): unknown => {
   };
 };
 
-// Identifier-safe shape used by the QuickJS `mcp.<server>.<tool>` proxy and by
-// rendered advisory refs. Shared so the provider, the advisory adapter, and
-// the transcript ash-replay all agree on how a raw name appears in code.
-export const sanitizeMcpRefPart = (value: string): string => {
-  const sanitized = value.replace(/[^A-Za-z0-9_$]/g, "_");
-  return /^[A-Za-z_$]/.test(sanitized) ? sanitized : `_${sanitized}`;
-};
+// Re-exported from ref-names so existing importers (host index, advisory,
+// ash-replay) keep their paths; that module documents the shared contract.
+export { sanitizeMcpRefPart };
 
 // Advisory-facing view of an MCP descriptor: namespace gains the "mcp:"
 // marker (distinct from extension source namespaces) and the action name uses

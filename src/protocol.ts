@@ -108,6 +108,37 @@ export interface FabricProviderListRequest {
   limit?: number;
 }
 
+/** One named action whose arguments should be typed in guest declarations. */
+export interface FabricNamedActionTypeSource {
+  name: string;
+  inputSchema: Record<string, unknown>;
+}
+
+/** One MCP server plus the tools to type for `mcp.<server>.*` guest calls. */
+export interface FabricMcpServerTypeSource {
+  server: string;
+  tools: FabricNamedActionTypeSource[];
+}
+
+/**
+ * Live descriptor snapshot the registry hands to the guest declaration
+ * builder so dynamic surfaces (mcp, extensions) get argument checking before
+ * the sandbox runs. Empty/absent sections keep the loose static declarations.
+ */
+export interface FabricGuestTypeSources {
+  mcpServers?: FabricMcpServerTypeSource[];
+  extensionTools?: FabricNamedActionTypeSource[];
+}
+
+/**
+ * Pre-rendered `declare const` blocks replacing the loose mcp/extensions
+ * declaration lines. Values are full replacement text (helpers + declare).
+ */
+export interface FabricDynamicGuestDeclarations {
+  mcp?: string;
+  extensions?: string;
+}
+
 export interface FabricInvocationContext {
   cwd: string;
   signal: AbortSignal | undefined;

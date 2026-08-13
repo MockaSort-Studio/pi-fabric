@@ -9,6 +9,7 @@ import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
 import { FabricExecutionService } from "../src/execution-service.js";
 import { PiToolsProvider } from "../src/providers/pi-tools-provider.js";
+import type { FabricActionDescriptor, FabricProvider } from "../src/protocol.js";
 
 describe("FabricExecutionService", () => {
   it("defers explicit handoff and completes every later call in the same program", async () => {
@@ -896,5 +897,171 @@ return Promise.all([
     });
     expect(result.success).toBe(false);
     expect(result.error).toContain("timed out");
+  });
+});
+
+describe("FabricExecutionService dynamic guest typing", () => {
+  const mcpDescriptor: FabricActionDescriptor = {
+    name: "github.get_repo",
+    description: "Get a GitHub repository",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+      },
+      required: ["owner", "repo"],
+      additionalProperties: false,
+    },
+    risk: "network",
+    namespace: "github",
+  };
+  const mcpProvider = (cacheWarm: boolean): FabricProvider & {
+    sliceDescriptors?: () => FabricActionDescriptor[];
+  } => ({
+    name: "mcp",
+    description: "Mock MCP provider",
+    async list() {
+      return [mcpDescriptor];
+    },
+    async describe(name) {
+      return name === mcpDescriptor.name ? mcpDescriptor : undefined;
+    },
+    async invoke(_name, args) {
+      return { mirrored: args };
+    },
+    ...(cacheWarm
+      ? { sliceDescriptors: () => [mcpDescriptor] }
+      : {}),
+  });
+  const extensionDescriptor: FabricActionDescriptor = {
+    name: "project_status",
+    description: "Report project status",
+    inputSchema: {
+      type: "object",
+      properties: { verbose: { type: "boolean" } },
+      additionalProperties: false,
+    },
+    risk: "read",
+  };
+  const extensionsProvider = (): FabricProvider => ({
+    name: "extensions",
+    description: "Mock extensions provider",
+    async list() {
+      return [extensionDescriptor];
+    },
+    async describe(name) {
+      return name === extensionDescriptor.name ? extensionDescriptor : undefined;
+    },
+    async invoke(_name, args) {
+      return {
+        content: [{ type: "text", text: JSON.stringify(args) }],
+        text: JSON.stringify(args),
+        isError: false,
+      };
+    },
+  });
+  const setup = (providers: FabricProvider[]) => {
+    const registry = new ActionRegistry();
+    for (const provider of providers) registry.register(provider);
+    const service = new FabricExecutionService(registry, structuredClone(DEFAULT_FABRIC_CONFIG));
+    const context = { cwd: process.cwd(), hasUI: false } as ExtensionContext;
+    const run = (code: string, parentToolCallId: string) =>
+      service.execute({ code, signal: undefined, parentToolCallId, context, onPartial() {} });
+    return { service, context, run };
+  };
+
+  it("rejects argument-shape mistakes on mcp tools before executing", async () => {
+    const { run } = setup([mcpProvider(true)]);
+    const result = await run(
+      'return mcp.github.get_repo({ owner: "octo", repo: "hello", branchs: "main" });',
+      "dyn-mcp-typo",
+    );
+    expect(result.success).toBe(false);
+    expect(result.audits).toEqual([]);
+    expect(result.trace.outcome).toBe("failed");
+    expect(result.trace.operations).toEqual([]);
+    expect(result.typeErrors?.map((error) => error.message).join(" ")).toMatch(
+      /branchs|known properties/,
+    );
+  });
+
+  it("executes well-shaped calls against typed mcp surfaces", async () => {
+    const { run } = setup([mcpProvider(true)]);
+    const result = await run(
+      'return mcp.github.get_repo({ owner: "octo", repo: "hello" });',
+      "dyn-mcp-valid",
+    );
+    expect(result.typeErrors).toBeUndefined();
+    expect(result.success).toBe(true);
+    expect(result.audits[0]?.ref).toBe("mcp.github.get_repo");
+    expect(result.value).toEqual({ mirrored: { owner: "octo", repo: "hello" } });
+  });
+
+  it("routes suppressed-property omissions to registry validation", async () => {
+    const { run } = setup([mcpProvider(true)]);
+    // Missing a required property is TS2345 (suppressed by design) and never
+    // reaches the mcp.invoke path — the registry's validate stage rejects it.
+    const result = await run(
+      'return mcp.github.get_repo({ owner: "octo" });',
+      "dyn-mcp-missing",
+    );
+    expect(result.typeErrors).toBeUndefined();
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Invalid arguments for mcp.github.get_repo");
+    expect(result.trace.operations[0]).toMatchObject({
+      outcome: "failed",
+      failureStage: "validate",
+    });
+  });
+
+  it("fails unknown mcp servers at resolve even with a typed surface", async () => {
+    const { run } = setup([mcpProvider(true)]);
+    const result = await run(
+      "return mcp.new_server.tool({ anything: true });",
+      "dyn-mcp-unknown",
+    );
+    expect(result.typeErrors).toBeUndefined();
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Unknown Fabric action: mcp.new_server.tool");
+  });
+
+  it("keeps cold-cache mcp surfaces loose and validated at dispatch", async () => {
+    const { run } = setup([mcpProvider(false)]);
+    const result = await run(
+      'return mcp.github.get_repo({ owner: "octo", branchs: "main" });',
+      "dyn-mcp-cold",
+    );
+    expect(result.typeErrors).toBeUndefined();
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Invalid arguments for mcp.github.get_repo");
+    expect(result.trace.operations[0]).toMatchObject({
+      outcome: "failed",
+      failureStage: "validate",
+    });
+  });
+
+  it("rejects argument-shape mistakes on captured extension tools before executing", async () => {
+    const { run } = setup([extensionsProvider()]);
+    const result = await run(
+      "return extensions.project_status({ verbise: true });",
+      "dyn-ext-typo",
+    );
+    expect(result.success).toBe(false);
+    expect(result.audits).toEqual([]);
+    expect(result.typeErrors?.map((error) => error.message).join(" ")).toMatch(
+      /verbise|known properties/,
+    );
+  });
+
+  it("executes well-shaped captured extension tool calls", async () => {
+    const { run } = setup([extensionsProvider()]);
+    const result = await run(
+      "return extensions.project_status({ verbose: true });",
+      "dyn-ext-valid",
+    );
+    expect(result.typeErrors).toBeUndefined();
+    expect(result.success).toBe(true);
+    expect(result.audits[0]?.ref).toBe("extensions.project_status");
   });
 });

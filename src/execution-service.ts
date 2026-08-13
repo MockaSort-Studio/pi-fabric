@@ -49,6 +49,7 @@ let runtimeDependencies:
       NodeProcessRuntime: typeof import("./runtime/node-process-runtime.js").NodeProcessRuntime;
       typeCheckFabricCode: typeof import("./runtime/type-checker.js").typeCheckFabricCode;
       guestTypeDeclarations: typeof import("./runtime/guest-types.js").guestTypeDeclarations;
+      buildDynamicGuestDeclarations: typeof import("./runtime/dynamic-guest-types.js").buildDynamicGuestDeclarations;
     }>
   | undefined;
 
@@ -58,11 +59,13 @@ const loadRuntimeDependencies = () =>
     import("./runtime/node-process-runtime.js"),
     import("./runtime/type-checker.js"),
     import("./runtime/guest-types.js"),
-  ]).then(([quickjs, nodeProcess, checker, guest]) => ({
+    import("./runtime/dynamic-guest-types.js"),
+  ]).then(([quickjs, nodeProcess, checker, guest, dynamicGuest]) => ({
     QuickJsRuntime: quickjs.QuickJsRuntime,
     NodeProcessRuntime: nodeProcess.NodeProcessRuntime,
     typeCheckFabricCode: checker.typeCheckFabricCode,
     guestTypeDeclarations: guest.guestTypeDeclarations,
+    buildDynamicGuestDeclarations: dynamicGuest.buildDynamicGuestDeclarations,
   }));
 
 const executionOutcomeFromTermination = (
@@ -159,10 +162,24 @@ export class FabricExecutionService {
     const unavailable = new Map(
       this.registry.unavailableProviders().map((entry) => [entry.name, entry.reason]),
     );
+    // Snapshot live mcp/extension tool schemas so the type gate below rejects
+    // argument-shape mistakes on those surfaces pre-execution, the way pi.*
+    // calls already fail. Snapshotting is side-effect-free (cache-warm read);
+    // unavailable or cold providers yield empty sources and the loose
+    // declarations stand.
+    const guestTypeSources = await this.registry.guestTypeSources({
+      cwd: options.context.cwd,
+      signal: options.signal,
+      parentToolCallId: options.parentToolCallId,
+      nestedToolCallId: `${options.parentToolCallId}_typedecls`,
+      extensionContext: options.context,
+      update() {},
+    });
     const checked = dependencies.typeCheckFabricCode(
       options.code,
       dependencies.guestTypeDeclarations(effectiveFullCodeMode, {
         excludeGlobals: [...unavailable.keys()],
+        dynamic: dependencies.buildDynamicGuestDeclarations(guestTypeSources),
       }),
     );
     if (checked.errors.length > 0) {

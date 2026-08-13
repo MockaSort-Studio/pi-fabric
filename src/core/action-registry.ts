@@ -12,9 +12,11 @@ import {
   FABRIC_NESTED_TOOL_CALL_ID_PREFIX,
   type FabricActionDescriptor,
   type FabricCapabilityCatalog,
+  type FabricGuestTypeSources,
   type FabricInvocationActivityUpdate,
   type FabricInvocationContext,
   type FabricMediaBlock,
+  type FabricNamedActionTypeSource,
   type FabricProvider,
   type FabricProviderListRequest,
 } from "../protocol.js";
@@ -279,6 +281,62 @@ export class ActionRegistry {
     return [...this.#providers.values()]
       .map((provider) => ({ name: provider.name, description: provider.description }))
       .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  /**
+   * Snapshot the tool schemas backing the dynamic guest surfaces (mcp and
+   * extensions) so the type gate can reject argument-shape mistakes before
+   * the sandbox runs. Side-effect-free by construction: MCP data comes from
+   * the provider's cache-warm descriptor slice (listing would schedule
+   * background revalidation), extension data from the captured-tool catalog.
+   * Providers that cannot supply data yet simply contribute no section and
+   * the loose declarations stand for that execution.
+   */
+  async guestTypeSources(context: FabricInvocationContext): Promise<FabricGuestTypeSources> {
+    const sources: FabricGuestTypeSources = {};
+    const mcp = this.#providers.get("mcp") as
+      | (FabricProvider & { sliceDescriptors?: () => FabricActionDescriptor[] })
+      | undefined;
+    const mcpDescriptors = mcp?.sliceDescriptors?.();
+    if (mcpDescriptors && mcpDescriptors.length > 0) {
+      const byServer = new Map<string, Map<string, FabricNamedActionTypeSource>>();
+      for (const descriptor of mcpDescriptors) {
+        const server = descriptor.namespace;
+        if (!server || server === "management" || descriptor.name.startsWith("$")) continue;
+        const prefix = `${server}.`;
+        const toolName = descriptor.name.startsWith(prefix)
+          ? descriptor.name.slice(prefix.length)
+          : descriptor.name;
+        let tools = byServer.get(server);
+        if (!tools) {
+          tools = new Map();
+          byServer.set(server, tools);
+        }
+        tools.set(toolName, { name: toolName, inputSchema: descriptor.inputSchema });
+      }
+      if (byServer.size > 0) {
+        sources.mcpServers = [...byServer.entries()].map(([server, tools]) => ({
+          server,
+          tools: [...tools.values()],
+        }));
+      }
+    }
+    const extensions = this.#providers.get("extensions");
+    if (extensions) {
+      try {
+        const descriptors = await extensions.list({}, context);
+        if (descriptors.length > 0) {
+          sources.extensionTools = descriptors.map((descriptor) => ({
+            name: descriptor.name,
+            inputSchema: descriptor.inputSchema,
+          }));
+        }
+      } catch {
+        // Capture catalog not ready yet; the loose extensions surface stands
+        // for this execution.
+      }
+    }
+    return sources;
   }
 
   async list(

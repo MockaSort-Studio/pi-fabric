@@ -1,3 +1,5 @@
+import type { FabricDynamicGuestDeclarations } from "../protocol.js";
+
 export const GUEST_TYPE_DECLARATIONS = `
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -606,7 +608,11 @@ interface FabricMcpTool {
 interface FabricMcpServer {
   [tool: string]: FabricMcpTool;
 }
-type FabricMcpApi = Record<string, FabricMcpServer> & {
+// Management verbs stay members of mcp even when the declare line below is
+// replaced by generated per-server declarations (see the dynamic option on
+// guestTypeDeclarations), so generated surfaces intersect with this type
+// rather than re-declaring them.
+interface FabricMcpManagement {
   servers(): Promise<Array<{ name: string; description: string | null; transport: "http" | "stdio" }>>;
   reload(): Promise<{ servers: string[] }>;
   register(args: {
@@ -621,7 +627,12 @@ type FabricMcpApi = Record<string, FabricMcpServer> & {
     overwrite?: boolean;
   }): Promise<{ registered: string }>;
   call(args: { server: string; tool: string; args?: Record<string, unknown> }): Promise<unknown>;
-};
+}
+// Loose static surface: any server/tool name compiles and argument shapes are
+// enforced at dispatch by the registry. With descriptor data available the
+// execution service replaces the declare-const-mcp line below with a
+// schema-typed rendering of the live cache (runtime/dynamic-guest-types.ts).
+type FabricMcpApi = Record<string, FabricMcpServer> & FabricMcpManagement;
 interface FabricCouncilRunOptions {
   task: string;
   roles: string[];
@@ -1009,13 +1020,26 @@ const FULL_CODE_GLOBAL_DECLARATIONS = [
   "declare const extensions: FabricExtensionsApi;\n",
 ];
 
+const MCP_LOOSE_DECLARATION = "declare const mcp: FabricMcpApi;\n";
+const EXTENSIONS_LOOSE_DECLARATION = "declare const extensions: FabricExtensionsApi;\n";
+
 export interface FabricGuestDeclarationOptions {
   /** Global names to omit (for example providers disabled by configuration). */
   excludeGlobals?: readonly string[];
+  /**
+   * Pre-rendered replacement blocks from buildDynamicGuestDeclarations().
+   * Applied only when the loose anchor line is still present — excluded
+   * globals (or orchestration-only mode, for extensions) keep nothing to
+   * replace, and missing/undefined sections keep the loose surface.
+   */
+  dynamic?: FabricDynamicGuestDeclarations;
 }
 
 const globalDeclarationLine = (name: string): RegExp =>
   new RegExp(`^declare const ${name}: [^\\n]*;\\n`, "m");
+
+const terminatedDeclaration = (block: string): string =>
+  block.endsWith("\n") ? block : `${block}\n`;
 
 export const guestTypeDeclarations = (
   fullCodeMode: boolean,
@@ -1027,8 +1051,21 @@ export const guestTypeDeclarations = (
         (declarations, declaration) => declarations.replace(declaration, ""),
         GUEST_TYPE_DECLARATIONS,
       );
-  return (options.excludeGlobals ?? []).reduce(
+  let result = (options.excludeGlobals ?? []).reduce(
     (declarations, name) => declarations.replace(globalDeclarationLine(name), ""),
     base,
   );
+  if (options.dynamic?.mcp && result.includes(MCP_LOOSE_DECLARATION)) {
+    result = result.replace(
+      MCP_LOOSE_DECLARATION,
+      terminatedDeclaration(options.dynamic.mcp),
+    );
+  }
+  if (options.dynamic?.extensions && result.includes(EXTENSIONS_LOOSE_DECLARATION)) {
+    result = result.replace(
+      EXTENSIONS_LOOSE_DECLARATION,
+      terminatedDeclaration(options.dynamic.extensions),
+    );
+  }
+  return result;
 };

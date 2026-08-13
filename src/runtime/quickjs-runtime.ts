@@ -408,6 +408,8 @@ globalThis["π"] = new Proxy(__piStrings, {
 });
 // Stable providers share a lazy dispatch proxy; the guest declarations keep
 // their known actions typed while the registry remains the runtime authority.
+// extensions' per-tool surface is additionally rendered from the captured
+// catalog by guestTypeDeclarations (runtime/dynamic-guest-types.ts).
 const __providerProxy = (provider) => new Proxy({}, {
   get(_target, property) {
     if (property === "then" || typeof property === "symbol") return undefined;
@@ -502,6 +504,10 @@ globalThis.mesh = Object.freeze({
   put: (args) => __call("mesh.put", args),
   delete: (args) => __call("mesh.delete", args),
 });
+// The mcp proxy itself stays schema-less — the registry validates args at
+// dispatch — but guestTypeDeclarations renders per-server argument types from
+// the live descriptor cache (runtime/dynamic-guest-types.ts), so known tools
+// fail type-check on argument-shape mistakes before this proxy ever runs.
 globalThis.mcp = new Proxy({}, {
   get(_target, server) {
     if (server === "then") return undefined;
