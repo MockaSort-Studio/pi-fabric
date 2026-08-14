@@ -26,6 +26,7 @@ export class FabricComponentLoader {
   readonly #firstSeen = new Map<string, number>();
   readonly #unsubscribeCatalog: () => void;
   #desired = new Map<string, FabricComponentEntry>();
+  #pinned = new Map<string, FabricComponentEntry>();
   #tail: Promise<void> = Promise.resolve();
   #closed = false;
 
@@ -34,7 +35,7 @@ export class FabricComponentLoader {
     readonly supervisor: FabricComponentSupervisor,
   ) {
     this.#unsubscribeCatalog = catalog.subscribe((event) => {
-      const affected = [...this.#desired.values()].filter(
+      const affected = [...this.#targetEntries().values()].filter(
         (entry) => entry.component === event.name && entry.disabled !== true,
       );
       if (affected.length === 0 || this.#closed) return;
@@ -46,6 +47,10 @@ export class FabricComponentLoader {
 
   entries(): FabricComponentEntry[] {
     return [...this.#desired.values()].map(cloneEntry);
+  }
+
+  pinnedEntries(): FabricComponentEntry[] {
+    return [...this.#pinned.values()].map(cloneEntry);
   }
 
   definitions(): Array<{
@@ -75,7 +80,7 @@ export class FabricComponentLoader {
         this.#errors.has(info.id) ? { ...info, error: this.#errors.get(info.id)! } : info,
       ]),
     );
-    for (const entry of this.#desired.values()) {
+    for (const entry of this.#targetEntries().values()) {
       if (entry.disabled || live.has(entry.id) || this.catalog.get(entry.component)) continue;
       const now = this.#firstSeen.get(entry.id) ?? Date.now();
       this.#firstSeen.set(entry.id, now);
@@ -123,7 +128,7 @@ export class FabricComponentLoader {
         ? [[id, this.#loaded.get(id)] as const]
         : [...this.#loaded.entries()];
       if (id && !targets[0]?.[1]) {
-        const desired = this.#desired.get(id);
+        const desired = this.#targetEntries().get(id);
         if (desired && !this.catalog.get(desired.component)) {
           throw new Error(`Fabric component definition is unavailable: ${desired.component}`);
         }
@@ -131,26 +136,50 @@ export class FabricComponentLoader {
       }
       for (const [componentId, loaded] of targets) {
         if (!loaded) continue;
-        await this.supervisor.replace(componentId, loaded.entry, loaded.definition);
+        try {
+          await this.supervisor.replace(componentId, loaded.entry, loaded.definition);
+          this.#errors.delete(componentId);
+        } catch (error) {
+          this.#errors.set(componentId, message(error));
+          throw error;
+        }
       }
       return id ? [this.status(id)] : this.list();
+    });
+  }
+
+  installPinned(entries: readonly FabricComponentEntry[]): Promise<FabricComponentInfo[]> {
+    this.supervisor.assertLifecycleEntryAllowed("install pinned components");
+    if (entries.length > 256) throw new Error("Fabric supports at most 256 pinned components");
+    const next = this.#entryMap(entries);
+    return this.#enqueue(async () => {
+      for (const id of next.keys()) {
+        if (this.#desired.has(id)) {
+          throw new Error(`Pinned Fabric component id conflicts with configured entry: ${id}`);
+        }
+      }
+      const previous = this.#pinned;
+      this.#pinned = next;
+      try {
+        await this.#applyDesired();
+        return this.list();
+      } catch (error) {
+        this.#pinned = previous;
+        throw error;
+      }
     });
   }
 
   reconcile(entries: readonly FabricComponentEntry[]): Promise<FabricComponentInfo[]> {
     this.supervisor.assertLifecycleEntryAllowed("reconcile the component loader");
     if (entries.length > 256) throw new Error("Fabric configuration supports at most 256 components");
-    const next = new Map<string, FabricComponentEntry>();
-    for (const rawEntry of entries) {
-      const entry = cloneEntry(rawEntry);
-      if (!ID_PATTERN.test(entry.id)) throw new Error(`Invalid Fabric component id: ${entry.id}`);
-      if (!entry.component.trim()) {
-        throw new Error(`Fabric component entry ${entry.id} has an empty component name`);
-      }
-      if (next.has(entry.id)) throw new Error(`Duplicate Fabric component entry id: ${entry.id}`);
-      next.set(entry.id, entry);
-    }
+    const next = this.#entryMap(entries);
     return this.#enqueue(async () => {
+      for (const id of next.keys()) {
+        if (this.#pinned.has(id)) {
+          throw new Error(`Fabric component entry id is reserved by a pinned component: ${id}`);
+        }
+      }
       const previous = this.#desired;
       this.#desired = next;
       try {
@@ -177,6 +206,25 @@ export class FabricComponentLoader {
     await this.#tail;
     await this.supervisor.close();
     this.#loaded.clear();
+    this.#pinned.clear();
+  }
+
+  #entryMap(entries: readonly FabricComponentEntry[]): Map<string, FabricComponentEntry> {
+    const next = new Map<string, FabricComponentEntry>();
+    for (const rawEntry of entries) {
+      const entry = cloneEntry(rawEntry);
+      if (!ID_PATTERN.test(entry.id)) throw new Error(`Invalid Fabric component id: ${entry.id}`);
+      if (!entry.component.trim()) {
+        throw new Error(`Fabric component entry ${entry.id} has an empty component name`);
+      }
+      if (next.has(entry.id)) throw new Error(`Duplicate Fabric component entry id: ${entry.id}`);
+      next.set(entry.id, entry);
+    }
+    return next;
+  }
+
+  #targetEntries(): Map<string, FabricComponentEntry> {
+    return new Map([...this.#pinned, ...this.#desired]);
   }
 
   #enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -188,7 +236,7 @@ export class FabricComponentLoader {
 
   async #applyDesired(): Promise<void> {
     const targets = new Map<string, LoadedComponent>();
-    for (const entry of this.#desired.values()) {
+    for (const entry of this.#targetEntries().values()) {
       if (entry.disabled) continue;
       const catalogEntry = this.catalog.get(entry.component);
       if (!catalogEntry) continue;

@@ -4,6 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { FabricActivityStore } from "./activity/store.js";
 import { CapturedToolCatalog, type CapturedToolEntry } from "./capture/catalog.js";
+import {
+  FABRIC_COMPONENT_PROVIDER_NAMES,
+  FABRIC_PROVIDER_COMPONENT_PREFIX,
+} from "./components/provider-component.js";
 import type { FabricComponentGraph } from "./components/types.js";
 import { loadFabricConfig, type FabricConfig, type FabricResultFormat } from "./config.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
@@ -246,7 +250,11 @@ export class FabricState {
   }
 
   registerExternal(provider: FabricProvider, options: { overwrite?: boolean } = {}): void {
-    if (["pi", "mcp", "agents", "mesh", "extensions", "fabric", "schema", "state", "memory", "compact", "components"].includes(provider.name)) {
+    if (
+      provider.name === "fabric" ||
+      provider.name === "components" ||
+      FABRIC_COMPONENT_PROVIDER_NAMES.some((name) => name === provider.name)
+    ) {
       throw new Error(`Reserved Fabric provider name: ${provider.name}`);
     }
     if (this.#externalProviders.has(provider.name) && !options.overwrite) {
@@ -260,6 +268,9 @@ export class FabricState {
     component: FabricComponentDefinition,
     options: { overwrite?: boolean } = {},
   ): void {
+    if (component.name.startsWith(FABRIC_PROVIDER_COMPONENT_PREFIX)) {
+      throw new Error(`Reserved Fabric component name: ${component.name}`);
+    }
     if (this.#externalComponents.has(component.name) && !options.overwrite) {
       throw new Error(`Fabric component already registered: ${component.name}`);
     }

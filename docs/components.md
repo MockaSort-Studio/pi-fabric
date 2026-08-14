@@ -1,6 +1,6 @@
 # Components, effects, and committed capabilities
 
-Pi Fabric adds a component plane that turns the provider registry into a supervised, reconfigurable harness. A **provider** exposes actions. A **component** declares the exact actions it requires, and it may mount providers of its own. Each component owns an effect scope that Fabric can unwind. An **actor** may commit the same kind of exact capability view before each model run. The [component calculus](component-calculus.md) records the formal correspondence, the laws the runtime enforces, the author obligations, and the documented implementation boundary.
+Pi Fabric adds a supervised component plane above the registry, where a **provider** exposes actions and a **component** declares exact requirements. Components can mount providers inside an effect scope that Fabric can unwind. Before each model run, an **actor** may commit the same type of capability view. The [component calculus](component-calculus.md) defines the lifecycle laws and author duties, with a [provider specialization](provider-component-calculus.md) for first-party namespaces and rolling replacement.
 
 ## Architectural fit
 
@@ -19,7 +19,7 @@ Reload preserves the corresponding observable path:
 ```text
 old component ──dispose dependents/effects──▶ retired provider generation
       │                                             │ retained until quiescent
-      │ replacement succeeds                       ▼
+      │ replacement succeeds                        ▼
       └────────────────────────────────────▶ new provider generation
 ```
 
@@ -32,6 +32,37 @@ These parts add the missing control plane above `ActionRegistry`. The existing d
 - `FabricComponentLoader` reconciles declarative entries and catalog revisions transactionally.
 - `components.*` exposes lifecycle diagnostics and reload control.
 - An actor can declare `requires` and receives a closed-world view with a portable descriptor digest for every run.
+
+## Built-in provider components
+
+The component loader pins each enabled first-party action surface:
+
+```text
+fabric.provider.pi
+fabric.provider.extensions
+fabric.provider.mcp
+fabric.provider.mesh
+fabric.provider.state
+fabric.provider.schema
+fabric.provider.compact
+fabric.provider.agents
+fabric.provider.memory
+```
+
+Each component preserves its existing provider namespace, including calls such as `memory.recall` and `schema.commit`. Calls through `agents.run` or `mcp.$servers` retain the same descriptors and policy path. The kernel keeps `components.*` as the service that controls the graph.
+
+User configuration reconciliation retains pinned entries whose IDs stay reserved, and the host reserves the `fabric.provider.*` definition prefix across eager registration and discovery. Configuration gates select `pi`, `extensions`, `mesh`, `state`, and `memory`.
+
+`components.reload({ id: "fabric.provider.memory" })` follows this replacement order:
+
+1. Retire the old binding.
+2. Let committed calls settle on that generation.
+3. Stage the candidate binding through activation.
+4. Publish the candidate after commit.
+
+Candidate failure starts restoration of the prior definition. The component status records a failed restoration.
+
+Catalog replacement uses the same path. A newer definition revision rolls every enabled instance of that definition, including pinned and configured entries.
 
 ## Registering a component
 

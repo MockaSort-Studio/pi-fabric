@@ -1,8 +1,8 @@
 # Component calculus and runtime laws
 
-Pi Fabric's component plane follows this mathematical contract. JavaScript cannot prove arbitrary program equivalence. The ordinary `fabric_exec` path enters the plane only when code uses a committed capability view or a supervised component.
+This mathematical contract governs Pi Fabric's component plane. Component authors define the equivalence of arbitrary programs. The plane applies when `fabric_exec` uses a committed capability view or a supervised component. The [provider component calculus](provider-component-calculus.md) maps these rules to stable namespaces and runtime provider replacement.
 
-DeepSeek's dynamic-composition paper describes the effect/coeffect calculus used here. Pi Fabric keeps explicit provider/action refs and host policy. Cordis's proxy context API stays outside this implementation.
+DeepSeek's dynamic-composition paper supplies the effect and coeffect calculus used here, and Pi Fabric adds explicit provider refs with host policy. Cordis's proxy context API belongs to a separate implementation.
 
 ## Runtime correspondence
 

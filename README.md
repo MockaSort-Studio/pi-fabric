@@ -17,14 +17,14 @@ _One type-checked program for tools, MCP, agents, workflows, actors, mesh, counc
 [![license](https://img.shields.io/badge/license-MIT-f4c430?style=for-the-badge)](LICENSE)
 
 <p align="center">
-  🏆 <strong><a href="https://arcprize.org/scorecards/d4c56c67-136b-4643-b648-62ae28fe2a54">100% on ARC-AGI-3</a></strong> — a Fabric-powered agent won <strong>all 25 environments</strong> in one 22.4-hour session with ~4 minutes of human time ($1,349 in model spend).
+  🏆 <strong><a href="https://arcprize.org/scorecards/d4c56c67-136b-4643-b648-62ae28fe2a54">100% on ARC-AGI-3</a></strong>. A Fabric-powered agent won <strong>all 25 environments</strong> in one 22.4-hour session with 4 minutes of human time ($1,349 in model spend).
 </p>
 
 </div>
 
 ---
 
-You keep talking to Pi the way you always do. Fabric gives the model **one programmable tool** — `fabric_exec` — that it uses to compose Pi's core tools, MCP servers, captured extension tools, child agents, persistent actors, and durable coordination into a single type-checked TypeScript program. The program runs in a QuickJS sandbox by default; an explicit unsafe Node-process executor is available for trusted workloads that exceed WASM32 memory. Only the final result comes back to the conversation. Branching, loops, fan-out, and data flow become code the model writes and type-checks — not a stack of separate tool calls you have to orchestrate.
+Fabric gives Pi one programmable tool called `fabric_exec`, which composes core tools and MCP servers with captured extension tools in a checked TypeScript program. That program can call agents or actors, use durable coordination, and run inside QuickJS. Trusted workloads that exceed WASM32 memory may use the unsafe Node process. After execution, the conversation receives the result of the program's branches, loops, fan-out, and data flow.
 
 ## Why Fabric?
 
@@ -39,11 +39,12 @@ You keep talking to Pi the way you always do. Fabric gives the model **one progr
 
 ## How it works
 
-1. **You ask** in plain language, as usual.
-2. **Pi writes one program** that calls the tools, agents, and MCP servers it needs. The program is type-checked before it runs.
-3. **Only the result returns** to your conversation. Intermediate work stays in the sandbox and surfaces in the activity panel and dashboard.
+1. **You ask** in plain language.
+2. **Pi writes one program** that calls the required tools and agents.
+3. **The type checker validates the program** before execution.
+4. **The result returns** to your conversation. Intermediate work stays in the sandbox and appears in the activity panel and dashboard.
 
-Under the hood, the model writes something like this — you don't:
+The model can write this program:
 
 ```ts
 const [manifest, sources] = await Promise.all([
@@ -56,7 +57,7 @@ return {
 };
 ```
 
-Independent calls run in parallel; only the returned object enters the model context. Known providers use concise direct calls such as `mcp.fal_ai.get_model_schema(...)`, `memory.recall(...)`, `state.get()`, `schema.status()`, and `compact.status()`; `tools.call({ ref, args })` remains the fallback for refs discovered or computed at runtime.
+Independent calls run in parallel, and the returned object enters the model context. Known providers support concise direct calls such as `mcp.fal_ai.get_model_schema(...)`, `memory.recall(...)`, `state.get()`, `schema.status()`, and `compact.status()`. Refs found or computed at runtime use `tools.call({ ref, args })`.
 
 ## Install
 
@@ -93,7 +94,7 @@ pi -e /absolute/path/to/pi-fabric
 
 ## What you can ask for
 
-Advanced patterns are user-invoked and are not advertised for automatic selection. Run `/skill:fabric-guide` when you want one recommendation, or invoke the exact `/skill:<name>` yourself. Describing an ordinary coding task keeps Pi on the core `fabric-exec` path.
+Pi loads advanced patterns after direct user invocation. Run `/skill:fabric-guide` for one recommendation, or invoke the exact `/skill:<name>` yourself. An ordinary coding task keeps Pi on the core `fabric-exec` path.
 
 | You want | Run |
 | -------- | --- |
@@ -105,7 +106,7 @@ Advanced patterns are user-invoked and are not advertised for automatic selectio
 | A quiet decision-point reviewer | `/skill:fabric-advisor Focus on migration correctness.` |
 | Same-model independent reviewers and one decision | `/skill:fabric-council Review this design for correctness, security, and operability.` |
 | Multi-model compare-not-merge deliberation or act mode | `/skill:fabric-fusion Deliberate this design across models.` |
-| One command that infers advisor versus supervisor | `/skill:fabric-ambient advisor Focus on migration correctness.` |
+| One command that chooses advisor or supervisor | `/skill:fabric-ambient advisor Focus on migration correctness.` |
 | A durable team coordinating through versioned tasks | `/skill:fabric-swarm Coordinate this migration across owned task partitions.` |
 | Evidence-gated edits with postconditions | `/skill:fabric-schema Make this parser change only if focused tests stay green.` |
 
@@ -113,23 +114,23 @@ The foundation is the `fabric-exec` reference skill: the model loads it before i
 
 ## The dashboard
 
-Fabric adds a live activity surface to Pi, no extra extension required:
+Fabric includes a live activity surface in Pi:
 
 - A compact widget above the chat (like `pi-supervisor`) whose header follows the current phase while its rows show active/completed agents, active actors, and their recent nested tool or code-change activity.
-- `/fabric` (or `/fabric dashboard`) — **Activity** and **Topology** views where the user-facing Pi session is always present as **Main**. Queue/steer Main, active children, actors, and observed mesh agents; navigate a spring-followed unified topology of runs and project mesh, with paged transcripts, topics, state, and routes.
-- `/fabric settings` — mirrors Pi's `/settings` and writes changes to `fabric.json`.
+- `/fabric` (or `/fabric dashboard`): opens the **Activity** and **Topology** views. The user-facing Pi session appears as **Main**. You can queue or steer participants and inspect the project topology.
+- `/fabric settings`: mirrors Pi's `/settings` and writes changes to `fabric.json`.
 
 See the [interface & commands reference](docs/interface.md) for every view, keybinding, and slash command.
 
 ## Reference
 
-- [Configuration](docs/configuration.md) — `fabric.json`, code modes, tool capture, approvals, and budgets.
-- [Interface & commands](docs/interface.md) — dashboard, settings, keybindings, slash commands, and headless runs.
-- [Agents, actors & mesh](docs/agents.md) — agents, trajectory-preserving model handoff and `/fabric prewalk`, the Claude and Veda runners, transports, steering, persistent actors, global templates, councils, recursive queries, and durable coordination.
-- [Components & committed capabilities](docs/components.md) — supervised effects, exact requirements, transactional reload, provider generations, actor commitments, and the linked executable component calculus.
-- [External providers](docs/providers.md) — the versioned provider protocol for extensions.
-- [Architecture & security](docs/architecture.md) — the host bridge, sandboxing, tool-call robustness, and limitations.
-- [Skills](docs/skills.md) — the core-first invocation policy and user-invoked advanced patterns.
+- [Configuration](docs/configuration.md): `fabric.json`, code modes, tool capture, approvals, and budgets.
+- [Interface & commands](docs/interface.md): dashboard, settings, keybindings, slash commands, and headless runs.
+- [Agents, actors & mesh](docs/agents.md): model handoff, `/fabric prewalk`, runners, transports, actors, councils, recursive queries, and durable coordination.
+- [Components & committed capabilities](docs/components.md): supervised effects, exact requirements, rolling provider generations, actor commitments, and both formal calculi.
+- [External providers](docs/providers.md): the versioned provider protocol for extensions.
+- [Architecture & security](docs/architecture.md): the host bridge, sandboxing, tool-call robustness, and limits.
+- [Skills](docs/skills.md): the core-first invocation policy and user-invoked advanced patterns.
 
 ## Development
 
@@ -140,12 +141,19 @@ pnpm test
 pnpm build
 ```
 
-The test suite covers configuration, schema validation, provider dispatch, registered-tool interception and execution, QuickJS isolation, Pi built-in invocation, agents, fake Claude stream-JSON and model discovery, fake Veda JSON runs, workflows, durable mesh state, actor mailboxes and subscriptions, and Pi/Claude actor restoration. Claude and Veda fixtures never make a billable request.
+The test suite covers:
+
+- configuration and schema validation
+- provider dispatch, registered-tool execution, QuickJS isolation, and Pi built-in calls
+- agent fixtures for Claude and Veda
+- workflows, durable mesh state, actor mailboxes, subscriptions, and actor restoration
+
+Claude and Veda fixtures use local test processes with zero billable requests.
 
 ## Acknowledgments
 
-- Thanks to [@hazrid93](https://github.com/hazrid93), who originally requested a better LLM advisor pattern that saved on tokens — the idea that became Fabric's advisor.
-- Thanks to Chad Gibson at [Neuralwatt](https://neuralwatt.com), who opened the door to extended testing of long MCR sessions and patiently listened to every debugging woe along the way.
+- Thanks to [@hazrid93](https://github.com/hazrid93), whose request for a token-efficient LLM advisor pattern led to Fabric's advisor.
+- Thanks to Chad Gibson at [Neuralwatt](https://neuralwatt.com), who supported extended tests of long MCR sessions and the related debugging work.
 
 ## License
 

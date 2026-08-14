@@ -43,6 +43,80 @@ describe("FabricComponentLoader", () => {
     await registry.close();
   });
 
+  it("keeps pinned built-ins across config reconciliation and rolls their definitions", async () => {
+    const { registry, catalog, loader } = harness();
+    const events: string[] = [];
+    catalog.register({
+      name: "fabric.provider.memory",
+      activate() {
+        events.push("v1-start");
+        return () => { events.push("v1-stop"); };
+      },
+    });
+
+    await loader.installPinned([{
+      id: "fabric.provider.memory",
+      component: "fabric.provider.memory",
+    }]);
+    await loader.reconcile([]);
+    expect(loader.pinnedEntries()).toEqual([{
+      id: "fabric.provider.memory",
+      component: "fabric.provider.memory",
+    }]);
+    expect(loader.status("fabric.provider.memory")).toMatchObject({
+      state: "active",
+      revision: 1,
+    });
+
+    catalog.register({
+      name: "fabric.provider.memory",
+      activate() {
+        events.push("v2-start");
+        return () => { events.push("v2-stop"); };
+      },
+    }, { overwrite: true });
+    await loader.settle();
+    expect(loader.status("fabric.provider.memory")).toMatchObject({
+      state: "active",
+      revision: 2,
+    });
+    expect(events).toEqual(["v1-start", "v1-stop", "v2-start"]);
+
+    await expect(loader.reconcile([{
+      id: "fabric.provider.memory",
+      component: "user-memory",
+    }])).rejects.toThrow("reserved by a pinned component");
+
+    await loader.close();
+    expect(events).toEqual(["v1-start", "v1-stop", "v2-start", "v2-stop"]);
+    await registry.close();
+  });
+
+  it("serializes pinned and configured ID collision checks", async () => {
+    const { registry, catalog, loader } = harness();
+    catalog.register({ name: "fabric.provider.memory", activate() {} });
+    catalog.register({ name: "user-memory", activate() {} });
+
+    const installing = loader.installPinned([{
+      id: "fabric.provider.memory",
+      component: "fabric.provider.memory",
+    }]);
+    const reconciling = loader.reconcile([{
+      id: "fabric.provider.memory",
+      component: "user-memory",
+    }]);
+
+    await installing;
+    await expect(reconciling).rejects.toThrow("reserved by a pinned component");
+    expect(loader.status("fabric.provider.memory")).toMatchObject({
+      component: "fabric.provider.memory",
+      state: "active",
+    });
+
+    await loader.close();
+    await registry.close();
+  });
+
   it("rolls back a failed catalog replacement and applies the next valid revision", async () => {
     const { registry, catalog, loader } = harness();
     const events: string[] = [];

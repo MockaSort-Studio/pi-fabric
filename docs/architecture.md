@@ -10,15 +10,17 @@ TypeScript checker → QuickJS sandbox (default)
                    └→ disposable Node process (unsafe opt-in)
     │ JSON-only host bridge
     ▼
-ActionRegistry
-    ├── pi.*         built-in Pi tool definitions
-    ├── extensions.* captured pi.registerTool definitions
-    ├── mcp.*        pooled mcporter runtime
-    ├── agents.*     one-shot workers + persistent mailbox actors
-    │                 └→ participant directory + owner-addressed control
-    ├── mesh.*       durable topics + compare-and-swap state + membership view
-    ├── components.* supervised effects + dependency graph + reload
-    └── external     explicit pi.events providers
+ActionRegistry ◀── staged commit ── ComponentSupervisor
+    ├── pi.*                          ├── pinned first-party providers
+    ├── extensions.*                  └── configured and discovered components
+    ├── mcp.*
+    ├── agents.* ──▶ actors + participant control
+    ├── mesh.* ──▶ state.*
+    ├── schema.*
+    ├── memory.*
+    ├── compact.*
+    ├── components.* kernel diagnostics and reload
+    └── external providers
 
 ActivityStore → compact widget + footer status + interactive dashboard
 ```
@@ -29,9 +31,15 @@ The optional `node-process` executor runs the same type-checked guest API and ho
 
 ## Component control plane
 
-The [component plane](components.md) sits above the registry, and its [executable calculus](component-calculus.md) states the laws and author obligations that apply there. Each definition declares exact action requirements plus any optional provided services. Before activation, the loader resolves a versioned, descriptor-hashed capability view. Providers mounted during activation stay staged until the guarded effects complete and the target is reverified. Publication is atomic. When a component is replaced, the old generation retires, its dependents unload, and that generation stays alive for retained views and in-flight calls until quiescence. Early diversion can happen at yield boundaries. Transition epochs block stale publication, declared provisions are disjoint, and parent-owned child fibers unwind before their parent. On the dashboard, this requirement graph renders as its own component group. Participant ownership uses a separate topology. Effect scopes roll back asynchronously in LIFO order and quarantine cleanup failures.
+The [component plane](components.md) supervises provider registry changes under the lifecycle laws and author duties in the [component calculus](component-calculus.md). A [provider specialization](provider-component-calculus.md) applies those rules to first-party namespaces and rolling replacement.
 
-The same committed-view protocol can close an actor child's Fabric surface. The host records a portable descriptor digest, and the child resolves that digest independently. Every nested call is then pinned to that view. This property is capability coherence. Fabric does not claim that arbitrary host component code is pure or sandboxed.
+Before activation, a definition declares its required actions and optional services while the loader resolves a capability view with versioned descriptor hashes. Mounted providers stay staged until their effects finish and the target passes a second check, which makes publication atomic.
+
+Replacement retires the old generation, which makes dependents unload before its provider inverse runs. Retained views and active calls can use that generation until quiescence. Transition epochs prevent stale publication at yield boundaries, and disjoint provisions keep each namespace unique. Parent-owned child fibers unwind before the parent. Effect scopes apply their inverses in LIFO order and send cleanup failures to quarantine.
+
+The dashboard renders the requirement graph as a component group. Participant ownership uses a separate topology. Enabled first-party providers mount through pinned components. `components.*` remains in the kernel and controls the graph. Runtime initialization completes each pinned mount before it creates the execution service.
+
+The same committed-view protocol can close an actor child's Fabric surface around a portable descriptor digest. The child resolves that digest, then each nested call uses the pinned view. This behavior defines capability coherence. Host component code runs as trusted code outside the sandbox.
 
 ## Tool discovery and generic calls
 

@@ -13,6 +13,13 @@ import { CapturedToolCatalog, type CapturedToolEntry } from "./capture/catalog.j
 import { FabricComponentCatalog } from "./components/catalog.js";
 import { FabricComponentLoader } from "./components/loader.js";
 import { FabricComponentSupervisor } from "./components/supervisor.js";
+import {
+  createProviderComponent,
+  FABRIC_COMPONENT_PROVIDER_NAMES,
+  FABRIC_PROVIDER_COMPONENT_PREFIX,
+  FabricProviderComponentManifest,
+  type FabricProviderComponent,
+} from "./components/provider-component.js";
 import type {
   FabricComponentDefinition,
   FabricComponentGraph,
@@ -137,6 +144,7 @@ export class FabricRuntimeState {
   #unsubscribeCapturedCatalog: (() => void) | undefined;
   #cwd: string | undefined;
   readonly #externalProviders = new Map<string, FabricProvider>();
+  readonly #builtinComponentNames = new Set<string>();
   readonly componentCatalog = new FabricComponentCatalog();
   readonly activity: FabricActivityStore;
   readonly prewalk: PrewalkController;
@@ -269,6 +277,8 @@ export class FabricRuntimeState {
 
   async initialize(context: ExtensionContext, bootstrapConfig?: FabricConfig): Promise<void> {
     await this.#closeInternal();
+    for (const name of this.#builtinComponentNames) this.componentCatalog.unregister(name);
+    this.#builtinComponentNames.clear();
     this.prewalk.cancel();
     this.prewalkDrift.clear();
     context.ui.setStatus("fabric-prewalk", undefined);
@@ -320,6 +330,14 @@ export class FabricRuntimeState {
       this.#componentSupervisor,
     );
     this.#registry.register(new ComponentsProvider(this.#componentLoader));
+    const builtinManifest = new FabricProviderComponentManifest(
+      this.componentCatalog,
+      this.#componentLoader,
+    );
+    const installBuiltin = async (component: FabricProviderComponent): Promise<void> => {
+      await builtinManifest.install(component);
+      this.#builtinComponentNames.add(component.definition.name);
+    };
     const enforceSchema = this.#config.schema.mode === "enforce";
     const effectiveFullCodeMode = this.#config.fullCodeMode || enforceSchema;
     const capturedToolsProvider =
@@ -327,40 +345,53 @@ export class FabricRuntimeState {
         ? new CapturedToolsProvider(this.capturedTools, this.#onCapturedToolUse)
         : undefined;
     if (effectiveFullCodeMode) {
-      this.#registry.register(
-        new PiToolsProvider(
+      await installBuiltin(createProviderComponent({
+        provider: "pi",
+        description: "Pi core tools adapter",
+        create: () => new PiToolsProvider(
           context.cwd,
           enforceSchema ? undefined : this.capturedTools,
           capturedToolsProvider,
         ),
-      );
+      }));
     }
-    this.#mcpProvider = new McpProvider(context.cwd, this.#config.mcp, {
-      ...(this.#config.mcp.cache.enabled
-        ? {
-            cache: new McpDescriptorCacheStore(
-              path.join(
-                process.env.PI_FABRIC_PROJECT_ROOT ?? context.cwd,
-                ".pi",
-                "fabric",
-                "mcp-cache.json",
+    await installBuiltin(createProviderComponent({
+      provider: "mcp",
+      description: "MCP runtime and descriptor cache",
+      create: () => new McpProvider(context.cwd, this.#config!.mcp, {
+        ...(this.#config!.mcp.cache.enabled
+          ? {
+              cache: new McpDescriptorCacheStore(
+                path.join(
+                  process.env.PI_FABRIC_PROJECT_ROOT ?? context.cwd,
+                  ".pi",
+                  "fabric",
+                  "mcp-cache.json",
+                ),
               ),
-            ),
-          }
-        : {}),
-      hooks: {
-        onSliceChanged: (descriptors) => {
-          this.#registry?.notifyCatalogChanged("mcp");
-          this.#mcpHooks?.onSliceChanged?.(descriptors);
+            }
+          : {}),
+        hooks: {
+          onSliceChanged: (descriptors) => {
+            this.#registry?.notifyCatalogChanged("mcp");
+            this.#mcpHooks?.onSliceChanged?.(descriptors);
+          },
+          onToolUse: (server) => this.#mcpHooks?.onToolUse?.(server),
         },
-        onToolUse: (server) => this.#mcpHooks?.onToolUse?.(server),
+      }),
+      mounted: (provider) => { this.#mcpProvider = provider; },
+      unmounted: (provider) => {
+        if (this.#mcpProvider === provider) this.#mcpProvider = undefined;
       },
-    });
-    this.#registry.register(this.#mcpProvider);
-    // Descriptor-cache hydration + background revalidation must not gate
-    // session start: fired unawaited, slices arrive via onSliceChanged.
-    this.#mcpProvider.warmup();
-    if (capturedToolsProvider) this.#registry.register(capturedToolsProvider);
+      start: (provider) => { provider.warmup(); },
+    }));
+    if (capturedToolsProvider) {
+      await installBuiltin(createProviderComponent({
+        provider: "extensions",
+        description: "Captured extension tool catalog",
+        create: () => capturedToolsProvider,
+      }));
+    }
     const sessionId = context.sessionManager.getSessionId();
     const { identity, mainAgentId } = resolveFabricIdentity(sessionId);
     const ownsPersistentActorRegistry =
@@ -407,8 +438,17 @@ export class FabricRuntimeState {
       pollMs: this.#config.mesh.actorPollMs,
     });
     if (this.#config.mesh.enabled) {
-      this.#registry.register(new MeshProvider(this.#mesh, identity, this.#participants));
-      this.#registry.register(new StateProvider(this.#mesh, identity));
+      await installBuiltin(createProviderComponent({
+        provider: "mesh",
+        description: "Project mesh and participant directory",
+        create: () => new MeshProvider(this.#mesh!, identity, this.#participants!),
+      }));
+      await installBuiltin(createProviderComponent({
+        provider: "state",
+        description: "Labeled world state over the project mesh",
+        requires: ["mesh.get"],
+        create: () => new StateProvider(this.#mesh!, identity),
+      }));
     } else {
       const meshDisabled =
         'disabled by configuration (mesh.enabled=false); set "mesh": { "enabled": true } in .pi/fabric.json or the agent fabric.json';
@@ -422,13 +462,21 @@ export class FabricRuntimeState {
       identity,
       new StateStore(this.#mesh),
     );
-    this.#registry.register(new SchemaProvider(this.#schema));
+    await installBuiltin(createProviderComponent({
+      provider: "schema",
+      description: "Schema verification and workspace transactions",
+      create: () => new SchemaProvider(this.#schema!),
+    }));
     this.#identity = identity;
     this.#compact = new CompactController({
       onRequest: (intent) => void this.#publishCompactEvent("requested", intent),
       onCommit: (info) => void this.#publishCompactEvent(info.status, info),
     });
-    this.#registry.register(new CompactProvider(this.#compact));
+    await installBuiltin(createProviderComponent({
+      provider: "compact",
+      description: "Host context compaction controller",
+      create: () => new CompactProvider(this.#compact!),
+    }));
     const agentConfig = enforceSchema
       ? { ...this.#config.agents, enabled: false }
       : this.#config.agents;
@@ -624,7 +672,7 @@ export class FabricRuntimeState {
     );
     this.#agents.subscribeUi(() => this.#participants?.scheduleRefresh());
     this.#actors.subscribe(() => this.#participants?.scheduleRefresh());
-    this.#agentsProvider = new AgentsProvider(
+    const agentsProvider = new AgentsProvider(
       this.#agents,
       this.#actors,
       this.#globalActors,
@@ -634,8 +682,10 @@ export class FabricRuntimeState {
       this.#lifecycle,
       () => this.#config?.ui.showAgentToolPreview ?? true,
       this.#residency,
+      false,
     );
-    this.#control.start((command, from) => this.#agentsProvider!.acceptControl(command, from));
+    this.#agentsProvider = agentsProvider;
+    this.#control.start((command, from) => agentsProvider.acceptControl(command, from));
     try {
       await this.#participants.start();
     } catch (error) {
@@ -652,7 +702,11 @@ export class FabricRuntimeState {
     }
     this.#lifecycle.start();
     this.#residency?.start();
-    this.#registry.register(this.#agentsProvider);
+    await installBuiltin(createProviderComponent({
+      provider: "agents",
+      description: "Agents, actors, lifecycle delivery, and residency control",
+      create: () => agentsProvider,
+    }));
     if (this.#config.memory.enabled) {
       const sessionFile = context.sessionManager.getSessionFile();
       const memoryContext: MemoryProviderContext = {
@@ -666,13 +720,28 @@ export class FabricRuntimeState {
           leafId: context.sessionManager.getLeafId(),
         }),
       };
-      this.#registry.register(new MemoryProvider(memoryContext));
+      await installBuiltin(createProviderComponent({
+        provider: "memory",
+        description: "Session memory index and source hydration",
+        create: () => new MemoryProvider(memoryContext),
+      }));
     } else {
       this.#registry.markUnavailable(
         "memory",
         'disabled by configuration (memory.enabled=false); set "memory": { "enabled": true } in .pi/fabric.json or the agent fabric.json to enable memory.* actions',
       );
     }
+    const expectedBuiltinProviders = new Set<string>([
+      ...(effectiveFullCodeMode ? ["pi"] : []),
+      ...(capturedToolsProvider ? ["extensions"] : []),
+      "mcp",
+      ...(this.#config.mesh.enabled ? ["mesh", "state"] : []),
+      "schema",
+      "compact",
+      "agents",
+      ...(this.#config.memory.enabled ? ["memory"] : []),
+    ]);
+    builtinManifest.assertActive(expectedBuiltinProviders, this.#registry);
     for (const provider of this.#externalProviders.values()) {
       this.#registry.register(provider);
     }
@@ -689,7 +758,10 @@ export class FabricRuntimeState {
       register: (provider, options) => this.registerExternal(provider, options),
     };
     this.pi.events.emit(FABRIC_PROVIDER_DISCOVER_EVENT, discovery);
-    const componentDiscovery: FabricComponentDiscovery = this.componentCatalog.discovery;
+    const componentDiscovery: FabricComponentDiscovery = {
+      version: 1,
+      register: (component, options) => this.registerExternalComponent(component, options),
+    };
     this.pi.events.emit(FABRIC_COMPONENT_DISCOVER_EVENT, componentDiscovery);
     await this.#componentLoader.reconcile(enforceSchema ? [] : this.#config.components);
     const inheritedRequirements = inheritedCapabilityRequirements();
@@ -935,19 +1007,9 @@ export class FabricRuntimeState {
 
   registerExternal(provider: FabricProvider, options: { overwrite?: boolean } = {}): void {
     if (
-      [
-        "pi",
-        "mcp",
-        "agents",
-        "mesh",
-        "extensions",
-        "fabric",
-        "schema",
-        "state",
-        "memory",
-        "compact",
-        "components",
-      ].includes(provider.name)
+      provider.name === "fabric" ||
+      provider.name === "components" ||
+      FABRIC_COMPONENT_PROVIDER_NAMES.some((name) => name === provider.name)
     ) {
       throw new Error(`Reserved Fabric provider name: ${provider.name}`);
     }
@@ -962,6 +1024,9 @@ export class FabricRuntimeState {
     component: FabricComponentDefinition,
     options: { overwrite?: boolean } = {},
   ): void {
+    if (component.name.startsWith(FABRIC_PROVIDER_COMPONENT_PREFIX)) {
+      throw new Error(`Reserved Fabric component name: ${component.name}`);
+    }
     this.componentCatalog.register(component, options);
   }
 
@@ -978,6 +1043,8 @@ export class FabricRuntimeState {
     await this.#lifecycle?.close();
     await this.#control?.close();
     await this.#residency?.close();
+    await this.#actors?.close();
+    await this.#agents?.close();
     try {
       await this.#registry?.close();
     } finally {
@@ -1008,6 +1075,7 @@ export class FabricRuntimeState {
     this.#unsubscribeCapturedCatalog?.();
     this.#unsubscribeCapturedCatalog = undefined;
     this.componentCatalog.clear();
+    this.#builtinComponentNames.clear();
     this.#cwd = undefined;
     this.activity.reset();
     this.#widgetDismissedAt = 0;
@@ -1044,6 +1112,8 @@ export class FabricRuntimeState {
     await this.#lifecycle?.close();
     await this.#control?.close();
     await this.#residency?.close();
+    await this.#actors?.close();
+    await this.#agents?.close();
     const externalNames = new Set(this.#externalProviders.keys());
     try {
       await this.#registry.close(externalNames);

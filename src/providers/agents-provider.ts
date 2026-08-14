@@ -1217,6 +1217,7 @@ export class AgentsProvider implements FabricProvider {
     readonly lifecycle: LifecycleBroker,
     readonly agentToolPreviewEnabled: () => boolean = () => true,
     readonly residency?: ResidencyClient,
+    readonly ownsRuntime = true,
   ) {}
 
   async list(
@@ -2003,6 +2004,7 @@ export class AgentsProvider implements FabricProvider {
 
   async close(): Promise<void> {
     this.#transcripts.clear();
+    if (!this.ownsRuntime) return;
     await this.lifecycle.close();
     try {
       await this.actorManager.close();

@@ -136,7 +136,7 @@ Treat `node-process` as an explicit escape hatch for trusted code. It offers no 
 
 ## Components
 
-`components` is a root array of declarative supervised instances. `id` is the instance's stable identity. `component` names a definition registered through the versioned component protocol. Fabric passes `config` to the instance's `activate(context, config)` function. `disabled` removes the instance from the active graph without deleting the declaration. The default is an empty array, and Fabric keeps at most 256 valid entries.
+`components` is a root array of declarative supervised instances. Each `id` gives one instance a stable identity, and `component` names its definition in the versioned protocol. Fabric passes `config` to `activate(context, config)`. The `disabled` field removes an instance from the active graph and preserves its declaration. An empty array is the default, with a limit of 256 valid entries. The runtime installs enabled first-party providers as pinned `fabric.provider.*` components whose reserved IDs sit outside this array.
 
 Unknown definitions stay visible as waiting. They do not fail the Fabric runtime. Late discovery activates them. `/fabric reload` reconciles entry changes as a transaction. When a definition re-registers with `overwrite: true`, Fabric uses the same rollback-capable replacement path. See [components, effects, and committed capabilities](components.md).
 

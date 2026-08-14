@@ -1,6 +1,8 @@
 # External providers
 
-Fabric [captures normal `pi.registerTool()` tools automatically](configuration.md#captured-extension-tools). Extensions can still opt into the versioned provider protocol. Use it when you need to expose non-tool capabilities, richer risk declarations, or a large virtual action catalog without registering one Pi tool per action.
+Fabric [captures normal `pi.registerTool()` tools automatically](configuration.md#captured-extension-tools). Extensions use the versioned provider protocol for non-tool capabilities or virtual action catalogs with risk data.
+
+Fabric mounts each non-kernel first-party provider through a pinned component. External providers can use direct registration with a host-owned lifetime. A provider that belongs to a supervised external component calls `context.provide()` for staged publication and rolling replacement. The same component link controls dependency withdrawal.
 
 ```ts
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

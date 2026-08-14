@@ -234,7 +234,7 @@ describe("fabric-exec skill provider contracts", () => {
     expect(policy).toContain("core-first, user-opt-in");
     expect(policy).toContain("not a filesystem authorization boundary");
     expect(fs.readFileSync("README.md", "utf8")).toContain(
-      "Advanced patterns are user-invoked and are not advertised for automatic selection",
+      "Pi loads advanced patterns after direct user invocation",
     );
 
     const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
