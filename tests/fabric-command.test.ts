@@ -72,6 +72,38 @@ describe("/fabric command", () => {
     expect(fabricUi.openDashboard).toHaveBeenCalledWith(context);
   });
 
+  it("lets the activation hook own reload setup and keeps failure suspended", async () => {
+    let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
+    const pi = {
+      registerCommand: vi.fn((_name, command) => { handler = command.handler; }),
+    } as unknown as ExtensionAPI;
+    const state = {
+      ensure: vi.fn().mockResolvedValue(undefined),
+      initialize: vi.fn().mockRejectedValue(new Error("reload failed")),
+    } as unknown as FabricState;
+    const fabricUi = { stop: vi.fn(), start: vi.fn() } as unknown as FabricUiController;
+    const applyFabricMode = vi.fn();
+    const suspendToolCapture = vi.fn();
+    const autoArmPrewalk = vi.fn(async () => {});
+    const context = {} as ExtensionContext;
+
+    registerFabricCommand(pi, {
+      state,
+      fabricUi,
+      capturedTools: {} as CapturedToolCatalog,
+      applyFabricMode,
+      suspendToolCapture,
+      autoArmPrewalk,
+    });
+
+    await expect(handler!("reload", context)).rejects.toThrow("reload failed");
+    expect(fabricUi.stop).toHaveBeenCalledTimes(2);
+    expect(suspendToolCapture).toHaveBeenCalledTimes(2);
+    expect(applyFabricMode).not.toHaveBeenCalled();
+    expect(fabricUi.start).not.toHaveBeenCalled();
+    expect(autoArmPrewalk).not.toHaveBeenCalled();
+  });
+
   it("arms prewalk with the configured executor and submits an inline task", async () => {
     let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
     const sendUserMessage = vi.fn();
