@@ -20,6 +20,7 @@ export interface CapturedToolEntry {
 
 export class CapturedToolCatalog {
   readonly #tools = new Map<string, CapturedToolEntry>();
+  readonly #listeners = new Set<() => void>();
   // The ExtensionRunner observed during the last tool refresh. Stored even
   // when capture is disabled so PiToolsProvider can replay the tool-execution
   // lifecycle (tool_call/tool_result/tool_execution_*) for nested pi.* calls
@@ -40,7 +41,10 @@ export class CapturedToolCatalog {
     // Always remember the runner (see field comment) before the enabled gate.
     this.#runner = runner;
     this.#tools.clear();
-    if (!config.enabled) return;
+    if (!config.enabled) {
+      this.#emit();
+      return;
+    }
 
     for (const registeredTool of registeredTools) {
       const { definition, sourceInfo } = registeredTool;
@@ -55,10 +59,17 @@ export class CapturedToolCatalog {
         risk: config.risks[definition.name] ?? config.defaultRisk,
       });
     }
+    this.#emit();
   }
 
   clear(): void {
     this.#tools.clear();
+    this.#emit();
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
 
   get(name: string): CapturedToolEntry | undefined {
@@ -77,5 +88,11 @@ export class CapturedToolCatalog {
 
   get size(): number {
     return this.#tools.size;
+  }
+
+  #emit(): void {
+    for (const listener of [...this.#listeners]) {
+      try { listener(); } catch { /* Catalog observers cannot interrupt capture refresh. */ }
+    }
   }
 }

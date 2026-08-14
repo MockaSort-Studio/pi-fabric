@@ -131,6 +131,8 @@ interface ManagedAgent {
   thinking?: AgentRunRequest["thinking"];
   actorId?: string;
   actorName?: string;
+  capabilityRequirements?: string[];
+  capabilityDigest?: string;
   runnerSessionId?: string;
   branch?: string;
   worktree?: string;
@@ -634,6 +636,12 @@ export class AgentManager {
         ...(sessionExportFile ? ["--session-export-file", sessionExportFile] : []),
         ...(request.actorId ? ["--actor-id", request.actorId] : []),
         ...(request.actorName ? ["--actor-name", request.actorName] : []),
+        ...(request.capabilityRequirements
+          ? ["--capability-requirements", JSON.stringify(request.capabilityRequirements)]
+          : []),
+        ...(request.capabilityDigest
+          ? ["--capability-digest", request.capabilityDigest]
+          : []),
         ...(request.meshRoot ?? this.#meshRoot
           ? ["--mesh-root", request.meshRoot ?? this.#meshRoot!]
           : []),
@@ -695,6 +703,10 @@ export class AgentManager {
         ...(thinking ? { thinking } : {}),
         ...(request.actorId ? { actorId: request.actorId } : {}),
         ...(request.actorName ? { actorName: request.actorName } : {}),
+        ...(request.capabilityRequirements
+          ? { capabilityRequirements: [...request.capabilityRequirements] }
+          : {}),
+        ...(request.capabilityDigest ? { capabilityDigest: request.capabilityDigest } : {}),
         ...(request.runnerSessionId ? { runnerSessionId: request.runnerSessionId } : {}),
         ...(branch ? { branch } : {}),
         ...(worktree ? { worktree } : {}),
@@ -1404,6 +1416,10 @@ export class AgentManager {
       ...(managed.thinking ? { thinking: managed.thinking } : {}),
       ...(managed.actorId ? { actorId: managed.actorId } : {}),
       ...(managed.actorName ? { actorName: managed.actorName } : {}),
+      ...(managed.capabilityRequirements
+        ? { capabilityRequirements: [...managed.capabilityRequirements] }
+        : {}),
+      ...(managed.capabilityDigest ? { capabilityDigest: managed.capabilityDigest } : {}),
       ...(managed.recursive ? { recursive: true } : {}),
       ...(managed.runnerSessionId ? { runnerSessionId: managed.runnerSessionId } : {}),
       ...(managed.transport.sessionId ? { sessionId: managed.transport.sessionId } : {}),
@@ -1458,6 +1474,10 @@ export class AgentManager {
       ...(managed.thinking ? { thinking: managed.thinking } : {}),
       ...(managed.actorId ? { actorId: managed.actorId } : {}),
       ...(managed.actorName ? { actorName: managed.actorName } : {}),
+      ...(managed.capabilityRequirements
+        ? { capabilityRequirements: [...managed.capabilityRequirements] }
+        : {}),
+      ...(managed.capabilityDigest ? { capabilityDigest: managed.capabilityDigest } : {}),
       ...(managed.recursive ? { recursive: true } : {}),
       ...(managed.runnerSessionId ? { runnerSessionId: managed.runnerSessionId } : {}),
       ...(managed.transport.sessionId ? { sessionId: managed.transport.sessionId } : {}),

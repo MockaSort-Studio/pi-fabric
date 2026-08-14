@@ -6,6 +6,11 @@ type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 type FabricTransport = "auto" | "process" | "tmux" | "screen" | "localterm" | "herdr";
 type FabricAgentRunner = "pi" | "claude" | "veda";
 type FabricThinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+interface FabricActionEffect {
+  kind: "none" | "scoped" | "transactional" | "emission";
+  resources?: string[];
+  ordering?: "commutative" | "ordered" | "unknown";
+}
 interface FabricAction {
   ref: string;
   provider: string;
@@ -15,6 +20,7 @@ interface FabricAction {
   outputSchema?: Record<string, unknown>;
   risk: "read" | "write" | "execute" | "network" | "agent";
   namespace?: string;
+  effect?: FabricActionEffect;
 }
 interface FabricAgentRequest {
   task: string;
@@ -134,7 +140,9 @@ type FabricLifecycleEventType =
   | "run.completed"
   | "run.failed"
   | "run.stopped"
-  | "run.timed_out";
+  | "run.timed_out"
+  | "tokens.usage"
+  | "component.state";
 type FabricLifecycleDelivery = "steer" | "followUp";
 interface FabricLifecycleSource {
   id: string;
@@ -271,6 +279,7 @@ interface FabricCapabilityActionHead {
   descriptorHash: string;
   risk: "read" | "write" | "execute" | "network" | "agent";
   namespace?: string;
+  effect?: FabricActionEffect;
 }
 interface FabricCapabilityProviderHead {
   key: string;
@@ -492,6 +501,7 @@ interface FabricActorRequestBase {
   transport?: FabricTransport;
   timeoutMs?: number;
   extensions?: boolean;
+  requires?: Array<string | { ref: string; optional?: boolean }>;
   validWhile?: FabricActorValidWhile;
 }
 type FabricActorRequest = FabricActorRequestBase & (
@@ -514,6 +524,9 @@ interface FabricActorInfo {
   thinking?: FabricThinking;
   tools?: string[];
   extensions?: boolean;
+  requirements?: Array<{ ref: string; optional?: boolean }>;
+  capabilityDigest?: string;
+  missingCapabilities?: string[];
   validWhile?: { version: 1; source: string };
   queued: number;
   messages: number;
@@ -925,6 +938,37 @@ interface FabricCompactLastCommit {
   estimatedTokensAfter?: number;
   error?: string;
 }
+type FabricComponentState = "waiting" | "loading" | "active" | "unloading" | "failed" | "quarantined" | "disposed";
+interface FabricComponentInfo {
+  id: string;
+  component: string;
+  state: FabricComponentState;
+  guarantee: "managed" | "revertible";
+  requirements: string[];
+  provisions: string[];
+  missing: string[];
+  optionalMissing: string[];
+  targetDigest?: string;
+  error?: string;
+  cleanupErrors?: string[];
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+}
+interface FabricComponentsApi {
+  list(): Promise<{
+    definitions: Array<{ name: string; description?: string; revision: number; requirements: string[]; provisions: string[] }>;
+    components: FabricComponentInfo[];
+  }>;
+  status(args: { id: string }): Promise<FabricComponentInfo>;
+  graph(): Promise<{
+    components: FabricComponentInfo[];
+    edges: Array<{ from: string; to: string; ref: string }>;
+    cycles: string[][];
+  }>;
+  reload(args?: { id?: string }): Promise<{ components: FabricComponentInfo[] }>;
+}
+
 interface FabricCompactApi {
   request(args?: {
     reason?: string;
@@ -987,6 +1031,7 @@ declare const mcp: FabricMcpApi;
 declare const memory: FabricMemoryApi;
 declare const state: FabricStateApi;
 declare const schema: FabricSchemaApi;
+declare const components: FabricComponentsApi;
 declare const compact: FabricCompactApi;
 declare const council: FabricCouncilApi;
 declare const workflow: FabricWorkflowApi;

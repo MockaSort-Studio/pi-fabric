@@ -49,9 +49,17 @@ async invoke(actionName, args, context) {
 }
 ```
 
+## Effect semantics and scoped acquisition
+
+Action descriptors may declare effect semantics. Descriptor hashes and committed component/actor views include this metadata. Omitting it is conservative: read-risk actions resolve as commutative `none`; all other risks resolve as unknown-order `emission`.
+
+`kind: "scoped"` actions must implement `provider.acquire()` and return `{ value, dispose }`. Components call them through `context.acquire()`, which validates arguments, pins the provider generation, and registers a single-shot disposer in the component scope. Ordinary `invoke()` remains available for `none`, `transactional`, and `emission` actions. A component declaring the `revertible` guarantee may call only `none`/`transactional` actions normally; emissions are rejected.
+
+`resources` identifies affected resource classes and `ordering` is `commutative`, `ordered`, or `unknown`. Concurrent non-read calls with an unknown footprint, or overlapping non-commutative resources, are recorded in `audits[].effectConflicts`; revertible components reject them. Fabric does not reorder calls from provider claims. These fields are scheduling and lifecycle semantics, not an authorization substitute; `risk` continues to drive approval policy. Providers whose descriptors can change in place may implement `subscribeCatalog(listener)`; Fabric then re-resolves dependent component targets and unsubscribes when that provider generation closes. See [components and committed capabilities](components.md).
+
 ## Nested `tool_result` proxy
 
-Results from MCP, agent, memory, state, schema, mesh, compact, and external providers pass through Pi's `tool_result` middleware before `maxNestedResultChars` is enforced. This lets a user extension externalize or replace an oversized provider result before it crosses into QuickJS.
+Results from MCP, agent, memory, state, schema, mesh, components, compact, and external providers pass through Pi's `tool_result` middleware before `maxNestedResultChars` is enforced. This lets a user extension externalize or replace an oversized provider result before it crosses into QuickJS.
 
 A proxied event has:
 

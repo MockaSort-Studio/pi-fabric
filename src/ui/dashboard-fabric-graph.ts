@@ -20,6 +20,7 @@ type GraphNodeKind =
   | "agent"
   | "actor"
   | "participant"
+  | "component"
   | "group"
   | "topic"
   | "state"
@@ -70,18 +71,20 @@ const kindRank: Record<GraphNodeKind, number> = {
   agent: 0,
   actor: 1,
   participant: 2,
-  peer: 3,
-  group: 4,
-  topic: 5,
-  state: 6,
-  route: 7,
-  main: 8,
+  component: 3,
+  peer: 4,
+  group: 5,
+  topic: 6,
+  state: 7,
+  route: 8,
+  main: 9,
 };
 
 const activeRank = (status: string): number =>
   isActiveStatus(status) && status !== "blocked" ? 0 : status === "blocked" ? 1 : 2;
 
 const nodeKind = (entity: Entity): GraphNodeKind => {
+  if (entity.kind === "component") return "component";
   if (entity.kind === "meshParticipant") return "participant";
   if (entity.kind === "meshTopic") return "topic";
   if (entity.kind === "meshRoute") return "route";
@@ -101,6 +104,9 @@ const rawIdentity = (entity: Entity): Array<string | undefined> => {
   if (entity.kind === "meshTopic") return [entity.value.id, entity.value.name];
   if (entity.kind === "state") return [entity.value.key, entity.value.label];
   if (entity.kind === "meshRoute") return [entity.value.id];
+  if (entity.kind === "component") {
+    return [entity.value.id, entity.id];
+  }
   return [entity.id, entity.label];
 };
 
@@ -146,6 +152,7 @@ const graphGlyph = (node: GraphNode, animation: FabricGraphAnimation): string =>
     return "◫";
   }
   if (node.kind === "participant") return "▧";
+  if (node.kind === "component") return "⬡";
   if (node.kind === "agent" && !animation.reducedMotion) {
     const spawnAge = node.startedAt === undefined ? Number.POSITIVE_INFINITY : animation.now - node.startedAt;
     if (spawnAge >= 0 && spawnAge <= 1_600) {
@@ -160,6 +167,7 @@ const PARTICIPANTS_GROUP_ID = "group:participants";
 const MESH_GROUP_ID = "group:mesh";
 const TOPICS_GROUP_ID = "group:mesh:topics";
 const STATE_GROUP_ID = "group:mesh:state";
+const COMPONENTS_GROUP_ID = "group:components";
 
 export interface FabricTopologyGroupSegment {
   id: string;
@@ -314,7 +322,9 @@ const buildLayout = (
       const explicitParentId = parentRef ? aliases.get(parentRef) : undefined;
       let parentId = explicitParentId;
       if (entity.kind !== "main") {
-        if (
+        if (entity.kind === "component") {
+          parentId = ensureGroup(COMPONENTS_GROUP_ID, "Components", mainId, 2);
+        } else if (
           ["agent", "actor", "peer", "meshParticipant"].includes(entity.kind) &&
           (!parentId || parentId === mainId)
         ) {
@@ -435,6 +445,13 @@ const buildLayout = (
       edges.push({ from: owner, to: target, kind: "subscription" });
     }
   }
+  for (const dependency of snapshot.componentGraph.edges) {
+    const source = aliases.get(dependency.from);
+    const target = aliases.get(dependency.to);
+    if (source && target && source !== target) {
+      edges.push({ from: source, to: target, kind: "subscription" });
+    }
+  }
   for (const route of mesh.routes) {
     const source = aliases.get(route.fromId) ?? aliases.get(route.fromName);
     const target = aliases.get(route.targetId) ?? aliases.get(route.targetName) ?? aliases.get(route.topic);
@@ -465,8 +482,8 @@ const lineChar = (mask: number): string => {
 };
 
 const styleForStatus = (status: string): Cell["style"] => {
-  if (["failed", "timed_out", "error"].includes(status)) return "error";
-  if (status === "blocked") return "warning";
+  if (["failed", "timed_out", "error", "quarantined"].includes(status)) return "error";
+  if (["blocked", "waiting"].includes(status)) return "warning";
   if (isActiveStatus(status)) return "success";
   return "dim";
 };
@@ -788,6 +805,22 @@ const inspectorLines = (
       content.push(theme.fg("muted", `runner ${entity.value.runner}`));
       content.push(theme.fg("muted", `queue  ${entity.value.queued}`));
       if (entity.value.topics.length > 0) content.push(theme.fg("muted", `${entity.value.topics.length} subscriptions`));
+    } else if (entity.kind === "component") {
+      content.push(theme.fg("muted", `definition ${safeText(entity.value.component)}`));
+      content.push(theme.fg("muted", `guarantee  ${entity.value.guarantee}`));
+      if (entity.value.requirements.length > 0) {
+        content.push(theme.fg("muted", `requires   ${entity.value.requirements.join(", ")}`));
+      }
+      if (entity.value.provisions.length > 0) {
+        content.push(theme.fg("muted", `provides   ${entity.value.provisions.join(", ")}`));
+      }
+      const cycles = snapshot.componentGraph.cycles.filter((cycle) =>
+        cycle.includes(entity.value.id),
+      );
+      if (cycles.length > 0) {
+        content.push(theme.fg("warning", `cycles     ${cycles.map((cycle) => cycle.join(" → ")).join("; ")}`));
+      }
+      if (entity.value.error) content.push(theme.fg("error", safeText(entity.value.error)));
     } else if (entity.kind === "meshTopic") {
       content.push(theme.fg("muted", `${entity.value.subscribers.length} subscribers`));
       content.push(theme.fg("muted", `${entity.value.recentEvents} recent events`));
@@ -928,6 +961,7 @@ export const renderFabricTopologyPanel = ({
       "◎ topic",
       "▱ group",
       animation.replayRouteId ? "▶ replay" : animation.showHistory ? "history" : "live decay",
+      "⬡ component",
       animation.reducedMotion ? "reduced motion" : undefined,
       filter !== "all" ? `${entities.length}/${allEntities.length} ${filter}` : undefined,
     ].filter((value): value is string => Boolean(value)).join(" · ");

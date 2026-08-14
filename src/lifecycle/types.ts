@@ -18,6 +18,7 @@ export const FABRIC_LIFECYCLE_EVENTS = [
   "run.stopped",
   "run.timed_out",
   "tokens.usage",
+  "component.state",
 ] as const;
 
 export type FabricLifecycleEventType = (typeof FABRIC_LIFECYCLE_EVENTS)[number];

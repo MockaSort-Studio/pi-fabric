@@ -7,6 +7,7 @@ import type { CodePreviewSettings } from "../src/ui/code-preview.js";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { FabricDashboard } from "../src/ui/dashboard.js";
+import { entitiesForOverview } from "../src/ui/dashboard-model.js";
 import {
   topologyParticipantGroup,
   topologyStateGroupPath,
@@ -198,6 +199,7 @@ const snapshot = (): FabricDashboardSnapshot => {
         recentMessages: [],
       },
     ],
+    componentGraph: { components: [], edges: [], cycles: [] },
     globalActors: [],
     state: [
       {
@@ -225,6 +227,51 @@ const snapshot = (): FabricDashboardSnapshot => {
 };
 
 describe("Fabric dynamic UI", () => {
+  it("projects component lifecycle and dependency nodes into both overview modes", () => {
+    const current = snapshot();
+    const now = Date.now();
+    current.componentGraph = {
+      components: [
+        {
+          id: "consumer",
+          component: "consumer-definition",
+          state: "active",
+          guarantee: "managed",
+          requirements: ["search.query"],
+          provisions: [],
+          missing: [],
+          optionalMissing: [],
+          targetDigest: "target",
+          revision: 1,
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: "provider",
+          component: "provider-definition",
+          state: "active",
+          guarantee: "revertible",
+          requirements: [],
+          provisions: ["search"],
+          missing: [],
+          optionalMissing: [],
+          revision: 1,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      edges: [{ from: "consumer", to: "provider", ref: "search.query" }],
+      cycles: [],
+    };
+
+    const activity = entitiesForOverview(current, undefined, undefined, "activity");
+    const topology = entitiesForOverview(current, undefined, undefined, "topology");
+    expect(activity.filter((entity) => entity.kind === "component").map((entity) => entity.id))
+      .toEqual(["component:consumer", "component:provider"]);
+    expect(topology.filter((entity) => entity.kind === "component").map((entity) => entity.id))
+      .toEqual(["component:consumer", "component:provider"]);
+  });
+
   it("renders a bounded compact activity widget", () => {
     const current = snapshot();
     const widget = new FabricWidget(theme, () => current, 5);
@@ -2838,6 +2885,7 @@ describe("Fabric dashboard global actors and instructions editor", () => {
           recentMessages: [],
         },
       ],
+      componentGraph: { components: [], edges: [], cycles: [] },
       globalActors: [
         {
           id: "g-actor-1",

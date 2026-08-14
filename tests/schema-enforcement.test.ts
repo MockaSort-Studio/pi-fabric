@@ -548,6 +548,17 @@ return schema.verify({ hypothesisId: hypothesis.hypothesisId });
 });
 
 describe("Schema central gate", () => {
+  it("allows component diagnostics but blocks lifecycle reload in enforce mode", async () => {
+    const enforce = fixture("enforce");
+    for (const ref of ["components.list", "components.status", "components.graph"]) {
+      await expect(enforce.controller.authorize(ref, "component-diagnostic"))
+        .resolves.toBeUndefined();
+    }
+    await expect(
+      enforce.controller.authorize("components.reload", "component-reload"),
+    ).rejects.toThrow("would block components.reload");
+  });
+
   it("applies existing Schema policy to synthetic top-level SDK custom-tool refs", async () => {
     const off = fixture("off");
     await expect(

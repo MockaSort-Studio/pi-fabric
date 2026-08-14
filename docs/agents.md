@@ -254,7 +254,7 @@ if (peer) {
 
 `agents.subscribe` takes an exact source participant id (or `"main"` for the caller's root), one or more lifecycle events, an optional target (default Main), a `steer`/`followUp` delivery mode, an explicit `triggerTurn` policy, and optional `once`. Use `agents.subscriptions()` and `agents.unsubscribe({ id })` to inspect and remove routes. Subscriptions begin at the current mesh sequence rather than replaying old events, and their delivery cursor is durable across host restarts. Delivery is at-least-once if a host crashes after inserting the target message but before persisting its cursor; consumers can deduplicate side effects with the lifecycle event `id`.
 
-Pi-specific events are namespaced as `pi.input`, `pi.agent_start`, `pi.agent_end`, `pi.turn_end`, `pi.agent_settled`, `pi.tool_error`, and `pi.session_compact`. Runner-neutral terminal events are `run.completed`, `run.failed`, `run.stopped`, and `run.timed_out`. Lifecycle envelopes intentionally contain source identity and bounded operational metadata rather than session transcripts.
+Pi-specific events are namespaced as `pi.input`, `pi.agent_start`, `pi.agent_end`, `pi.turn_end`, `pi.agent_settled`, `pi.tool_error`, and `pi.session_compact`. Runner-neutral terminal events are `run.completed`, `run.failed`, `run.stopped`, and `run.timed_out`; `tokens.usage` reports bounded usage, and `component.state` reports supervised component transitions. Lifecycle envelopes intentionally contain source identity and bounded operational metadata rather than session transcripts.
 
 A detached local `agents.spawn()` also has a narrower convenience path: when `agents.notifyOnComplete` is enabled, terminal completion sends Main a triggered follow-up automatically. Calling `agents.wait()` makes it foreground work and suppresses that detached notification.
 
@@ -273,6 +273,7 @@ Prefer silence. Reply with a directive only for material drift, a blocker, or ve
   triggerTurn: true,
   thinking: "high",
   tools: ["read", "grep", "find", "ls"],
+  requires: ["memory.recall", { ref: "mcp.github.search", optional: true }],
 });
 ```
 
@@ -292,7 +293,9 @@ return agents.create({
 });
 ```
 
-Claude actors can retain context, inspect/edit with mapped Claude Code tools, consume host events and mesh messages delivered by Fabric, and return text or directives. They cannot themselves call `fabric_exec`, `agents.*`, or `mesh.*`; use a Pi actor when the actor must recursively coordinate through Fabric. If Claude's private session has been removed, the next activation fails clearly rather than silently discarding actor context. Recreate the actor to start a fresh Claude session.
+Claude actors can retain context, inspect/edit with mapped Claude Code tools, consume host events and mesh messages delivered by Fabric, and return text or directives. They cannot themselves call `fabric_exec`, `agents.*`, or `mesh.*`; use a Pi actor when the actor must recursively coordinate through Fabric.
+
+`requires` declares exact `provider.action` capabilities for each activation; entries may use `{ ref, optional: true }`. The host resolves and retains one descriptor-hashed view before launch. Pi children independently resolve the portable semantic digest and run with a closed-world Fabric surface, so live provider additions cannot widen the actor mid-run. Missing required refs leave mailbox work queued; `missingCapabilities` reports availability separately from `idle | queued | running | stopped`, and provider/catalog changes retry dispatch. Actor status and run metadata record the normalized requirements and last committed digest. Claude actors receive the host-side availability commitment but have no child Fabric surface to constrain. If Claude's private session has been removed, the next activation fails clearly rather than silently discarding actor context. Recreate the actor to start a fresh Claude session.
 
 This is the primitive behind emergent supervisors and advisors; neither requires another extension. Actors can observe every session-bound public Pi extension event: resource discovery; session start/info/switch/fork/compaction/tree/shutdown events; input and before-agent-start; agent, turn, and message lifecycle; context and provider request/response lifecycle; tool call/result/execution lifecycle; model and thinking changes; and user bash. The exact event names are the Pi extension names (for example `input`, `before_agent_start`, `tool_call`, and `tool_result`), plus Fabric's synthetic `tool_error`. `project_trust` is the sole exception because it fires before Fabric may read the trusted project actor registry. Intercepting Pi hooks remain observations: an actor runs asynchronously and cannot block a tool, rewrite context, mutate provider headers, or return another extension hook result. Shutdown and immediate session-replacement observations are best-effort because the owning runtime is being torn down.
 

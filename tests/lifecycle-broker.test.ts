@@ -176,6 +176,46 @@ describe("LifecycleBroker", () => {
     await waitFor(() => target.list().length === 0);
   });
 
+  it("delivers attributed component state transitions", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-lifecycle-"));
+    roots.push(root);
+    const mesh = new MeshStore(path.join(root, "mesh"), 64 * 1024, 100);
+    const deliveries: FabricLifecycleEvent[] = [];
+    const target = new LifecycleBroker(
+      mesh,
+      targetIdentity,
+      participants(targetIdentity.id),
+      { enabled: true, pollMs: 20, maxReadEvents: 100 },
+      (_subscription, event) => { deliveries.push(event); },
+    );
+    const publisher = new LifecycleBroker(
+      mesh,
+      sourceIdentity,
+      participants(sourceIdentity.id),
+      { enabled: true, pollMs: 20, maxReadEvents: 100 },
+      () => {},
+    );
+    brokers.push(target, publisher);
+    await target.subscribe({
+      from: source.id,
+      events: ["component.state"],
+      to: targetIdentity.id,
+      delivery: "followUp",
+      triggerTurn: false,
+    });
+    target.start();
+    await publisher.publish({
+      source,
+      event: "component.state",
+      data: { id: "indexer", state: "active", revision: 2 },
+    });
+    await waitFor(() => deliveries.length === 1);
+    expect(deliveries[0]).toMatchObject({
+      event: "component.state",
+      data: { id: "indexer", state: "active", revision: 2 },
+    });
+  });
+
   it("persists cursors across broker restarts without redelivering old events", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-lifecycle-"));
     roots.push(root);

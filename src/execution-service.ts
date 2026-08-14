@@ -35,6 +35,7 @@ import {
   codeUsesOrchestration,
   isBlockingOrchestrationRef,
 } from "./runtime/orchestration.js";
+import type { FabricCommittedCapabilityView } from "./protocol.js";
 import type {
   QuickJsRuntime,
   FabricSandboxResult,
@@ -143,6 +144,7 @@ export interface FabricExecutionOptions {
 export class FabricExecutionService {
   #runtime: QuickJsRuntime | NodeProcessRuntime | undefined;
   #runtimeKind: FabricConfig["executor"]["runtime"] | undefined;
+  #capabilityView: FabricCommittedCapabilityView | undefined;
   constructor(
     readonly registry: ActionRegistry,
     readonly config: FabricConfig,
@@ -151,6 +153,10 @@ export class FabricExecutionService {
     readonly autoApprovalClassifier = new FabricAutoApprovalClassifier(),
     readonly sessionApprovals = new FabricSessionApprovals(),
   ) {}
+
+  setCapabilityView(view: FabricCommittedCapabilityView | undefined): void {
+    this.#capabilityView = view;
+  }
 
   async execute(options: FabricExecutionOptions): Promise<FabricExecutionResult> {
     const startedAt = performance.now();
@@ -174,6 +180,7 @@ export class FabricExecutionService {
       nestedToolCallId: `${options.parentToolCallId}_typedecls`,
       extensionContext: options.context,
       update() {},
+      ...(this.#capabilityView ? { capabilityView: this.#capabilityView } : {}),
     });
     const checked = dependencies.typeCheckFabricCode(
       options.code,
@@ -327,6 +334,7 @@ export class FabricExecutionService {
       nestedToolCallId: `${options.parentToolCallId}_metadata`,
       extensionContext: options.context,
       update,
+      ...(this.#capabilityView ? { capabilityView: this.#capabilityView } : {}),
     };
     // Start known orchestration programs with the longer deadline. Calls
     // reached through generic or computed refs are classified again at the
@@ -476,26 +484,14 @@ export class FabricExecutionService {
                 () =>
                   this.registry
                     .providers()
+                    .filter((provider) =>
+                      !callContext.capabilityView ||
+                      Object.values(callContext.capabilityView.bindings)
+                        .some((binding) => binding.provider === provider.name),
+                    )
                     .filter(
                       (provider) => effectiveFullCodeMode || !fullCodeProvider(provider.name),
                     ),
-              );
-            case "fabric.$catalog":
-              return traceAttempt(
-                "fabric.discovery.catalog",
-                args,
-                runtimeSignal,
-                async (setStage) => {
-                  const provider = typeof args.provider === "string" ? args.provider : undefined;
-                  setStage("guard");
-                  if (provider) guardFullCodeRef(`${provider}.*`);
-                  setStage(provider && !this.registry.has(provider) ? "resolve" : "invoke");
-                  return this.registry.catalog(callContext, {
-                    ...(provider ? { provider } : {}),
-                    ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
-                    includeProvider: (name) => effectiveFullCodeMode || !fullCodeProvider(name),
-                  });
-                },
               );
             case "fabric.$catalog":
               return traceAttempt(

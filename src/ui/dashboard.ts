@@ -2572,6 +2572,17 @@ export class FabricDashboard implements Component, Focusable {
       field("Deliveries", route.count);
       field("Last activity", new Date(route.lastAt).toLocaleString());
       markdownField("Payload text", route.text, "route-text");
+    } else if (entity.kind === "component") {
+      const component = entity.value;
+      field("Definition", component.component);
+      field("Guarantee", component.guarantee);
+      field("Requirements", component.requirements.join(", "));
+      field("Provisions", component.provisions.join(", "));
+      field("Missing", component.missing.join(", "));
+      field("Optional missing", component.optionalMissing.join(", "));
+      field("Target digest", component.targetDigest);
+      field("Error", component.error);
+      field("Updated", new Date(component.updatedAt).toLocaleString());
     } else {
       const entry = entity.value;
       field("Key", entry.key);

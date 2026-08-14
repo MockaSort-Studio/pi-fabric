@@ -32,6 +32,7 @@ import type {
 } from "../topology/types.js";
 import type {
   FabricActionDescriptor,
+  FabricCapabilityRequirement,
   FabricInvocationContext,
   FabricProvider,
   FabricProviderListRequest,
@@ -413,6 +414,25 @@ const descriptors: FabricActionDescriptor[] = [
         transport: runProperties.transport,
         timeoutMs: runProperties.timeoutMs,
         extensions: runProperties.extensions,
+        requires: {
+          type: "array",
+          maxItems: 128,
+          description: "Exact Fabric provider.action refs committed before every actor run. Object entries may be optional.",
+          items: {
+            oneOf: [
+              { type: "string", minLength: 3, maxLength: 256 },
+              {
+                type: "object",
+                properties: {
+                  ref: { type: "string", minLength: 3, maxLength: 256 },
+                  optional: { type: "boolean" },
+                },
+                required: ["ref"],
+                additionalProperties: false,
+              },
+            ],
+          },
+        },
         validWhile: {
           type: "object",
           properties: { version: { const: 1 }, source: { type: "string" } },
@@ -856,6 +876,28 @@ const actorRequest = (
     : undefined;
   const topics = stringArray(args.topics);
   const tools = stringArray(args.tools);
+  const requires = Array.isArray(args.requires)
+    ? args.requires.reduce<Array<string | FabricCapabilityRequirement>>(
+        (result, requirement) => {
+          if (typeof requirement === "string") result.push(requirement);
+          else if (
+            typeof requirement === "object" &&
+            requirement !== null &&
+            !Array.isArray(requirement) &&
+            typeof (requirement as { ref?: unknown }).ref === "string"
+          ) {
+            result.push({
+              ref: (requirement as { ref: string }).ref,
+              ...((requirement as { optional?: unknown }).optional === true
+                ? { optional: true }
+                : {}),
+            });
+          }
+          return result;
+        },
+        [],
+      )
+    : undefined;
   const timeoutMs = longerTimeoutOverride(args.timeoutMs, manager);
   const validWhile = typeof args.validWhile === "object" && args.validWhile !== null &&
     !Array.isArray(args.validWhile) &&
@@ -913,6 +955,7 @@ const actorRequest = (
       : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(typeof args.extensions === "boolean" ? { extensions: args.extensions } : {}),
+    ...(requires ? { requires } : {}),
     ...(validWhile ? { validWhile } : {}),
   };
 };

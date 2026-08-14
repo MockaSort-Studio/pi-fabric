@@ -1,5 +1,6 @@
 import type { FabricActorInfo, FabricActorMessage, GlobalActorDefinition } from "../actors/types.js";
 import type { FabricActivityRun } from "../activity/types.js";
+import type { FabricComponentGraph } from "../components/types.js";
 import type { MeshEvent } from "../mesh/store.js";
 import type { FabricMainAgentInfo } from "../main-agent.js";
 import type {
@@ -80,6 +81,7 @@ export interface FabricDashboardSnapshot {
   participants?: FabricParticipantInfo[];
   agents: FabricUiAgent[];
   actors: FabricUiActor[];
+  componentGraph: FabricComponentGraph;
   /** Project-independent actor templates from the global registry. */
   globalActors: GlobalActorDefinition[];
   state: FabricUiStateEntry[];
@@ -94,6 +96,9 @@ export const activeStatuses = new Set([
   "running",
   "in_progress",
   "blocked",
+  "loading",
+  "active",
+  "unloading",
 ]);
 
 export const isActiveStatus = (status: string): boolean => activeStatuses.has(status);

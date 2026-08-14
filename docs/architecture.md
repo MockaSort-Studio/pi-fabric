@@ -17,6 +17,7 @@ ActionRegistry
     ├── agents.*     one-shot workers + persistent mailbox actors
     │                 └→ participant directory + owner-addressed control
     ├── mesh.*       durable topics + compare-and-swap state + membership view
+    ├── components.* supervised effects + dependency graph + reload
     └── external     explicit pi.events providers
 
 ActivityStore → compact widget + footer status + interactive dashboard
@@ -25,6 +26,12 @@ ActivityStore → compact widget + footer status + interactive dashboard
 In the default QuickJS runtime, guest code has no `process`, `require`, filesystem, network, or subprocess globals. All effects cross the host bridge, where schemas, approvals, audit records, timeouts, and cancellation apply. Each execution receives a fresh QuickJS context. Named strings passed in the `strings` tool parameter are available as `π.key`; accessing a key that was not provided throws a clear, actionable error listing the provided keys rather than silently returning `undefined`.
 
 The optional `node-process` executor runs the same type-checked guest API and host-call protocol in a fresh child process with a configurable V8 heap. It exists for workloads that exceed WASM32's memory ceiling. It is not a security boundary: Node's `vm` module cannot safely contain hostile code, so this mode is restricted to trusted configuration, described as unsafe in `/fabric settings`, and disabled by Schema enforce mode. Parent-side deadlines and cancellation terminate the entire child process.
+
+## Component control plane
+
+The [component plane](components.md) sits above the registry. Definitions declare exact action requirements and optional provided services; the loader resolves a versioned, descriptor-hashed capability view before activation. Providers mounted during activation remain staged until effects complete and the target is reverified. Publication is atomic. Replacement retires the old generation, unloads dependents, and keeps that generation alive for retained views and in-flight calls until quiescence. The dashboard renders this requirement graph as a separate component group rather than folding it into participant ownership topology. Effect scopes provide asynchronous LIFO rollback and quarantine cleanup failures.
+
+The same committed-view protocol can close an actor child's Fabric surface. The host records a portable descriptor digest, the child independently resolves it, and every nested call is pinned to that view. This is capability coherence, not a claim that arbitrary host component code is pure or sandboxed.
 
 ## Tool discovery and generic calls
 
@@ -41,7 +48,7 @@ const result = await tools.call({
 return result;
 ```
 
-Known actions have first-class proxies and still cross the same registry path: `mcp.<sanitized_server>.<sanitized_tool>(args)`, `memory.*`, `state.*`, `schema.*`, and `compact.*`. For example, `mcp.fal_ai.get_model_schema(args)` resolves the mcporter names `fal-ai` and `get-model-schema`. Captured extension tools use `extensions.<tool>(args)` in full code mode. Keep `tools.call()` for refs discovered or computed at runtime.
+Known actions have first-class proxies and still cross the same registry path: `mcp.<sanitized_server>.<sanitized_tool>(args)`, `memory.*`, `state.*`, `schema.*`, `components.*`, and `compact.*`. For example, `mcp.fal_ai.get_model_schema(args)` resolves the mcporter names `fal-ai` and `get-model-schema`. Captured extension tools use `extensions.<tool>(args)` in full code mode. Keep `tools.call()` for refs discovered or computed at runtime.
 
 Refs are namespaced: `pi.grep`, `extensions.<tool>`, `mcp.<server>.<tool>`, `schema.<action>`. Bare names are rejected for calls, but `tools.describe({ref})` falls back to a bare action name when exactly one provider exposes it (ambiguous names get an error listing the qualified refs). `tools.providers()` → `[{name,description}]`; `tools.catalog({provider?,limit?})` → the deterministic current provider/action head tree with descriptor hashes and explicit non-historical metadata; `tools.search({query,limit?})` → `FabricAction[]`; `tools.describe({ref})` → the full `FabricAction` (read its `inputSchema` first); `tools.call({ref,args?})`; `tools.list({provider?,namespace?,query?,limit?})`; `tools.models()` → Pi `[{provider,id,name,key}]`; `agents.models({runner:"claude"})` → Claude Code runtime models. The model-facing `fabric-exec` skill holds the exact signatures and the read → describe → retry error loop.
 
@@ -73,7 +80,7 @@ Cross-process control is target-resolved, not broadcast. The sender resolves a p
 - Non-Pi provider results emit a transient namespaced `tool_result` proxy before the QuickJS result bound. Its details envelope exposes the exact host-side result to trusted user extensions, so those extensions can inspect or externalize sensitive provider data; it does not create a separate persisted tool-result message.
 - Captured tools execute with the full privileges of their owning extension. Hiding a tool schema is context optimization, not sandboxing. Captured tools retain their definitions and native renderers, but nested calls render as part of the enclosing Fabric execution rather than as separate native tool rows.
 - Registry interception composes through the public `ExtensionRunner.getAllRegisteredTools()` method. An extension that replaces that method without delegating to the previous implementation can prevent capture.
-- MCP servers and external providers execute with their own host privileges. Review their configuration and code.
+- MCP servers, external providers, and component definitions execute with their own host privileges. Review their configuration and code. Component effect scopes can only unwind registered effects; they cannot recover ambient side effects hidden from the supervisor.
 - Type checking improves reliability but is not a security boundary. In the default runtime, QuickJS isolation and the host capability bridge are the boundaries. The optional Node process deliberately gives up the QuickJS boundary and must be treated as trusted native execution.
 - Child Pi processes load normal extensions by default so provider-backed models continue to work. Claude children use the official installed CLI and its existing authentication. Both runners restrict the active model-facing tools to `defaultTools`; Pi adds `fabric_exec` only for explicit recursion, while Claude rejects recursion and unmapped tools.
 - `agents.handoff` schedules an explicit `agent`-risk delegation at the complete outer `fabric_exec` boundary. The guest call returns a deferred marker and the rest of the Fabric program continues. After all nested calls and outer result middleware finish, Fabric forks through the native assistant `fabric_exec` entry, appends its exact finalized native `toolResult`, and starts the target from that branch. No synthetic nested assistant turns or custom context dump are created. The mode-`0600` child session lives inside the managed run directory, while the source session is neither switched nor historically rewritten. Normal outer output/trace limits apply before the fork. The target model can see the Fabric source and result; do not hand off a trajectory containing secrets to a provider that should not receive them.

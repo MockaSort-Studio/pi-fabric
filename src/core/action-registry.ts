@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Value } from "typebox/value";
 import { runAbortable, settleWithin } from "../async-settlement.js";
+import type {
+  FabricCapabilityRequirement,
+  FabricComponentProviderLease,
+} from "../components/types.js";
 import {
   executionOutcomeFromError,
   FabricResolutionError,
@@ -11,7 +15,11 @@ import {
 import {
   FABRIC_NESTED_TOOL_CALL_ID_PREFIX,
   type FabricActionDescriptor,
+  type FabricActionEffect,
+  type FabricCapabilityBindingView,
   type FabricCapabilityCatalog,
+  type FabricCapabilityResolution,
+  type FabricCommittedCapabilityView,
   type FabricGuestTypeSources,
   type FabricInvocationActivityUpdate,
   type FabricInvocationContext,
@@ -19,13 +27,25 @@ import {
   type FabricNamedActionTypeSource,
   type FabricProvider,
   type FabricProviderListRequest,
+  type FabricScopedProviderResult,
 } from "../protocol.js";
 import { stableJsonHash } from "./stable-hash.js";
 import type { FabricNestedToolResultProxy } from "./tool-result-proxy.js";
+import {
+  FabricProviderBindings,
+  type FabricProviderBinding,
+  type FabricProviderBindingEvent,
+} from "./provider-bindings.js";
 
 export interface ResolvedFabricAction extends FabricActionDescriptor {
   ref: string;
   provider: string;
+}
+
+interface FabricEffectConflict {
+  withRef: string;
+  resources: string[];
+  reason: "shared_resource" | "unknown_resource";
 }
 
 export interface FabricCallAudit {
@@ -44,6 +64,7 @@ export interface FabricCallAudit {
   media?: FabricMediaBlock[];
   mediaNote?: string;
   preview?: unknown;
+  effectConflicts?: FabricEffectConflict[];
 }
 
 export type FabricRegistryActivityEvent =
@@ -71,6 +92,10 @@ export type FabricRegistryActivityEvent =
       preview?: unknown;
       error?: string;
     };
+
+export interface FabricCapabilityViewLease extends FabricCapabilityResolution {
+  release(): Promise<void>;
+}
 
 export interface FabricRegistryInvocationContext extends FabricInvocationContext {
   authorize?(action: ResolvedFabricAction): Promise<void>;
@@ -208,15 +233,51 @@ const resolveDescriptor = (
   descriptor: FabricActionDescriptor,
 ): ResolvedFabricAction => ({
   ...descriptor,
+  effect: descriptor.effect ?? (descriptor.risk === "read"
+    ? { kind: "none", ordering: "commutative" }
+    : { kind: "emission", ordering: "unknown" }),
   provider: provider.name,
   ref: `${provider.name}.${descriptor.name}`,
 });
 
 const descriptorHash = stableJsonHash;
 
+const actionDescriptorHash = (action: ResolvedFabricAction): string =>
+  descriptorHash({
+    ref: action.ref,
+    description: action.description,
+    inputSchema: action.inputSchema,
+    outputSchema: action.outputSchema,
+    risk: action.risk,
+    namespace: action.namespace,
+    effect: action.effect,
+  });
+
 const discoveryTerms = (value: string): string[] =>
   [...value.normalize("NFKC").matchAll(/[\p{L}\p{N}_]+/gu)]
     .map((match) => match[0].toLowerCase());
+
+const conflictBetween = (
+  left: FabricActionEffect,
+  right: FabricActionEffect,
+): { resources: string[]; reason: FabricEffectConflict["reason"] } | undefined => {
+  if (left.kind === "none" || right.kind === "none") return undefined;
+  const resources = (effect: FabricActionEffect): string[] =>
+    [...new Set((effect.resources ?? []).filter(
+      (resource): resource is string => typeof resource === "string" && resource.length > 0,
+    ).map((resource) => resource.slice(0, 256)))].slice(0, 64);
+  const leftResources = resources(left);
+  const rightResources = resources(right);
+  if (leftResources.length === 0 || rightResources.length === 0) {
+    if (left.ordering === "commutative" && right.ordering === "commutative") return undefined;
+    return { resources: ["*"], reason: "unknown_resource" };
+  }
+  const rightSet = new Set(rightResources);
+  const overlap = leftResources.filter((resource) => rightSet.has(resource)).sort();
+  if (overlap.length === 0) return undefined;
+  if (left.ordering === "commutative" && right.ordering === "commutative") return undefined;
+  return { resources: overlap, reason: "shared_resource" };
+};
 
 const validationMessage = (
   schema: Record<string, unknown>,
@@ -235,31 +296,51 @@ const validationMessage = (
 };
 
 export class ActionRegistry {
-  readonly #providers = new Map<string, FabricProvider>();
+  readonly #providerBindings = new FabricProviderBindings();
+  readonly #activeEffects = new Map<string, { ref: string; effect: FabricActionEffect }>();
   readonly #unavailable = new Map<string, string>();
 
   constructor(readonly toolResultProxy?: FabricNestedToolResultProxy) {}
 
   register(provider: FabricProvider, options: { overwrite?: boolean } = {}): void {
+    this.mount(provider, options);
+  }
+
+  mount(
+    provider: FabricProvider,
+    options: { overwrite?: boolean; staged?: boolean } = {},
+  ): FabricComponentProviderLease {
     if (!providerNamePattern.test(provider.name)) {
       throw new Error(`Invalid Fabric provider name: ${provider.name}`);
     }
-    if (this.#providers.has(provider.name) && !options.overwrite) {
-      throw new Error(`Fabric provider already registered: ${provider.name}`);
-    }
-    this.#providers.set(provider.name, provider);
+    const lease = this.#providerBindings.mount(provider, options);
     this.#unavailable.delete(provider.name);
+    return lease;
+  }
+
+  activateProviderBindings(bindingIds: readonly string[]): string[] {
+    return this.#providerBindings.activate(bindingIds);
+  }
+
+  subscribeProviderChanges(
+    listener: (event: FabricProviderBindingEvent) => void,
+  ): () => void {
+    return this.#providerBindings.subscribe(listener);
+  }
+
+  notifyCatalogChanged(provider: string): void {
+    this.#providerBindings.notifyCatalogChanged(provider);
   }
 
   has(name: string): boolean {
-    return this.#providers.has(name);
+    return this.#providerBindings.has(name);
   }
 
   markUnavailable(name: string, reason: string): void {
     if (!providerNamePattern.test(name)) {
       throw new Error(`Invalid Fabric provider name: ${name}`);
     }
-    if (this.#providers.has(name)) {
+    if (this.#providerBindings.has(name)) {
       throw new Error(`Cannot mark a registered Fabric provider unavailable: ${name}`);
     }
     this.#unavailable.set(name, reason);
@@ -272,15 +353,27 @@ export class ActionRegistry {
   }
 
   unregister(name: string): FabricProvider | undefined {
-    const provider = this.#providers.get(name);
-    this.#providers.delete(name);
-    return provider;
+    return this.#providerBindings.unregister(name);
   }
 
   providers(): Array<{ name: string; description: string }> {
-    return [...this.#providers.values()]
+    return this.#providerBindings.providers()
       .map((provider) => ({ name: provider.name, description: provider.description }))
       .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async inspectCapabilities(
+    requirements: readonly (string | FabricCapabilityRequirement)[],
+    context: FabricInvocationContext,
+  ): Promise<FabricCapabilityResolution> {
+    return this.#resolveCapabilities(requirements, context, false);
+  }
+
+  async acquireCapabilityView(
+    requirements: readonly (string | FabricCapabilityRequirement)[],
+    context: FabricInvocationContext,
+  ): Promise<FabricCapabilityViewLease> {
+    return this.#resolveCapabilities(requirements, context, true);
   }
 
   /**
@@ -294,7 +387,33 @@ export class ActionRegistry {
    */
   async guestTypeSources(context: FabricInvocationContext): Promise<FabricGuestTypeSources> {
     const sources: FabricGuestTypeSources = {};
-    const mcp = this.#providers.get("mcp") as
+    if (context.capabilityView) {
+      const actions = await this.list({ limit: 1_000 }, context);
+      const byServer = new Map<string, FabricNamedActionTypeSource[]>();
+      for (const action of actions.filter((candidate) => candidate.provider === "mcp")) {
+        const server = action.namespace;
+        if (!server || server === "management" || action.name.startsWith("$")) continue;
+        const prefix = `${server}.`;
+        const name = action.name.startsWith(prefix)
+          ? action.name.slice(prefix.length)
+          : action.name;
+        const tools = byServer.get(server) ?? [];
+        tools.push({ name, inputSchema: action.inputSchema });
+        byServer.set(server, tools);
+      }
+      if (byServer.size > 0) {
+        sources.mcpServers = [...byServer.entries()].map(([server, tools]) => ({
+          server,
+          tools,
+        }));
+      }
+      const extensionTools = actions
+        .filter((action) => action.provider === "extensions")
+        .map((action) => ({ name: action.name, inputSchema: action.inputSchema }));
+      if (extensionTools.length > 0) sources.extensionTools = extensionTools;
+      return sources;
+    }
+    const mcp = this.#providerBindings.current("mcp")?.provider as
       | (FabricProvider & { sliceDescriptors?: () => FabricActionDescriptor[] })
       | undefined;
     const mcpDescriptors = mcp?.sliceDescriptors?.();
@@ -321,7 +440,7 @@ export class ActionRegistry {
         }));
       }
     }
-    const extensions = this.#providers.get("extensions");
+    const extensions = this.#providerBindings.current("extensions")?.provider;
     if (extensions) {
       try {
         const descriptors = await extensions.list({}, context);
@@ -343,9 +462,22 @@ export class ActionRegistry {
     request: FabricProviderListRequest & { provider?: string },
     context: FabricInvocationContext,
   ): Promise<ResolvedFabricAction[]> {
+    if (context.capabilityView) {
+      const refs = Object.keys(context.capabilityView.bindings)
+        .filter((ref) => !request.provider || ref.startsWith(`${request.provider}.`))
+        .sort();
+      const actions = await Promise.all(refs.map((ref) => this.describe(ref, context)));
+      const query = request.query?.normalize("NFKC").trim().toLowerCase();
+      return actions
+        .filter((action) => !request.namespace || action.namespace === request.namespace)
+        .filter((action) =>
+          !query || `${action.ref} ${action.description}`.toLowerCase().includes(query),
+        )
+        .slice(0, Math.max(1, Math.min(request.limit ?? 100, 1_000)));
+    }
     const providers = request.provider
       ? [this.#requireProvider(request.provider)]
-      : [...this.#providers.values()];
+      : this.#providerBindings.providers();
     const lists = await Promise.all(
       providers.map(async (provider) => {
         const descriptors = await provider.list(request, context);
@@ -364,16 +496,26 @@ export class ActionRegistry {
       includeProvider?: (provider: string) => boolean;
     } = {},
   ): Promise<FabricCapabilityCatalog> {
-    const providers = (options.provider
-      ? [this.#requireProvider(options.provider)]
-      : [...this.#providers.values()])
+    const providers = (context.capabilityView
+      ? [...new Map(
+          Object.values(context.capabilityView.bindings).flatMap((pinned) => {
+            const binding = this.#providerBindings.binding(pinned.providerBindingId);
+            return binding ? [[binding.name, binding.provider] as const] : [];
+          }),
+        ).values()]
+      : options.provider
+        ? [this.#requireProvider(options.provider)]
+        : this.#providerBindings.providers())
+      .filter((provider) => !options.provider || provider.name === options.provider)
       .filter((provider) => options.includeProvider?.(provider.name) ?? true)
       .sort((left, right) => left.name.localeCompare(right.name));
     const lists = await Promise.all(
       providers.map(async (provider) => ({
         provider,
-        actions: (await provider.list({}, context))
-          .map((descriptor) => resolveDescriptor(provider, descriptor)),
+        actions: context.capabilityView
+          ? await this.list({ provider: provider.name, limit: 1_000 }, context)
+          : (await provider.list({}, context))
+              .map((descriptor) => resolveDescriptor(provider, descriptor)),
       })),
     );
     const allActions = lists.flatMap(({ actions }) => actions)
@@ -390,16 +532,10 @@ export class ActionRegistry {
           ref: action.ref,
           name: action.name,
           description: action.description,
-          descriptorHash: descriptorHash({
-            ref: action.ref,
-            description: action.description,
-            inputSchema: action.inputSchema,
-            outputSchema: action.outputSchema,
-            risk: action.risk,
-            namespace: action.namespace,
-          }),
+          descriptorHash: actionDescriptorHash(action),
           risk: action.risk,
           ...(action.namespace === undefined ? {} : { namespace: action.namespace }),
+          ...(action.effect === undefined ? {} : { effect: action.effect }),
         }));
       return {
         key: `provider:${provider.name}`,
@@ -422,7 +558,9 @@ export class ActionRegistry {
       root: {
         key: "capability:fabric",
         name: "Fabric capabilities",
-        description: "Current registered provider and action metadata for navigation; not historical session evidence.",
+        description: context.capabilityView
+          ? "Committed provider and action metadata for this execution; not historical session evidence."
+          : "Current registered provider and action metadata for navigation; not historical session evidence.",
         descriptorHash: rootHash,
       },
       providers: providerHeads,
@@ -444,7 +582,8 @@ export class ActionRegistry {
     const listed = await this.list({ limit: 1_000 }, context);
     return listed
       .map((action) => {
-        const providerDescription = this.#providers.get(action.provider)?.description ?? "";
+        const providerDescription =
+          this.#providerBindings.current(action.provider)?.provider.description ?? "";
         const ref = action.ref.normalize("NFKC").toLowerCase();
         const name = action.name.normalize("NFKC").toLowerCase();
         const description = action.description.normalize("NFKC").toLowerCase();
@@ -496,16 +635,39 @@ export class ActionRegistry {
 
   async describe(ref: string, context: FabricInvocationContext): Promise<ResolvedFabricAction> {
     if (ref.includes(".")) {
-      const { provider, actionName } = this.#parseRef(ref);
+      const { provider, actionName, expectedDescriptorHash } = this.#parseRef(
+        ref,
+        context.capabilityView,
+      );
       const descriptor = await provider.describe(actionName, context);
       if (!descriptor) throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
-      return resolveDescriptor(provider, descriptor);
+      const action = resolveDescriptor(provider, descriptor);
+      if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
+        throw new FabricResolutionError(`Fabric capability descriptor changed: ${ref}`);
+      }
+      return action;
+    }
+    if (context.capabilityView) {
+      const pinned = await Promise.all(
+        Object.keys(context.capabilityView.bindings).map((candidate) =>
+          this.describe(candidate, context),
+        ),
+      );
+      const matches = pinned.filter((action) => action.name === ref);
+      if (matches.length === 1) return matches[0]!;
+      if (matches.length > 1) {
+        throw new Error(
+          `"${ref}" matches ${matches.length} committed Fabric actions; qualify with provider.action: ` +
+            matches.map((match) => match.ref).sort().join(", "),
+        );
+      }
+      throw new FabricResolutionError(`Unknown Fabric action in committed view: ${ref}`);
     }
     // Bare action names (what the capability advisory prints in its Next:
     // line and what typed calls pragmatically use): walk every provider for
     // a unique action-name match.
     const matches: ResolvedFabricAction[] = [];
-    for (const provider of this.#providers.values()) {
+    for (const provider of this.#providerBindings.providers()) {
       let descriptors: FabricActionDescriptor[];
       try {
         descriptors = await provider.list({}, context);
@@ -526,6 +688,70 @@ export class ActionRegistry {
     throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
   }
 
+  async acquireScoped(
+    ref: string,
+    args: Record<string, unknown>,
+    context: FabricInvocationContext,
+  ): Promise<FabricScopedProviderResult> {
+    const { binding, provider, actionName, expectedDescriptorHash } = this.#parseRef(
+      ref,
+      context.capabilityView,
+    );
+    const endInvocation = this.#providerBindings.beginInvocation(binding.id);
+    const releaseBinding = this.#providerBindings.retain([binding.id]);
+    let retentionTransferred = false;
+    try {
+      const descriptor = await runAbortable(context.signal, () =>
+        provider.describe(actionName, context),
+      );
+      if (!descriptor) throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
+      const action = resolveDescriptor(provider, descriptor);
+      if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
+        throw new FabricResolutionError(`Fabric capability descriptor changed: ${ref}`);
+      }
+      if (action.effect?.kind !== "scoped") {
+        throw new Error(`Fabric action is not a scoped acquisition: ${ref}`);
+      }
+      if (!provider.acquire) {
+        throw new Error(`Fabric provider does not implement scoped acquisition: ${provider.name}`);
+      }
+      const preparedArgs = provider.prepareArguments
+        ? await runAbortable(context.signal, () =>
+            provider.prepareArguments!(actionName, args, context),
+          )
+        : args;
+      if (typeof preparedArgs !== "object" || preparedArgs === null || Array.isArray(preparedArgs)) {
+        throw new Error(`Argument preparation for ${ref} did not return an object`);
+      }
+      const invalid = validationMessage(action.inputSchema, preparedArgs);
+      if (invalid) throw new Error(`Invalid arguments for ${ref}: ${invalid}`);
+      const acquired = await runAbortable(context.signal, () =>
+        provider.acquire!(actionName, preparedArgs, context),
+      );
+      if (!acquired || typeof acquired.dispose !== "function") {
+        throw new Error(`Scoped acquisition ${ref} did not return a disposer`);
+      }
+      let disposal: Promise<void> | undefined;
+      retentionTransferred = true;
+      return {
+        value: acquired.value,
+        dispose: () => {
+          disposal ??= (async () => {
+            try {
+              await acquired.dispose();
+            } finally {
+              await releaseBinding();
+            }
+          })();
+          return disposal;
+        },
+      };
+    } finally {
+      await endInvocation().catch(() => undefined);
+      if (!retentionTransferred) await releaseBinding().catch(() => undefined);
+    }
+  }
+
   async invoke(
     ref: string,
     args: Record<string, unknown>,
@@ -535,16 +761,29 @@ export class ActionRegistry {
     let failureStage: "resolve" | "guard" | "prepare" | "validate" | "approve" | "invoke" = "resolve";
     let audit: FabricCallAudit | undefined;
     let invocationActive = false;
+    let endBindingInvocation: (() => Promise<void>) | undefined;
     try {
-      const { provider, actionName } = this.#parseRef(ref);
+      const { binding, provider, actionName, expectedDescriptorHash } = this.#parseRef(
+        ref,
+        context.capabilityView,
+      );
+      endBindingInvocation = this.#providerBindings.beginInvocation(binding.id);
       const descriptor = await runAbortable(context.signal, () =>
         provider.describe(actionName, context),
       );
       if (!descriptor) throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
       const action = resolveDescriptor(provider, descriptor);
+      if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
+        throw new FabricResolutionError(`Fabric capability descriptor changed: ${ref}`);
+      }
       traceOperation?.resolved(action.provider, action.name);
 
       failureStage = "guard";
+      if (action.effect?.kind === "scoped") {
+        throw new FabricTraceSafeError(
+          `Fabric scoped action ${ref} requires a supervised acquisition context`,
+        );
+      }
       if (context.authorize) {
         await runAbortable(context.signal, () => context.authorize!(action));
       }
@@ -571,6 +810,19 @@ export class ActionRegistry {
 
       failureStage = "invoke";
       const nestedToolCallId = `${NESTED_TOOL_CALL_ID_PREFIX}${randomUUID()}`;
+      const effect = action.effect!;
+      const effectConflicts = [...this.#activeEffects.values()].flatMap((active) => {
+        const conflict = conflictBetween(effect, active.effect);
+        return conflict ? [{ withRef: active.ref, ...conflict }] : [];
+      }).slice(0, 32);
+      if (effectConflicts.length > 0 && context.effectPolicy === "strict") {
+        failureStage = "guard";
+        throw new FabricTraceSafeError(
+          `Fabric effect conflict for ${ref}: ${effectConflicts
+            .map((conflict) => `${conflict.withRef} [${conflict.resources.join(", ")}]`)
+            .join("; ")}`,
+        );
+      }
       const argsPreview = previewArgs(ref, preparedArgs);
       const activeAudit: FabricCallAudit = {
         ref,
@@ -582,6 +834,7 @@ export class ActionRegistry {
           argsPreview,
           MAX_AUDIT_VALUE_CHARS,
         ) as Record<string, unknown>,
+        ...(effectConflicts.length > 0 ? { effectConflicts } : {}),
       };
       audit = activeAudit;
       invocationActive = true;
@@ -593,8 +846,11 @@ export class ActionRegistry {
         args: argsPreview,
       });
       context.update(`Calling ${ref}`);
-      const providerValue = await runAbortable(context.signal, () =>
-        provider.invoke(actionName, preparedArgs, {
+      this.#activeEffects.set(nestedToolCallId, { ref, effect });
+      let providerValue: unknown;
+      try {
+        providerValue = await runAbortable(context.signal, () =>
+          provider.invoke(actionName, preparedArgs, {
           ...context,
           nestedToolCallId,
           update(message) {
@@ -639,8 +895,11 @@ export class ActionRegistry {
             if (!invocationActive) return;
             activeAudit.preview = preview;
           },
-        }),
-      );
+          }),
+        );
+      } finally {
+        this.#activeEffects.delete(nestedToolCallId);
+      }
       const value = this.toolResultProxy
         ? await runAbortable(context.signal, () => this.toolResultProxy!.proxy({
             action,
@@ -691,11 +950,15 @@ export class ActionRegistry {
     } finally {
       invocationActive = false;
       if (audit) audit.endedAt ??= Date.now();
+      await endBindingInvocation?.().catch(() => undefined);
     }
   }
 
   async endInvocation(parentToolCallId: string, timeoutMs = 1_000): Promise<void> {
-    const finalizers = [...this.#providers.values()].flatMap((provider) =>
+    const providers = new Set(
+      this.#providerBindings.entries().map((binding) => binding.provider),
+    );
+    const finalizers = [...providers].flatMap((provider) =>
       provider.invocationEnded
         ? [Promise.resolve().then(() => provider.invocationEnded!(parentToolCallId))]
         : [],
@@ -704,28 +967,131 @@ export class ActionRegistry {
   }
 
   async close(excludedProviderNames: Set<string> = new Set()): Promise<void> {
-    await Promise.allSettled(
-      [...this.#providers.values()]
-        .filter((provider) => !excludedProviderNames.has(provider.name))
-        .map((provider) => provider.close?.()),
-    );
-    this.#providers.clear();
+    await this.#providerBindings.close(excludedProviderNames);
   }
 
-  #parseRef(ref: string): { provider: FabricProvider; actionName: string } {
+  async #resolveCapabilities(
+    requirements: readonly (string | FabricCapabilityRequirement)[],
+    context: FabricInvocationContext,
+    retain: boolean,
+  ): Promise<FabricCapabilityViewLease> {
+    const normalized = new Map<string, boolean>();
+    for (const requirement of requirements) {
+      const ref = (typeof requirement === "string" ? requirement : requirement.ref).trim();
+      if (!ref || ref.length > 256 || !ref.includes(".")) {
+        throw new Error(`Fabric capability requirements must use provider.action: ${ref || "<empty>"}`);
+      }
+      const optional = typeof requirement === "string" ? false : requirement.optional === true;
+      normalized.set(ref, (normalized.get(ref) ?? true) && optional);
+    }
+
+    const missing: string[] = [];
+    const optionalMissing: string[] = [];
+    const resolved = new Map<string, FabricCapabilityBindingView>();
+    const temporaryReleases: Array<() => Promise<void>> = [];
+    let permanentRelease: (() => Promise<void>) | undefined;
+    try {
+      for (const [ref, optional] of [...normalized].sort(([left], [right]) =>
+        left.localeCompare(right),
+      )) {
+        try {
+          const { binding, provider, actionName } = this.#parseRef(ref);
+          const release = this.#providerBindings.retain([binding.id]);
+          temporaryReleases.push(release);
+          const descriptor = await runAbortable(context.signal, () =>
+            provider.describe(actionName, context),
+          );
+          if (!descriptor) throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
+          const action = resolveDescriptor(provider, descriptor);
+          resolved.set(ref, {
+            ref,
+            provider: provider.name,
+            providerBindingId: binding.id,
+            generation: binding.generation,
+            descriptorHash: actionDescriptorHash(action),
+          });
+        } catch (error) {
+          if (!(error instanceof FabricResolutionError)) throw error;
+          (optional ? optionalMissing : missing).push(ref);
+        }
+      }
+
+      let view: FabricCommittedCapabilityView | undefined;
+      if (missing.length === 0) {
+        const bindings = Object.fromEntries(resolved);
+        const values = [...resolved.values()];
+        if (retain) permanentRelease = this.#providerBindings.retain(
+          values.map((binding) => binding.providerBindingId),
+        );
+        view = {
+          id: randomUUID(),
+          digest: descriptorHash(values),
+          semanticDigest: descriptorHash(
+            values.map(({ ref, provider, descriptorHash: hash }) => ({
+              ref,
+              provider,
+              descriptorHash: hash,
+            })),
+          ),
+          bindings,
+        };
+      }
+      return {
+        satisfied: missing.length === 0,
+        missing,
+        optionalMissing,
+        ...(view ? { view } : {}),
+        release: async () => {
+          const release = permanentRelease;
+          permanentRelease = undefined;
+          await release?.();
+        },
+      };
+    } finally {
+      await Promise.allSettled(temporaryReleases.map((release) => release()));
+    }
+  }
+
+  #parseRef(
+    ref: string,
+    view?: FabricCommittedCapabilityView,
+  ): {
+    binding: FabricProviderBinding;
+    provider: FabricProvider;
+    actionName: string;
+    expectedDescriptorHash?: string;
+  } {
     const separator = ref.indexOf(".");
     if (separator <= 0 || separator === ref.length - 1) {
       throw new Error(`Fabric action references must use provider.action: ${ref}`);
     }
     const providerName = ref.slice(0, separator);
+    const pinned = view?.bindings[ref];
+    if (view && !pinned) {
+      throw new FabricResolutionError(`Fabric capability is outside the committed view: ${ref}`);
+    }
+    const binding = pinned
+      ? this.#providerBindings.binding(pinned.providerBindingId)
+      : this.#providerBindings.current(providerName);
+    if (!binding || binding.name !== providerName) {
+      if (pinned) {
+        throw new FabricResolutionError(
+          `Fabric capability binding is no longer available: ${ref} (${pinned.providerBindingId})`,
+        );
+      }
+      this.#requireProvider(providerName);
+      throw new FabricResolutionError(`Unknown Fabric provider: ${providerName}`);
+    }
     return {
-      provider: this.#requireProvider(providerName),
+      binding,
+      provider: binding.provider,
       actionName: ref.slice(separator + 1),
+      ...(pinned ? { expectedDescriptorHash: pinned.descriptorHash } : {}),
     };
   }
 
   #requireProvider(name: string): FabricProvider {
-    const provider = this.#providers.get(name);
+    const provider = this.#providerBindings.current(name)?.provider;
     if (provider) return provider;
     const unavailableReason = this.#unavailable.get(name);
     if (unavailableReason) {
@@ -733,9 +1099,9 @@ export class ActionRegistry {
         `Fabric provider "${name}" is unavailable: ${unavailableReason}`,
       );
     }
-    const registered = [...this.#providers.keys()].sort((left, right) =>
-      left.localeCompare(right),
-    );
+    const registered = this.#providerBindings.providers()
+      .map((provider) => provider.name)
+      .sort((left, right) => left.localeCompare(right));
     throw new FabricResolutionError(
       `Unknown Fabric provider: ${name}` +
         (registered.length > 0 ? ` (registered providers: ${registered.join(", ")})` : ""),

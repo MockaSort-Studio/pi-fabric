@@ -420,6 +420,7 @@ globalThis.extensions = __providerProxy("extensions");
 globalThis.memory = __providerProxy("memory");
 globalThis.state = __providerProxy("state");
 globalThis.schema = __providerProxy("schema");
+globalThis.components = __providerProxy("components");
 globalThis.compact = __providerProxy("compact");
 const __createActor = async (args = {}) => {
   if (!args || typeof args !== "object" || Array.isArray(args)) {

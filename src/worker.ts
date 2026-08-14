@@ -364,6 +364,10 @@ const main = async (): Promise<void> => {
       PI_FABRIC_FULL_CODE_MODE: String(options.fullCodeMode),
       ...(options.actorId ? { PI_FABRIC_ACTOR_ID: options.actorId } : {}),
       ...(options.actorName ? { PI_FABRIC_ACTOR_NAME: options.actorName } : {}),
+      PI_FABRIC_CAPABILITY_REQUIREMENTS: JSON.stringify(
+        options.capabilityRequirements ?? [],
+      ),
+      PI_FABRIC_CAPABILITY_DIGEST: options.capabilityDigest ?? "",
       ...(options.meshRoot ? { PI_FABRIC_MESH_ROOT: options.meshRoot } : {}),
       ...(options.projectRoot ? { PI_FABRIC_PROJECT_ROOT: options.projectRoot } : {}),
       ...(options.ownerHostId ? { PI_FABRIC_OWNER_HOST_ID: options.ownerHostId } : {}),

@@ -241,6 +241,17 @@ describe("FabricState lazy bootstrap", () => {
     vi.unstubAllEnvs();
   });
 
+  it("eagerly activates child runtimes with inherited capability commitments", async () => {
+    const cwd = project({ prewalk: { alwaysRearm: false }, mesh: { enabled: false } });
+    const state = createState(runtimeHarness().loader);
+    const context = contextAt(cwd);
+    await state.bootstrap(context);
+    vi.stubEnv("PI_FABRIC_CAPABILITY_REQUIREMENTS", JSON.stringify(["memory.recall"]));
+    vi.stubEnv("PI_FABRIC_CAPABILITY_DIGEST", "semantic-digest");
+    expect(state.shouldEagerlyActivate(context)).toBe(true);
+    vi.unstubAllEnvs();
+  });
+
   it("does not probe persisted actors from nested actor or agent identities", async () => {
     const cwd = project({ prewalk: { alwaysRearm: false }, mesh: { enabled: true } });
     const actorDirectory = path.join(cwd, ".pi", "fabric", "mesh", "actors");

@@ -10,12 +10,22 @@ import { actorDeliveryNotice } from "./actors/delivery-policy.js";
 import { prepareFabricActorHostPayload } from "./actors/host-event-payload.js";
 import type { FabricActorHostEvent } from "./actors/types.js";
 import { CapturedToolCatalog, type CapturedToolEntry } from "./capture/catalog.js";
+import { FabricComponentCatalog } from "./components/catalog.js";
+import { FabricComponentLoader } from "./components/loader.js";
+import { FabricComponentSupervisor } from "./components/supervisor.js";
+import type {
+  FabricComponentDefinition,
+  FabricComponentGraph,
+} from "./components/types.js";
 import {
   loadFabricConfig,
   type FabricConfig,
   type FabricResultFormat,
 } from "./config.js";
-import { ActionRegistry } from "./core/action-registry.js";
+import {
+  ActionRegistry,
+  type FabricCapabilityViewLease,
+} from "./core/action-registry.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
 import { CompactController, type CompactLastCommit, type CompactPendingIntent } from "./core/compact-controller.js";
 import { FabricToolResultProxy } from "./core/tool-result-proxy.js";
@@ -50,6 +60,7 @@ import {
 import { AgentsProvider } from "./providers/agents-provider.js";
 import { CapturedToolsProvider } from "./providers/captured-tools-provider.js";
 import { CompactProvider } from "./providers/compact-provider.js";
+import { ComponentsProvider } from "./providers/components-provider.js";
 import { McpDescriptorCacheStore } from "./providers/mcp-descriptor-cache.js";
 import { McpProvider, type McpProviderHooks } from "./providers/mcp-provider.js";
 import { MemoryProvider, type MemoryProviderContext } from "./providers/memory-provider.js";
@@ -60,8 +71,10 @@ import { StateProvider } from "./providers/state-provider.js";
 import { SchemaController } from "./schema/controller.js";
 import { StateStore } from "./state/store.js";
 import {
+  FABRIC_COMPONENT_DISCOVER_EVENT,
   FABRIC_PROVIDER_DISCOVER_EVENT,
   type FabricActionDescriptor,
+  type FabricComponentDiscovery,
   type FabricProvider,
   type FabricProviderDiscovery,
 } from "./protocol.js";
@@ -71,6 +84,19 @@ import { RESIDENT_HOST_FORMAT, residentRoot } from "./residency/protocol.js";
 import type { FabricRuntimePaths } from "./runtime-paths.js";
 
 const BACKGROUND_COMPLETION_MAX_CHARS = 8_000;
+const inheritedCapabilityRequirements = (): string[] => {
+  const source = process.env.PI_FABRIC_CAPABILITY_REQUIREMENTS;
+  if (!source) return [];
+  const parsed: unknown = JSON.parse(source);
+  if (!Array.isArray(parsed) || parsed.length > 128) {
+    throw new Error("PI_FABRIC_CAPABILITY_REQUIREMENTS must be an array of at most 128 refs");
+  }
+  const refs = parsed.filter((value): value is string => typeof value === "string");
+  if (refs.length !== parsed.length || refs.some((ref) => ref.length > 256 || !ref.includes("."))) {
+    throw new Error("PI_FABRIC_CAPABILITY_REQUIREMENTS contains an invalid provider.action ref");
+  }
+  return [...new Set(refs)];
+};
 
 const escapeXmlText = (value: string): string =>
   value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -102,8 +128,15 @@ export class FabricRuntimeState {
   #agentsProvider: AgentsProvider | undefined;
   #compact: CompactController | undefined;
   #schema: SchemaController | undefined;
+  #componentSupervisor: FabricComponentSupervisor | undefined;
+  #componentLoader: FabricComponentLoader | undefined;
+  readonly #componentTransitionSignatures = new Map<string, string>();
+  readonly #componentTransitionPublications = new Set<Promise<void>>();
+  #sessionCapabilityLease: FabricCapabilityViewLease | undefined;
+  #unsubscribeCapturedCatalog: (() => void) | undefined;
   #cwd: string | undefined;
   readonly #externalProviders = new Map<string, FabricProvider>();
+  readonly componentCatalog = new FabricComponentCatalog();
   readonly activity: FabricActivityStore;
   readonly prewalk: PrewalkController;
   readonly prewalkDrift: PrewalkDriftTracker;
@@ -162,6 +195,11 @@ export class FabricRuntimeState {
     return this.#mcpProvider?.sliceDescriptors() ?? [];
   }
 
+  get components(): FabricComponentLoader {
+    if (!this.#componentLoader) throw new Error("Pi Fabric has not initialized");
+    return this.#componentLoader;
+  }
+
   get execution(): FabricExecutionService {
     if (!this.#execution) throw new Error("Pi Fabric has not initialized");
     return this.#execution;
@@ -194,6 +232,10 @@ export class FabricRuntimeState {
 
   peerInfos(): FabricPeerInfo[] {
     return this.#participants?.peers() ?? [];
+  }
+
+  componentGraph(): FabricComponentGraph {
+    return this.#componentLoader?.graph() ?? { components: [], edges: [], cycles: [] };
   }
 
   participantInfos(options: FabricParticipantListOptions = {}): FabricParticipantInfo[] {
@@ -241,6 +283,40 @@ export class FabricRuntimeState {
     this.#registry = new ActionRegistry(
       new FabricToolResultProxy(() => this.capturedTools.runner),
     );
+    this.#unsubscribeCapturedCatalog = this.capturedTools.subscribe(() =>
+      this.#registry?.notifyCatalogChanged("extensions"),
+    );
+    this.#componentSupervisor = new FabricComponentSupervisor(this.#registry, {
+      invocationContext: () => ({
+        cwd: context.cwd,
+        signal: undefined,
+        parentToolCallId: "fabric-component",
+        nestedToolCallId: "fabric-component",
+        extensionContext: context,
+        update() {},
+      }),
+      maxResultChars: this.#config.executor.maxNestedResultChars,
+      acquire: async (ref, args, invocation) => {
+        const action = await this.#registry!.describe(ref, invocation);
+        await this.#schema?.authorize(action.ref, invocation.parentToolCallId);
+        return this.#registry!.acquireScoped(ref, args, invocation);
+      },
+      invoke: (ref, args, invocation) => this.#registry!.invoke(ref, args, {
+        ...invocation,
+        ...(this.#schema
+          ? { authorize: (action) => this.#schema!.authorize(action.ref, invocation.parentToolCallId) }
+          : {}),
+        approve: async () => {},
+        audits: [],
+        maxResultChars: this.#config!.executor.maxNestedResultChars,
+      }),
+    });
+    this.#componentSupervisor.subscribe(() => this.#observeComponentTransitions());
+    this.#componentLoader = new FabricComponentLoader(
+      this.componentCatalog,
+      this.#componentSupervisor,
+    );
+    this.#registry.register(new ComponentsProvider(this.#componentLoader));
     const enforceSchema = this.#config.schema.mode === "enforce";
     const effectiveFullCodeMode = this.#config.fullCodeMode || enforceSchema;
     const capturedToolsProvider =
@@ -270,7 +346,10 @@ export class FabricRuntimeState {
           }
         : {}),
       hooks: {
-        onSliceChanged: (descriptors) => this.#mcpHooks?.onSliceChanged?.(descriptors),
+        onSliceChanged: (descriptors) => {
+          this.#registry?.notifyCatalogChanged("mcp");
+          this.#mcpHooks?.onSliceChanged?.(descriptors);
+        },
         onToolUse: (server) => this.#mcpHooks?.onToolUse?.(server),
       },
     });
@@ -411,6 +490,17 @@ export class FabricRuntimeState {
       this.#config.mesh.actorScope === "session"
         ? path.join(meshRoot, "actors", sessionId)
         : path.join(meshRoot, "actors");
+    const acquireActorCapabilityView = (
+      requirements: Parameters<ActionRegistry["acquireCapabilityView"]>[0],
+      signal: AbortSignal,
+    ) => this.#registry!.acquireCapabilityView(requirements, {
+      cwd: context.cwd,
+      signal,
+      parentToolCallId: "fabric-actor-capability",
+      nestedToolCallId: "fabric-actor-capability",
+      extensionContext: context,
+      update() {},
+    });
     this.#actors = new ActorManager(
       sessionId,
       identity,
@@ -450,6 +540,7 @@ export class FabricRuntimeState {
             claimResidency: "session",
             rootId: mainAgentId,
             retention: this.#config.retention,
+            acquireCapabilityView: acquireActorCapabilityView,
           }
         : {
             persistent: false,
@@ -459,8 +550,10 @@ export class FabricRuntimeState {
             claimResidency: "session",
             rootId: mainAgentId,
             retention: this.#config.retention,
+            acquireCapabilityView: acquireActorCapabilityView,
           },
     );
+    this.#registry.subscribeProviderChanges(() => this.#actors?.retryCapabilityWaiters());
     this.#lifecycle = new LifecycleBroker(
       this.#mesh,
       identity,
@@ -593,6 +686,38 @@ export class FabricRuntimeState {
       register: (provider, options) => this.registerExternal(provider, options),
     };
     this.pi.events.emit(FABRIC_PROVIDER_DISCOVER_EVENT, discovery);
+    const componentDiscovery: FabricComponentDiscovery = this.componentCatalog.discovery;
+    this.pi.events.emit(FABRIC_COMPONENT_DISCOVER_EVENT, componentDiscovery);
+    await this.#componentLoader.reconcile(enforceSchema ? [] : this.#config.components);
+    const inheritedRequirements = inheritedCapabilityRequirements();
+    const inheritedDigest = process.env.PI_FABRIC_CAPABILITY_DIGEST;
+    const hasInheritedCommit =
+      process.env.PI_FABRIC_CAPABILITY_REQUIREMENTS !== undefined && Boolean(inheritedDigest);
+    if (inheritedRequirements.length > 0 || hasInheritedCommit) {
+      const lease = await this.#registry.acquireCapabilityView(inheritedRequirements, {
+        cwd: context.cwd,
+        signal: undefined,
+        parentToolCallId: "fabric-capability-commit",
+        nestedToolCallId: "fabric-capability-commit",
+        extensionContext: context,
+        update() {},
+      });
+      if (!lease.satisfied || !lease.view) {
+        await lease.release();
+        throw new Error(
+          `Required Fabric capabilities are unavailable: ${lease.missing.join(", ")}`,
+        );
+      }
+      const expectedDigest = inheritedDigest;
+      if (expectedDigest && lease.view.semanticDigest !== expectedDigest) {
+        await lease.release();
+        throw new Error(
+          `Fabric capability commitment mismatch: expected ${expectedDigest}, resolved ${lease.view.semanticDigest}`,
+        );
+      }
+      this.#sessionCapabilityLease = lease;
+      this.#execution.setCapabilityView(lease.view);
+    }
   }
 
   async ensure(context: ExtensionContext): Promise<void> {
@@ -607,7 +732,13 @@ export class FabricRuntimeState {
       projectTrusted: context.isProjectTrusted(),
     });
     next.schema.mode = this.#config.schema.mode;
+    const previousComponents = structuredClone(this.#config.components);
     deepAssign(this.#config as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>);
+    void this.#componentLoader?.reconcile(next.components).catch((error) => {
+      if (this.#config) this.#config.components = previousComponents;
+      const detail = error instanceof Error ? error.message : String(error);
+      if (context.hasUI) context.ui.notify(`Pi Fabric component reload failed: ${detail}`, "error");
+    });
   }
 
   async claimHandoff(
@@ -731,6 +862,32 @@ export class FabricRuntimeState {
     );
   }
 
+  #observeComponentTransitions(): void {
+    const components = this.#componentSupervisor?.list() ?? [];
+    const visible = new Set<string>();
+    for (const component of components) {
+      visible.add(component.id);
+      const signature = [
+        component.state,
+        component.revision,
+        component.targetDigest ?? "",
+        component.missing.join("\u0000"),
+        component.optionalMissing.join("\u0000"),
+        component.error ?? "",
+        component.cleanupErrors?.join("\u0000") ?? "",
+      ].join("\u0001");
+      if (this.#componentTransitionSignatures.get(component.id) === signature) continue;
+      this.#componentTransitionSignatures.set(component.id, signature);
+      const publication = this.publishHostLifecycle("component.state", component)
+        .catch(() => undefined);
+      this.#componentTransitionPublications.add(publication);
+      void publication.finally(() => this.#componentTransitionPublications.delete(publication));
+    }
+    for (const id of this.#componentTransitionSignatures.keys()) {
+      if (!visible.has(id)) this.#componentTransitionSignatures.delete(id);
+    }
+  }
+
   async publishHostLifecycle(
     event: FabricLifecycleEventType,
     payload: unknown,
@@ -772,6 +929,7 @@ export class FabricRuntimeState {
         "state",
         "memory",
         "compact",
+        "components",
       ].includes(provider.name)
     ) {
       throw new Error(`Reserved Fabric provider name: ${provider.name}`);
@@ -783,8 +941,23 @@ export class FabricRuntimeState {
     if (this.#registry) this.#registry.register(provider, options);
   }
 
+  registerExternalComponent(
+    component: FabricComponentDefinition,
+    options: { overwrite?: boolean } = {},
+  ): void {
+    this.componentCatalog.register(component, options);
+  }
+
+  async settleComponents(): Promise<void> {
+    await this.#componentLoader?.settle();
+  }
+
   async shutdown(): Promise<void> {
     await this.#participants?.quiesce().catch(() => undefined);
+    await this.#componentLoader?.close();
+    await Promise.allSettled([...this.#componentTransitionPublications]);
+    await this.#sessionCapabilityLease?.release().catch(() => undefined);
+    this.#sessionCapabilityLease = undefined;
     await this.#lifecycle?.close();
     await this.#control?.close();
     await this.#residency?.close();
@@ -810,6 +983,14 @@ export class FabricRuntimeState {
     this.#agentsProvider = undefined;
     this.#compact = undefined;
     this.#schema = undefined;
+    this.#componentSupervisor = undefined;
+    this.#componentLoader = undefined;
+    this.#componentTransitionSignatures.clear();
+    this.#componentTransitionPublications.clear();
+    this.#sessionCapabilityLease = undefined;
+    this.#unsubscribeCapturedCatalog?.();
+    this.#unsubscribeCapturedCatalog = undefined;
+    this.componentCatalog.clear();
     this.#cwd = undefined;
     this.activity.reset();
     this.#widgetDismissedAt = 0;
@@ -839,6 +1020,10 @@ export class FabricRuntimeState {
   async #closeInternal(): Promise<void> {
     if (!this.#registry) return;
     await this.#participants?.quiesce().catch(() => undefined);
+    await this.#componentLoader?.close();
+    await Promise.allSettled([...this.#componentTransitionPublications]);
+    await this.#sessionCapabilityLease?.release().catch(() => undefined);
+    this.#sessionCapabilityLease = undefined;
     await this.#lifecycle?.close();
     await this.#control?.close();
     await this.#residency?.close();
@@ -863,6 +1048,13 @@ export class FabricRuntimeState {
     this.#agentsProvider = undefined;
     this.#compact = undefined;
     this.#schema = undefined;
+    this.#componentSupervisor = undefined;
+    this.#componentLoader = undefined;
+    this.#componentTransitionSignatures.clear();
+    this.#componentTransitionPublications.clear();
+    this.#sessionCapabilityLease = undefined;
+    this.#unsubscribeCapturedCatalog?.();
+    this.#unsubscribeCapturedCatalog = undefined;
   }
 }
 
@@ -900,6 +1092,15 @@ const lifecycleMetadata = (
       return scalarMetadata(payload, ["toolCallId", "toolName"]);
     case "pi.session_compact":
       return scalarMetadata(payload, ["reason", "willRetry"]);
+    case "component.state":
+      return scalarMetadata(payload, [
+        "id",
+        "component",
+        "state",
+        "guarantee",
+        "revision",
+        "targetDigest",
+      ]);
     default:
       return undefined;
   }

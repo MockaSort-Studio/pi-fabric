@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { FabricActivityStore } from "./activity/store.js";
 import { CapturedToolCatalog, type CapturedToolEntry } from "./capture/catalog.js";
+import type { FabricComponentGraph } from "./components/types.js";
 import { loadFabricConfig, type FabricConfig, type FabricResultFormat } from "./config.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
 import { PrewalkController } from "./prewalk/controller.js";
@@ -29,7 +30,11 @@ import {
 } from "./main-agent.js";
 import type { FabricActorHostEvent } from "./actors/types.js";
 import type { FabricLifecycleEventType } from "./lifecycle/types.js";
-import type { FabricActionDescriptor, FabricProvider } from "./protocol.js";
+import type {
+  FabricActionDescriptor,
+  FabricComponentDefinition,
+  FabricProvider,
+} from "./protocol.js";
 import type { FabricRuntimeState } from "./fabric-runtime-state.js";
 import type { FabricRuntimePaths } from "./runtime-paths.js";
 
@@ -57,6 +62,7 @@ export class FabricState {
   #activationFailureHook: ActivationFailureHook | undefined;
   #bootstrapMcpDescriptors: FabricActionDescriptor[] = [];
   readonly #externalProviders = new Map<string, FabricProvider>();
+  readonly #externalComponents = new Map<string, FabricComponentDefinition>();
   readonly #onCapturedToolUse: ((entry: CapturedToolEntry) => void) | undefined;
   readonly #mcpHooks: McpProviderHooks | undefined;
   readonly #options: FabricStateOptions;
@@ -112,6 +118,7 @@ export class FabricState {
   get globalActors(): FabricRuntimeState["globalActors"] { return this.#required().globalActors; }
   get mesh(): FabricRuntimeState["mesh"] { return this.#required().mesh; }
   get compact(): FabricRuntimeState["compact"] { return this.#required().compact; }
+  get components(): FabricRuntimeState["components"] { return this.#required().components; }
 
   setActivationHook(hook: ActivationHook, onFailure?: ActivationFailureHook): void {
     this.#activationHook = hook;
@@ -170,6 +177,10 @@ export class FabricState {
   }
 
   shouldEagerlyActivate(context: ExtensionContext): boolean {
+    if (
+      process.env.PI_FABRIC_CAPABILITY_REQUIREMENTS !== undefined &&
+      Boolean(process.env.PI_FABRIC_CAPABILITY_DIGEST)
+    ) return true;
     if (this.config.prewalk.alwaysRearm) return true;
     if (!context.isProjectTrusted() || !this.config.mesh.enabled || this.config.schema.mode === "enforce") {
       return false;
@@ -210,6 +221,9 @@ export class FabricState {
   }
   mainAgentInfo(context?: ExtensionContext): FabricMainAgentInfo { return this.#required().mainAgentInfo(context); }
   peerInfos(): FabricPeerInfo[] { return this.#current()?.peerInfos() ?? []; }
+  componentGraph(): FabricComponentGraph {
+    return this.#current()?.componentGraph() ?? { components: [], edges: [], cycles: [] };
+  }
   participantInfos(options: FabricParticipantListOptions = {}): FabricParticipantInfo[] {
     return this.#current()?.participantInfos(options) ?? [];
   }
@@ -232,7 +246,7 @@ export class FabricState {
   }
 
   registerExternal(provider: FabricProvider, options: { overwrite?: boolean } = {}): void {
-    if (["pi", "mcp", "agents", "mesh", "extensions", "fabric", "schema", "state", "memory", "compact"].includes(provider.name)) {
+    if (["pi", "mcp", "agents", "mesh", "extensions", "fabric", "schema", "state", "memory", "compact", "components"].includes(provider.name)) {
       throw new Error(`Reserved Fabric provider name: ${provider.name}`);
     }
     if (this.#externalProviders.has(provider.name) && !options.overwrite) {
@@ -240,6 +254,17 @@ export class FabricState {
     }
     this.#externalProviders.set(provider.name, provider);
     this.#current()?.registerExternal(provider, options);
+  }
+
+  registerExternalComponent(
+    component: FabricComponentDefinition,
+    options: { overwrite?: boolean } = {},
+  ): void {
+    if (this.#externalComponents.has(component.name) && !options.overwrite) {
+      throw new Error(`Fabric component already registered: ${component.name}`);
+    }
+    this.#externalComponents.set(component.name, component);
+    this.#current()?.registerExternalComponent(component, options);
   }
 
   reloadConfig(context: ExtensionContext): void {
@@ -268,6 +293,7 @@ export class FabricState {
         this.#config = undefined;
         this.#cwd = undefined;
         this.#externalProviders.clear();
+        this.#externalComponents.clear();
         this.#everActivated = false;
         this.#bootstrapMcpDescriptors = [];
         this.activity.reset();
@@ -302,11 +328,17 @@ export class FabricState {
         await orphan?.shutdown().catch(() => undefined);
         assertCurrent();
         candidate = reusable ?? await this.#createRuntime();
+        if (!reusable) {
+          for (const component of this.#externalComponents.values()) {
+            candidate.registerExternalComponent(component, { overwrite: true });
+          }
+        }
         await candidate.initialize(context, config);
         assertCurrent();
         for (const provider of this.#externalProviders.values()) {
           candidate.registerExternal(provider, { overwrite: true });
         }
+        await candidate.settleComponents?.();
         assertCurrent();
         this.#activatingRuntime = candidate;
         candidate.widgetDismissedAt = this.#widgetDismissedAt;

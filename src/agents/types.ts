@@ -59,6 +59,8 @@ export interface AgentRunRequest {
   sessionFile?: string;
   actorId?: string;
   actorName?: string;
+  capabilityRequirements?: string[];
+  capabilityDigest?: string;
   meshRoot?: string;
   runnerSessionId?: string;
   /** Host-created Pi branch seed ending with the native outer fabric_exec result. */
@@ -108,6 +110,8 @@ export interface AgentRunRecord {
   thinking?: FabricThinking;
   actorId?: string;
   actorName?: string;
+  capabilityRequirements?: string[];
+  capabilityDigest?: string;
   recursive?: boolean;
   residency?: FabricParticipantResidency;
   startedAt: number;
@@ -149,6 +153,8 @@ export interface AgentHandleInfo {
   thinking?: FabricThinking;
   actorId?: string;
   actorName?: string;
+  capabilityRequirements?: string[];
+  capabilityDigest?: string;
   recursive?: boolean;
   residency?: FabricParticipantResidency;
   sessionId?: string;
@@ -190,6 +196,8 @@ export interface AgentWorkerOptions {
   sessionExportFile?: string;
   actorId?: string;
   actorName?: string;
+  capabilityRequirements?: string[];
+  capabilityDigest?: string;
   meshRoot?: string;
   projectRoot?: string;
   ownerHostId?: string;

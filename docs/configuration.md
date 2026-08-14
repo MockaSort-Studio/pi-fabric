@@ -96,6 +96,14 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
     "sessionExport": true,
     "sessionExportDir": ""
   },
+  "components": [
+    {
+      "id": "project-service",
+      "component": "registered-definition",
+      "config": {},
+      "disabled": false
+    }
+  ],
   "ui": {
     "enabled": true,
     "widget": "auto",
@@ -125,6 +133,12 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
   }
 }
 ```
+
+## Components
+
+`components` is a root array of declarative supervised instances. `id` is the stable instance identity, `component` names a definition registered through the versioned component protocol, `config` is passed to its `activate(context, config)` function, and `disabled` removes it from the active graph without deleting the declaration. The default is an empty array; at most 256 valid entries are retained.
+
+Unknown definitions remain visible as waiting rather than failing the Fabric runtime; late discovery activates them. `/fabric reload` transactionally reconciles entry changes. Definition re-registration with `overwrite: true` triggers the same rollback-capable replacement path. See [components, effects, and committed capabilities](components.md).
 
 ## Prewalk executor
 
@@ -209,7 +223,7 @@ In orchestration-only mode:
 - Pi's `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls` tools stay on Pi's normal model-facing and execution paths. Fabric applies the configured risk approval policy through Pi's native `tool_call` preflight without replacing their execution or rendering.
 - Registered extension tools also remain in Pi's native registry; Fabric does not hide, wrap, or expose them through `extensions.*`. Model-requested direct calls use exact `capture.risks` overrides or the conservative `capture.defaultRisk` approval class.
 - `pi.*`, `extensions.*`, and equivalent `tools.call()` references are unavailable inside `fabric_exec`, including when TypeScript checks are bypassed.
-- MCP and stable Fabric providers remain available through `mcp.*`, `memory.*`, `state.*`, `schema.*`, and `compact.*`; generic discovery and computed refs remain available through `tools.*`. One-shot and recursive agents, persistent ambient actors, dynamic workflows, mesh coordination, councils, explicit Fabric providers, and the Fabric TUI also remain available.
+- MCP and stable Fabric providers remain available through `mcp.*`, `memory.*`, `state.*`, `schema.*`, `components.*`, and `compact.*`; generic discovery and computed refs remain available through `tools.*`. One-shot and recursive agents, persistent ambient actors, dynamic workflows, mesh coordination, councils, explicit Fabric providers, and the Fabric TUI also remain available.
 - Child agents continue using their allowed Pi tools directly, so parallel and ambient setups do not route their coding operations back through Fabric code mode.
 
 ### Where to set it

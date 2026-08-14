@@ -276,6 +276,9 @@ export const createDashboardSnapshot = (
     widgetDismissedAt: state.widgetDismissedAt,
     globalActors: state.globalActors.list(),
     agents: visibleAgents,
+    componentGraph: typeof state.componentGraph === "function"
+      ? state.componentGraph()
+      : { components: [], edges: [], cycles: [] },
     actors: actors.sort((left, right) => {
       const leftActive = activeStatuses.has(left.status) ? 1 : 0;
       const rightActive = activeStatuses.has(right.status) ? 1 : 0;

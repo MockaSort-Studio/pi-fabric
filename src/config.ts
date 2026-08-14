@@ -7,6 +7,7 @@ import {
   CURRENT_FABRIC_CONFIG_VERSION,
   migrateFabricConfigDocument,
 } from "./config-migrations.js";
+import type { FabricComponentEntry } from "./components/types.js";
 import type { FabricRisk } from "./protocol.js";
 import { DEFAULT_FABRIC_THINKING, isFabricThinking, type FabricThinking } from "./thinking.js";
 import {
@@ -249,6 +250,7 @@ export interface FabricConfig {
   mcp: FabricMcpConfig;
   prewalk: FabricPrewalkConfig;
   agents: FabricAgentConfig;
+  components: FabricComponentEntry[];
   capture: FabricToolCaptureConfig;
   ui: FabricUiConfig;
   compaction: FabricCompactionConfig;
@@ -328,6 +330,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     sessionExport: true,
     sessionExportDir: "",
   },
+  components: [],
   capture: {
     enabled: true,
     hideFromModel: true,
@@ -628,6 +631,24 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const vedaModel = stringValue(veda.model);
   const vedaPersona = stringValue(veda.persona);
   const agentThinking = thinkingValue(agents.thinking, DEFAULT_FABRIC_CONFIG.agents.thinking);
+  const configuredComponents: FabricComponentEntry[] = Array.isArray(input.components)
+    ? input.components.flatMap((raw) => {
+        const componentEntry = objectValue(raw);
+        const id = stringValue(componentEntry.id);
+        const component = stringValue(componentEntry.component);
+        if (!id || !component) return [];
+        return [{
+          id,
+          component,
+          ...(Object.prototype.hasOwnProperty.call(componentEntry, "config")
+            ? { config: componentEntry.config }
+            : {}),
+          ...(typeof componentEntry.disabled === "boolean"
+            ? { disabled: componentEntry.disabled }
+            : {}),
+        }];
+      }).slice(0, 256)
+    : DEFAULT_FABRIC_CONFIG.components;
   const configuredVisible = Array.isArray(capture.keepVisible)
     ? capture.keepVisible.filter(
         (name): name is string => typeof name === "string" && Boolean(name.trim()),
@@ -817,6 +838,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
           ? agents.sessionExportDir
           : DEFAULT_FABRIC_CONFIG.agents.sessionExportDir,
     },
+    components: configuredComponents.map((entry) => structuredClone(entry)),
     capture: {
       enabled: booleanValue(capture.enabled, DEFAULT_FABRIC_CONFIG.capture.enabled),
       hideFromModel: booleanValue(
