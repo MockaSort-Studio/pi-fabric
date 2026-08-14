@@ -15,11 +15,16 @@ const semanticTheme = {
   bold: (text: string) => `<bold>${text}</bold>`,
 } as unknown as Theme;
 
-const stateFor = (toolDisplay: "full" | "compact") => ({
+const stateFor = (
+  toolDisplay: "full" | "compact",
+  overrides: Partial<{ bootstrapped: boolean; initialized: boolean }> = {},
+) => ({
+  bootstrapped: true,
   initialized: true,
   config: {
     ui: { showAgentToolPreview: true, toolDisplay },
   },
+  ...overrides,
 }) as unknown as FabricState;
 
 const toolFor = (
@@ -425,6 +430,46 @@ describe("registered fabric_exec compact transcript rendering", () => {
     }
   });
 
+  it("honors the bootstrapped compact preference while the heavyweight runtime is inactive", () => {
+    const args = {
+      code: "const lazyResume = await readHistory();\nreturn lazyResume;",
+      display: { name: "Resume history", description: "Render the resumed card" },
+    };
+    const bootstrappedOnly = stateFor("compact", { initialized: false });
+
+    const compact = renderCall(toolFor(bootstrappedOnly), args, true);
+
+    expect(compact).toContain("Resume history");
+    expect(compact).toContain("Render the resumed card");
+    expect(compact).not.toContain("lazyResume");
+    expect(compact).not.toContain("TypeScript");
+  });
+
+  it("falls back to full before bootstrap and for an explicit full preference", () => {
+    const args = {
+      code: "const untouchedSource = true;",
+      display: { name: "Keep full" },
+    };
+    const preBootstrap = stateFor("full", { bootstrapped: false });
+    const bootstrappedFull = stateFor("full", { initialized: false });
+    // Failed-bootstrap window: bootstrap() sets cwd before config loads, so a
+    // config read failure leaves cwd set with no bootstrapped config. Rendering
+    // must still fall back to full instead of throwing.
+    const failedBootstrap = { cwd: "/workspace" } as unknown as FabricState;
+
+    const fallback = renderCall(toolFor(preBootstrap), args, true);
+    const full = renderCall(toolFor(bootstrappedFull), args, true);
+    const failedFallback = renderCall(toolFor(failedBootstrap), args, true);
+
+    expect(fallback).toContain("untouchedSource");
+    expect(fallback).toContain("TypeScript");
+    expect(full).toContain("untouchedSource");
+    expect(full).toContain("TypeScript");
+    expect(full).toContain("fabric");
+    expect(failedFallback).toContain("untouchedSource");
+    expect(failedFallback).toContain("TypeScript");
+  });
+
   it("invalidates completed cards so their current display preference redraws immediately", () => {
     const state = stateFor("full");
     const display = new FabricToolDisplayController();
@@ -460,5 +505,23 @@ describe("registered fabric_exec compact transcript rendering", () => {
     expect(resultContext.invalidate).toHaveBeenCalledOnce();
     expect(compact).not.toContain("currentPresentation");
     expect(compactResult).toContain("Done");
+
+    // Switching back to full re-renders the same historical cards and restores
+    // the TypeScript presentation for both the call and the result component.
+    (state.config.ui as { toolDisplay: "full" | "compact" }).toolDisplay = "full";
+    display.refresh();
+    const fullAgain = tool.renderCall!(args as never, plainTheme, context as never).render(120).join("\n");
+    const fullResultAgain = tool.renderResult!(
+      result as never,
+      { expanded: false, isPartial: false },
+      plainTheme,
+      resultContext as never,
+    ).render(120).join("\n");
+
+    expect(context.invalidate).toHaveBeenCalledTimes(2);
+    expect(resultContext.invalidate).toHaveBeenCalledTimes(2);
+    expect(fullAgain).toContain("currentPresentation");
+    expect(fullResultAgain).toContain("Fabric");
+    expect(fullResultAgain).not.toContain("Done");
   });
 });

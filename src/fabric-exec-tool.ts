@@ -87,8 +87,14 @@ type FabricRendererState = {
 
 type FabricToolDisplayMode = "full" | "compact";
 
+// Bootstrap, not runtime activation, is the config-readiness seam: upstream's
+// deferred startup loads configuration into FabricState without creating the
+// heavyweight runtime, so a resumed session must honor the bootstrapped
+// ui.toolDisplay even while state.initialized is still false. The explicit
+// bootstrapped getter also guards the failed-bootstrap window (config loaded
+// unsuccessfully), where full must remain the safe fallback.
 const toolDisplayMode = (state: FabricState): FabricToolDisplayMode =>
-  state.initialized ? state.config.ui.toolDisplay : DEFAULT_FABRIC_CONFIG.ui.toolDisplay;
+  state.bootstrapped ? state.config.ui.toolDisplay : DEFAULT_FABRIC_CONFIG.ui.toolDisplay;
 
 const compactResultHeader = (
   theme: Theme,

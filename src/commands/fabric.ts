@@ -226,6 +226,9 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           throw error;
         }
         context.ui.notify("Pi Fabric reloaded", "info");
+        // initialize() reloads configuration, so an externally edited
+        // ui.toolDisplay must re-render existing transcript cards too.
+        deps.refreshToolDisplay?.();
         return;
       }
       if (command === "settings") {

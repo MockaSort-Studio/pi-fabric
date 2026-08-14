@@ -104,6 +104,37 @@ describe("/fabric command", () => {
     expect(autoArmPrewalk).not.toHaveBeenCalled();
   });
 
+  it("re-renders existing cards after a successful reload so external edits apply", async () => {
+    let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
+    const pi = {
+      registerCommand: vi.fn((_name, command) => { handler = command.handler; }),
+    } as unknown as ExtensionAPI;
+    const state = {
+      ensure: vi.fn().mockResolvedValue(undefined),
+      initialize: vi.fn().mockResolvedValue(undefined),
+    } as unknown as FabricState;
+    const fabricUi = { stop: vi.fn(), start: vi.fn() } as unknown as FabricUiController;
+    const refreshToolDisplay = vi.fn();
+    const notify = vi.fn();
+    const context = {
+      ui: { notify },
+    } as unknown as ExtensionContext;
+
+    registerFabricCommand(pi, {
+      state,
+      fabricUi,
+      capturedTools: {} as CapturedToolCatalog,
+      applyFabricMode: vi.fn(),
+      suspendToolCapture: vi.fn(),
+      refreshToolDisplay,
+    });
+
+    await handler!("reload", context);
+    expect(state.initialize).toHaveBeenCalledWith(context);
+    expect(notify).toHaveBeenCalledWith("Pi Fabric reloaded", "info");
+    expect(refreshToolDisplay).toHaveBeenCalledOnce();
+  });
+
   it("arms prewalk with the configured executor and submits an inline task", async () => {
     let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
     const sendUserMessage = vi.fn();
