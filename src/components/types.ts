@@ -1,5 +1,7 @@
 import type {
   FabricCommittedCapabilityView,
+  FabricEffectKind,
+  FabricEffectOrdering,
   FabricInvocationContext,
   FabricProvider,
 } from "../protocol.js";
@@ -27,6 +29,15 @@ export type FabricComponentEffect =
   | FabricComponentEffectValue
   | Promise<FabricComponentEffectValue>;
 
+export interface FabricComponentEffectOptions {
+  label?: string;
+  kind?: FabricEffectKind;
+  resources?: readonly string[];
+  ordering?: FabricEffectOrdering;
+}
+
+export type FabricComponentEffectRegistration = string | FabricComponentEffectOptions;
+
 export interface FabricComponentDefinition<TConfig = unknown> {
   name: string;
   description?: string;
@@ -48,6 +59,21 @@ export interface FabricComponentProviderLease {
   release(): Promise<void>;
 }
 
+export interface FabricComponentChildOptions<TConfig = unknown> {
+  id?: string;
+  config?: TConfig;
+}
+
+export interface FabricComponentStopOptions {
+  force?: boolean;
+}
+
+export interface FabricComponentHandle {
+  readonly id: string;
+  status(): FabricComponentInfo;
+  stop(options?: FabricComponentStopOptions): Promise<void>;
+}
+
 export interface FabricComponentContext {
   readonly id: string;
   readonly signal: AbortSignal;
@@ -55,10 +81,17 @@ export interface FabricComponentContext {
   readonly invocation: FabricInvocationContext;
   effect(
     setup: () => FabricComponentEffect,
-    label?: string,
+    registration?: FabricComponentEffectRegistration,
   ): Promise<FabricComponentDisposer>;
-  defer(disposer: FabricComponentDisposer, label?: string): FabricComponentDisposer;
+  defer(
+    disposer: FabricComponentDisposer,
+    registration?: FabricComponentEffectRegistration,
+  ): FabricComponentDisposer;
   provide(provider: FabricProvider): FabricComponentProviderLease;
+  use<TConfig = unknown>(
+    definition: FabricComponentDefinition<TConfig>,
+    options?: FabricComponentChildOptions<TConfig>,
+  ): FabricComponentHandle;
   acquire<T = unknown>(ref: string, args?: Record<string, unknown>): Promise<T>;
   call(ref: string, args?: Record<string, unknown>): Promise<unknown>;
 }
@@ -79,15 +112,31 @@ export interface FabricComponentEntry {
   disabled?: boolean;
 }
 
+export interface FabricComponentEffectInfo {
+  label: string;
+  kind: FabricEffectKind;
+  resources: string[];
+  ordering: FabricEffectOrdering;
+}
+
+export interface FabricComponentEffectConflict {
+  withComponent: string;
+  resources: string[];
+  reason: "shared_resource" | "unknown_resource";
+}
+
 export interface FabricComponentInfo {
   id: string;
   component: string;
+  parentId?: string;
   state: FabricComponentState;
   guarantee: FabricComponentGuarantee;
   requirements: string[];
   provisions: string[];
   missing: string[];
   optionalMissing: string[];
+  effects?: FabricComponentEffectInfo[];
+  effectConflicts?: FabricComponentEffectConflict[];
   targetDigest?: string;
   error?: string;
   cleanupErrors?: string[];
@@ -102,6 +151,7 @@ export interface FabricComponentGraph {
     from: string;
     to: string;
     ref: string;
+    kind?: "dependency" | "ownership";
   }>;
   cycles: string[][];
 }

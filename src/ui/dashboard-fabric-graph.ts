@@ -808,6 +808,15 @@ const inspectorLines = (
     } else if (entity.kind === "component") {
       content.push(theme.fg("muted", `definition ${safeText(entity.value.component)}`));
       content.push(theme.fg("muted", `guarantee  ${entity.value.guarantee}`));
+      if (entity.value.parentId) {
+        content.push(theme.fg("muted", `parent     ${safeText(entity.value.parentId)}`));
+      }
+      if (entity.value.effects?.length) {
+        content.push(theme.fg("muted", `effects    ${entity.value.effects.length}`));
+      }
+      if (entity.value.effectConflicts?.length) {
+        content.push(theme.fg("warning", `conflicts  ${entity.value.effectConflicts.length}`));
+      }
       if (entity.value.requirements.length > 0) {
         content.push(theme.fg("muted", `requires   ${entity.value.requirements.join(", ")}`));
       }

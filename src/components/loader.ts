@@ -88,6 +88,7 @@ export class FabricComponentLoader {
         provisions: [],
         missing: [`component:${entry.component}`],
         optionalMissing: [],
+        effects: [],
         error: `Fabric component definition is unavailable: ${entry.component}`,
         revision: 0,
         createdAt: now,
@@ -116,6 +117,7 @@ export class FabricComponentLoader {
   }
 
   reload(id?: string): Promise<FabricComponentInfo[]> {
+    this.supervisor.assertLifecycleEntryAllowed("reload the component loader");
     return this.#enqueue(async () => {
       const targets = id
         ? [[id, this.#loaded.get(id)] as const]
@@ -136,6 +138,7 @@ export class FabricComponentLoader {
   }
 
   reconcile(entries: readonly FabricComponentEntry[]): Promise<FabricComponentInfo[]> {
+    this.supervisor.assertLifecycleEntryAllowed("reconcile the component loader");
     if (entries.length > 256) throw new Error("Fabric configuration supports at most 256 components");
     const next = new Map<string, FabricComponentEntry>();
     for (const rawEntry of entries) {
@@ -168,6 +171,7 @@ export class FabricComponentLoader {
 
   async close(): Promise<void> {
     if (this.#closed) return;
+    this.supervisor.assertLifecycleEntryAllowed("close the component loader");
     this.#closed = true;
     this.#unsubscribeCatalog();
     await this.#tail;

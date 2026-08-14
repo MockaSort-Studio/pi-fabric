@@ -16,6 +16,7 @@ import { FabricComponentSupervisor } from "./components/supervisor.js";
 import type {
   FabricComponentDefinition,
   FabricComponentGraph,
+  FabricComponentInfo,
 } from "./components/types.js";
 import {
   loadFabricConfig,
@@ -311,7 +312,9 @@ export class FabricRuntimeState {
         maxResultChars: this.#config!.executor.maxNestedResultChars,
       }),
     });
-    this.#componentSupervisor.subscribe(() => this.#observeComponentTransitions());
+    this.#componentSupervisor.subscribe((componentId) =>
+      this.#observeComponentTransitions(componentId),
+    );
     this.#componentLoader = new FabricComponentLoader(
       this.componentCatalog,
       this.#componentSupervisor,
@@ -862,11 +865,23 @@ export class FabricRuntimeState {
     );
   }
 
-  #observeComponentTransitions(): void {
-    const components = this.#componentSupervisor?.list() ?? [];
-    const visible = new Set<string>();
+  #observeComponentTransitions(componentId?: string): void {
+    let components: FabricComponentInfo[];
+    if (componentId) {
+      try {
+        components = this.#componentSupervisor
+          ? [this.#componentSupervisor.status(componentId)]
+          : [];
+      } catch {
+        this.#componentTransitionSignatures.delete(componentId);
+        return;
+      }
+    } else {
+      components = this.#componentSupervisor?.list() ?? [];
+    }
+    const visible = componentId ? undefined : new Set<string>();
     for (const component of components) {
-      visible.add(component.id);
+      visible?.add(component.id);
       const signature = [
         component.state,
         component.revision,
@@ -883,8 +898,10 @@ export class FabricRuntimeState {
       this.#componentTransitionPublications.add(publication);
       void publication.finally(() => this.#componentTransitionPublications.delete(publication));
     }
-    for (const id of this.#componentTransitionSignatures.keys()) {
-      if (!visible.has(id)) this.#componentTransitionSignatures.delete(id);
+    if (visible) {
+      for (const id of this.#componentTransitionSignatures.keys()) {
+        if (!visible.has(id)) this.#componentTransitionSignatures.delete(id);
+      }
     }
   }
 
@@ -1096,6 +1113,7 @@ const lifecycleMetadata = (
       return scalarMetadata(payload, [
         "id",
         "component",
+        "parentId",
         "state",
         "guarantee",
         "revision",

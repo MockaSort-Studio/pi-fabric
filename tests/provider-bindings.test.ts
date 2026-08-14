@@ -220,11 +220,32 @@ describe("provider binding generations", () => {
     const lease = registry.mount(provider("staged"), { staged: true });
     expect(registry.has("demo")).toBe(false);
     expect(registry.providers()).toEqual([]);
+    expect(() => registry.register(provider("intruder"))).toThrow(
+      "Fabric provider already registered: demo",
+    );
 
     expect(registry.activateProviderBindings([lease.bindingId])).toEqual([]);
     expect(lease.active).toBe(true);
     expect(await invoke(registry)).toBe("staged");
     await lease.release();
+  });
+
+  it("only lets an explicitly overwriting staged binding replace a current provider", async () => {
+    const registry = new ActionRegistry();
+    registry.register(provider("current"));
+    expect(() => registry.mount(provider("implicit"), { staged: true })).toThrow(
+      "Fabric provider already registered: demo",
+    );
+
+    const replacement = registry.mount(provider("replacement"), {
+      staged: true,
+      overwrite: true,
+    });
+    expect(await invoke(registry)).toBe("current");
+    expect(registry.activateProviderBindings([replacement.bindingId])).toHaveLength(1);
+    expect(await invoke(registry)).toBe("replacement");
+    await replacement.release();
+    await registry.close();
   });
 
   it("acquires scoped actions with schema checks and a single-shot disposer", async () => {

@@ -94,4 +94,93 @@ describe("FabricEffectScope", () => {
     expect(later).toHaveBeenCalledOnce();
     expect(() => scope.defer(() => {})).toThrow(/disposing Fabric scope/);
   });
+
+  it("diverts at a yield boundary and rolls back only landed iterations", async () => {
+    let targetCurrent = true;
+    const scope = new FabricEffectScope({ guard: () => targetCurrent });
+    const calls: string[] = [];
+
+    await expect(scope.effect(function* () {
+      calls.push("first");
+      targetCurrent = false;
+      try {
+        yield () => { calls.push("undo-first"); };
+        calls.push("stale-continuation");
+        yield () => { calls.push("undo-stale"); };
+      } finally {
+        calls.push("closed");
+      }
+    }, "guarded")).rejects.toThrow("target changed");
+
+    expect(calls).toEqual(["first", "closed", "undo-first"]);
+    expect(await scope.dispose()).toEqual({ status: "disposed", failures: [] });
+  });
+
+  it("lets an in-flight async iteration land before diversion", async () => {
+    let targetCurrent = true;
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const active = new Promise<void>((resolve) => { started = resolve; });
+    const cleanup = vi.fn();
+    const after = vi.fn();
+    const scope = new FabricEffectScope({ guard: () => targetCurrent });
+
+    const setup = scope.effect(async function* () {
+      started();
+      await gate;
+      yield cleanup;
+      after();
+    }, "inertial");
+    await active;
+    targetCurrent = false;
+    release();
+
+    await expect(setup).rejects.toThrow("target changed");
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(after).not.toHaveBeenCalled();
+  });
+
+  it("preserves diversion identity when iterator finalization fails", async () => {
+    let targetCurrent = true;
+    const cleanup = vi.fn();
+    const scope = new FabricEffectScope({ guard: () => targetCurrent });
+    let failure: unknown;
+    try {
+      await scope.effect(function* () {
+        targetCurrent = false;
+        try {
+          yield cleanup;
+        } finally {
+          throw new Error("close failed");
+        }
+      }, "closing");
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({
+      name: "FabricEffectDivertedError",
+      cleanupError: expect.objectContaining({ message: "close failed" }),
+    });
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("reports declared installed effect footprints until disposal", async () => {
+    const scope = new FabricEffectScope();
+    await scope.effect(() => () => {}, {
+      label: "workspace mutation",
+      resources: ["workspace:a", "workspace:a"],
+      ordering: "ordered",
+    });
+
+    expect(scope.footprint()).toEqual([{
+      label: "workspace mutation",
+      kind: "transactional",
+      resources: ["workspace:a"],
+      ordering: "ordered",
+    }]);
+    await scope.dispose();
+    expect(scope.footprint()).toEqual([]);
+  });
 });

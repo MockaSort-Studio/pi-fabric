@@ -145,6 +145,10 @@ export const entityTail = (entity: Entity, now: number): string => {
   if (entity.kind === "component") {
     return [
       entity.value.guarantee,
+      entity.value.parentId ? `child of ${entity.value.parentId}` : undefined,
+      (entity.value.effects?.length ?? 0) > 0
+        ? `${entity.value.effects!.length} effects`
+        : undefined,
       entity.value.requirements.length > 0
         ? `${entity.value.requirements.length} requirements`
         : undefined,

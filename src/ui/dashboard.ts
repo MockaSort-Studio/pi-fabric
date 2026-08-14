@@ -2575,7 +2575,19 @@ export class FabricDashboard implements Component, Focusable {
     } else if (entity.kind === "component") {
       const component = entity.value;
       field("Definition", component.component);
+      field("Parent", component.parentId);
       field("Guarantee", component.guarantee);
+      const componentEffects = component.effects ?? [];
+      const visibleEffects = componentEffects.slice(0, 8).map((effect) =>
+        `${effect.label}: ${effect.kind}/${effect.ordering} [${effect.resources.join(", ")}]`,
+      );
+      if (componentEffects.length > visibleEffects.length) {
+        visibleEffects.push(`+${componentEffects.length - visibleEffects.length} more`);
+      }
+      field("Effects", visibleEffects.join("; "));
+      field("Effect conflicts", component.effectConflicts?.map((conflict) =>
+        `${conflict.withComponent} [${conflict.resources.join(", ")}]`,
+      ).join("; "));
       field("Requirements", component.requirements.join(", "));
       field("Provisions", component.provisions.join(", "));
       field("Missing", component.missing.join(", "));

@@ -91,6 +91,32 @@ describe("FabricComponentLoader", () => {
     await registry.close();
   });
 
+  it("rejects loader re-entry from teardown instead of deadlocking its queue", async () => {
+    const { registry, catalog, loader } = harness();
+    const events: string[] = [];
+    catalog.register({
+      name: "reentrant",
+      activate() {
+        return async () => {
+          try {
+            await loader.reload();
+          } catch (error) {
+            events.push(error instanceof Error ? error.message : String(error));
+          }
+        };
+      },
+    });
+    await loader.reconcile([{ id: "reentrant", component: "reentrant" }]);
+    await loader.reconcile([]);
+
+    expect(events).toEqual([
+      "Cannot reload the component loader from unloading transition reentrant",
+    ]);
+    expect(loader.list()).toEqual([]);
+    await loader.close();
+    await registry.close();
+  });
+
   it("rolls back earlier additions when a graph reconciliation fails", async () => {
     const { registry, catalog, loader } = harness();
     const events: string[] = [];

@@ -1,6 +1,6 @@
 # Components, effects, and committed capabilities
 
-Pi Fabric's component plane turns the provider registry into a supervised, reconfigurable harness. A **provider** exposes actions. A **component** declares exact actions it requires, may mount providers of its own, and owns an effect scope that Fabric can unwind. An **actor** may commit the same kind of exact capability view before each model run.
+Pi Fabric's component plane turns the provider registry into a supervised, reconfigurable harness. A **provider** exposes actions. A **component** declares exact actions it requires, may mount providers of its own, and owns an effect scope that Fabric can unwind. An **actor** may commit the same kind of exact capability view before each model run. The [component calculus](component-calculus.md) records the formal correspondence, runtime-enforced laws, author obligations, and deliberate implementation frontier.
 
 ## Architectural fit
 
@@ -23,7 +23,7 @@ old component ──dispose dependents/effects──▶ retired provider generat
       └────────────────────────────────────▶ new provider generation
 ```
 
-The square commutes when consumers see either the complete old generation or the complete new generation—never a half-mounted provider set. Provider bindings are versioned and stale leases identify a binding, not merely a provider name. A retiring generation remains callable by already committed views and closes only after its owner, dependent views, and in-flight calls release it.
+The square commutes when consumers see either the complete old generation or the complete new generation—never a half-mounted provider set. Provider bindings are versioned and stale leases identify a binding, not merely a provider name. A retiring generation remains callable by already committed views and closes only after its owner, dependent views, and in-flight calls release it. Transition epochs prevent an activation that settles late from resurrecting after retirement.
 
 This adds the missing control plane above `ActionRegistry` without replacing Fabric's existing data, state, actor, or execution planes:
 
@@ -106,7 +106,7 @@ Configure instances at the root of `fabric.json`:
 }
 ```
 
-Definitions may arrive after configuration. An unresolved instance remains `waiting` with `component:<name>` in `missing`; component discovery activates it later. `/fabric reload` reconciles changed entries. A multi-entry reconciliation rolls back additions and replacements if a later activation fails.
+Definitions may arrive after configuration. An unresolved instance remains `waiting` with `component:<name>` in `missing`; component discovery activates it later. `/fabric reload` reconciles changed entries. A multi-entry reconciliation rolls back additions and replacements if a later activation fails. Two live component records cannot declare the same provider name; insertion or replacement is rejected before either fiber is disturbed.
 
 ## Exact requirements and committed views
 
@@ -125,15 +125,19 @@ If a dependency disappears or its generation/descriptor target changes, the supe
 
 Every activation runs inside a `FabricEffectScope`:
 
-- `context.effect(setup, label)` records one or more returned/yielded disposers;
-- `context.defer(disposer, label)` records an existing disposer;
+- `context.effect(setup, labelOrOptions)` records one or more returned/yielded disposers;
+- `context.defer(disposer, labelOrOptions)` records an existing disposer;
+- options may declare `label`, `kind`, `resources`, and `ordering` for lifetime-independence checks;
+- `context.defer()` describes an effect that already happened, so a rejected emission registration is still retained long enough for rollback to invoke its disposer;
 - `context.acquire(ref, args)` requires `effect.kind: "scoped"` and automatically records the provider's single-shot disposer;
 - the value returned by `activate()` is itself treated as an effect result;
 - setup failure rolls back effects already installed;
+- target changes divert generators at yield boundaries, after an asynchronous step lands but before its stale continuation resumes;
+- unload requests `context.signal` cancellation before awaiting the in-flight transition, but cleanup and state publication still wait for that transition to settle;
 - disposal is asynchronous LIFO and idempotent;
 - cleanup failures are aggregated and put the component in `quarantined` state.
 
-`guarantee: "managed"` means Fabric manages effects registered through this API. `guarantee: "revertible"` adds enforceable restrictions: provided services must implement `close()`, scoped actions must use `context.acquire()`, and ordinary calls may only be `none` or `transactional` effects. Emission actions are rejected. Neither guarantee can undo ambient side effects that component code performs behind Fabric's back; component extensions are trusted host code.
+`guarantee: "managed"` means Fabric manages effects registered through this API. `guarantee: "revertible"` adds enforceable restrictions: provided services must implement `close()`, scoped actions must use `context.acquire()`, ordinary calls may only be `none` or `transactional` effects, and installed lifetime footprints must be pairwise independent from other installed component effects under the declared resource relation. Emissions are rejected whether invoked as actions or registered directly. Neither guarantee can undo ambient side effects that component code performs behind Fabric's back; component extensions are trusted host code.
 
 Action descriptors carry effect metadata:
 
@@ -145,7 +149,22 @@ effect: {
 }
 ```
 
-Descriptors that omit it are normalized conservatively: `read` risk becomes commutative `none`; other risks become unknown-order `emission`.
+Descriptors that omit it are normalized conservatively: `read` risk becomes commutative `none`; other risks become unknown-order `emission`. Missing resource identities normalize to top/unknown `*`. An unknown noncommutative footprint conflicts with every effect; shared named resources commute only when both declarations say `commutative`. A string label is therefore conservative on a `revertible` component until explicit resources and ordering are supplied. These declarations are author witnesses, not runtime proofs.
+
+## Parent-owned components
+
+A component can install another supervised component as a registration effect:
+
+```ts
+const child = context.use(workerDefinition, {
+  id: "worker",
+  config: { queue: "reviews" },
+});
+```
+
+The child receives the global ID `<parent>.<local-id>`, reports `parentId`, and otherwise behaves like any component: it resolves its own committed view, can provide services, and may fail without failing its parent or siblings. `context.use()` is a synchronous registration operation available only during `activate()`; child activation begins after the parent transition finishes, so parent activation must not wait for child readiness. Parent unload retires descendants and their dependents before running the parent's own inverse. Calling `child.stop()` is identity-safe and idempotent with eventual parent cleanup, including after the child record is gone. Ownership does not implicitly grant capabilities; only `requires` does. Each parent may own at most 256 live children and one supervisor at most 1,024 fibers.
+
+Do not call or await supervisor/loader lifecycle operations from component activation or teardown closures. Those calls would wait on the transition currently executing the closure; Fabric rejects them instead of allowing a queue deadlock. A component asking to stop itself is folded into the current retirement transition. Use `context.use()` for child registration and perform unrelated orchestration outside lifecycle callbacks.
 
 ## Actor commitments
 
@@ -171,6 +190,6 @@ const graph = await components.graph();
 await components.reload({ id: "project-issues" });
 ```
 
-The dashboard renders components in a separate topology group, with exact requirement-to-provision edges and cycle paths; component lifecycle is not conflated with participant ownership. When mesh lifecycle delivery is enabled, each changed state is also published as an attributed `component.state` event with bounded identity/state metadata; delivery is observational and never drives local correctness.
+The dashboard renders components in a separate topology group, with exact requirement-to-provision edges and cycle paths; component lifecycle is not conflated with participant ownership. Managed components expose bounded effect evidence without strict conflict warnings; `effectConflicts` is reserved for fibers that opted into the `revertible` guarantee. When mesh lifecycle delivery is enabled, each changed state is also published as an attributed `component.state` event with bounded identity/state metadata; delivery is observational and never drives local correctness.
 
-States are `waiting`, `loading`, `active`, `unloading`, `failed`, `quarantined`, and `disposed`. Status includes missing/optional requirements, provisions, revision, target digest, activation error, and cleanup failures. The graph reports requirement-to-provider-component edges and dependency cycles.
+States are `waiting`, `loading`, `active`, `unloading`, `failed`, `quarantined`, and `disposed`. Status includes parent ownership, missing/optional requirements, provisions, up to 256 effect-evidence records, strict non-independence diagnostics, revision, target digest, activation error, and cleanup failures. The graph reports requirement-to-provider dependency edges, parent ownership edges, and dependency cycles. Programmatic supervisors may force-remove a quarantined record with `stop(id, { force: true })`; this removes the registry record but does not claim leaked ambient state was recovered.

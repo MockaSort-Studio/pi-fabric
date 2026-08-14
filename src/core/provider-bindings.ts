@@ -11,6 +11,7 @@ export interface FabricProviderBinding {
   provider: FabricProvider;
   state: FabricProviderBindingState;
   ownerRetained: boolean;
+  allowReplace: boolean;
   retainers: number;
   inFlight: number;
   closeTask?: Promise<void>;
@@ -29,6 +30,7 @@ const snapshot = (binding: FabricProviderBinding): FabricProviderBinding => ({
 
 export class FabricProviderBindings {
   readonly #current = new Map<string, FabricProviderBinding>();
+  readonly #staged = new Map<string, FabricProviderBinding>();
   readonly #all = new Map<string, FabricProviderBinding>();
   readonly #generations = new Map<string, number>();
   readonly #listeners = new Set<(event: FabricProviderBindingEvent) => void>();
@@ -64,9 +66,11 @@ export class FabricProviderBindings {
     options: { overwrite?: boolean; staged?: boolean } = {},
   ): FabricComponentProviderLease {
     const current = this.#current.get(provider.name);
-    if (current && !options.overwrite) {
+    const staged = this.#staged.get(provider.name);
+    if ((current || staged) && !options.overwrite) {
       throw new Error(`Fabric provider already registered: ${provider.name}`);
     }
+    if (staged && options.overwrite) this.retire(staged.id);
     const generation = (this.#generations.get(provider.name) ?? 0) + 1;
     this.#generations.set(provider.name, generation);
     const binding: FabricProviderBinding = {
@@ -76,6 +80,7 @@ export class FabricProviderBindings {
       provider,
       state: options.staged ? "staged" : "active",
       ownerRetained: true,
+      allowReplace: options.overwrite === true,
       retainers: 0,
       inFlight: 0,
     };
@@ -86,6 +91,7 @@ export class FabricProviderBindings {
     }
     this.#all.set(binding.id, binding);
     if (options.staged) {
+      this.#staged.set(binding.name, binding);
       this.#emit({ type: "staged", binding: snapshot(binding) });
     } else {
       const replaced = this.#activateOne(binding);
@@ -126,11 +132,18 @@ export class FabricProviderBindings {
         throw new Error(`Cannot activate multiple Fabric bindings for provider ${binding.name}`);
       }
       names.add(binding.name);
+      const current = this.#current.get(binding.name);
+      if (current && current.id !== binding.id && !binding.allowReplace) {
+        throw new Error(`Fabric provider already registered: ${binding.name}`);
+      }
     }
     const replaced: string[] = [];
     for (const binding of bindings) {
       const previous = this.#activateOne(binding);
-      if (previous && previous.id !== binding.id) replaced.push(previous.id);
+      if (previous && previous.id !== binding.id) {
+        replaced.push(previous.id);
+        if (binding.allowReplace) void this.releaseOwner(previous.id).catch(() => undefined);
+      }
     }
     return replaced;
   }
@@ -147,6 +160,7 @@ export class FabricProviderBindings {
     const binding = this.#all.get(id);
     if (!binding || binding.state === "retiring" || binding.state === "closed") return;
     if (this.#current.get(binding.name)?.id === id) this.#current.delete(binding.name);
+    if (this.#staged.get(binding.name)?.id === id) this.#staged.delete(binding.name);
     binding.state = "retiring";
     this.#emit({ type: "retiring", binding: snapshot(binding) });
     void this.#maybeClose(binding).catch(() => undefined);
@@ -216,12 +230,14 @@ export class FabricProviderBindings {
     }
     await Promise.allSettled(tasks);
     this.#current.clear();
+    this.#staged.clear();
   }
 
   #activateOne(binding: FabricProviderBinding): FabricProviderBinding | undefined {
     const current = this.#current.get(binding.name);
     if (current?.id === binding.id && binding.state === "active") return current;
     if (current && current.id !== binding.id) this.retire(current.id);
+    if (this.#staged.get(binding.name)?.id === binding.id) this.#staged.delete(binding.name);
     binding.state = "active";
     this.#current.set(binding.name, binding);
     this.#emit({ type: "activated", binding: snapshot(binding) });

@@ -939,15 +939,29 @@ interface FabricCompactLastCommit {
   error?: string;
 }
 type FabricComponentState = "waiting" | "loading" | "active" | "unloading" | "failed" | "quarantined" | "disposed";
+interface FabricComponentEffectInfo {
+  label: string;
+  kind: "none" | "scoped" | "transactional" | "emission";
+  resources: string[];
+  ordering: "commutative" | "ordered" | "unknown";
+}
+interface FabricComponentEffectConflict {
+  withComponent: string;
+  resources: string[];
+  reason: "shared_resource" | "unknown_resource";
+}
 interface FabricComponentInfo {
   id: string;
   component: string;
+  parentId?: string;
   state: FabricComponentState;
   guarantee: "managed" | "revertible";
   requirements: string[];
   provisions: string[];
   missing: string[];
   optionalMissing: string[];
+  effects?: FabricComponentEffectInfo[];
+  effectConflicts?: FabricComponentEffectConflict[];
   targetDigest?: string;
   error?: string;
   cleanupErrors?: string[];
@@ -963,7 +977,7 @@ interface FabricComponentsApi {
   status(args: { id: string }): Promise<FabricComponentInfo>;
   graph(): Promise<{
     components: FabricComponentInfo[];
-    edges: Array<{ from: string; to: string; ref: string }>;
+    edges: Array<{ from: string; to: string; ref: string; kind?: "dependency" | "ownership" }>;
     cycles: string[][];
   }>;
   reload(args?: { id?: string }): Promise<{ components: FabricComponentInfo[] }>;
