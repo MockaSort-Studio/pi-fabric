@@ -187,6 +187,7 @@ export interface AgentWorkerOptions {
   thinking?: string;
   systemPrompt?: string;
   sessionFile?: string;
+  sessionExportFile?: string;
   actorId?: string;
   actorName?: string;
   meshRoot?: string;

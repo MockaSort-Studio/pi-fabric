@@ -27,6 +27,7 @@ type VedaCliModule = typeof import("./agents/veda-cli.js");
 type CompactControlModule = typeof import("./agents/compact-control.js");
 type WorkerOptionsModule = typeof import("./worker/options.js");
 type WorkerRunRecordModule = typeof import("./worker/run-record.js");
+type WorkerSessionExportModule = typeof import("./worker/session-export.js");
 
 const loadWorkerOptions = async (): Promise<WorkerOptionsModule> => {
   if (!import.meta.url.endsWith(".ts")) return import("./worker/options.js");
@@ -38,6 +39,12 @@ const loadWorkerRunRecord = async (): Promise<WorkerRunRecordModule> => {
   if (!import.meta.url.endsWith(".ts")) return import("./worker/run-record.js");
   const sourceModulePath = "./worker/run-record.ts";
   return import(sourceModulePath) as Promise<WorkerRunRecordModule>;
+};
+
+const loadWorkerSessionExport = async (): Promise<WorkerSessionExportModule> => {
+  if (!import.meta.url.endsWith(".ts")) return import("./worker/session-export.js");
+  const sourceModulePath = "./worker/session-export.ts";
+  return import(sourceModulePath) as Promise<WorkerSessionExportModule>;
 };
 
 const loadCompactControl = async (): Promise<CompactControlModule> => {
@@ -219,9 +226,10 @@ process.on("unhandledRejection", (error) => {
 });
 
 const main = async (): Promise<void> => {
-  const [optionHelpers, loadedRunRecordHelpers] = await Promise.all([
+  const [optionHelpers, loadedRunRecordHelpers, sessionExportHelpers] = await Promise.all([
     loadWorkerOptions(),
     loadWorkerRunRecord(),
+    loadWorkerSessionExport(),
   ]);
   runRecordHelpers = loadedRunRecordHelpers;
   const {
@@ -234,6 +242,14 @@ const main = async (): Promise<void> => {
     writeRunRecord,
   } = loadedRunRecordHelpers;
   const options = optionHelpers.parseWorkerOptions();
+  const sessionExporter = options.sessionExportFile
+    ? new sessionExportHelpers.SessionExporter({
+        file: options.sessionExportFile,
+        sessionId: options.id,
+        cwd: options.cwd,
+        agentName: options.name,
+      })
+    : undefined;
   const thinking =
     options.thinking === "off" ||
     options.thinking === "minimal" ||
@@ -379,13 +395,16 @@ const main = async (): Promise<void> => {
   // The manager drains these alongside the pi.* lifecycle stream and appends
   // them to the budget ledger, replacing the old per-settle flat attribution.
   const lastEmittedUsage = emptyUsage();
-  const emitTokenUsage = (delta?: {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    cost: number;
-  }): void => {
+  const emitTokenUsage = (
+    delta?: {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+      cost: number;
+    },
+    attribution?: { model?: string | undefined; provider?: string | undefined },
+  ): void => {
     const snapshot = record.usage;
     if (
       snapshot.input === lastEmittedUsage.input &&
@@ -411,6 +430,20 @@ const main = async (): Promise<void> => {
       cacheWrite: delta?.cacheWrite ?? 0,
       cost: delta?.cost ?? snapshot.cost,
     });
+    // Mirror the emitted payload into the pi-format usage export (when the
+    // host enabled agents.sessionExport) so tokscale/ccusage can attribute
+    // subagent tokens and cost. Export intentionally never writes content.
+    sessionExporter?.push(
+      {
+        input: delta?.input ?? 0,
+        output: delta?.output ?? 0,
+        cacheRead: delta?.cacheRead ?? 0,
+        cacheWrite: delta?.cacheWrite ?? 0,
+        cost: delta?.cost ?? snapshot.cost,
+      },
+      attribution?.model ?? record.model ?? options.model,
+      attribution?.provider,
+    );
     lastEmittedUsage.input = snapshot.input;
     lastEmittedUsage.output = snapshot.output;
     lastEmittedUsage.cacheRead = snapshot.cacheRead;
@@ -608,7 +641,7 @@ const main = async (): Promise<void> => {
         claudeCurrentUsage.cacheRead += delta.cacheRead;
         claudeCurrentUsage.cacheWrite += delta.cacheWrite;
         syncClaudeUsage();
-        emitTokenUsage(delta);
+        emitTokenUsage(delta, { model: record.model ?? stringField(event.model) });
       }
       if (typeof event.error === "string") {
         sawAgentError = true;
@@ -695,7 +728,7 @@ const main = async (): Promise<void> => {
     claudeCurrentUsage.cacheRead = 0;
     claudeCurrentUsage.cacheWrite = 0;
     syncClaudeUsage();
-    emitTokenUsage(resultDelta);
+    emitTokenUsage(resultDelta, { model: record.model ?? stringField(event.model) });
     enforceTokenLimit();
     const failed = event.is_error === true || event.subtype !== "success";
     if (failed) {
@@ -826,7 +859,10 @@ const main = async (): Promise<void> => {
       }
       const usageDelta = extractUsageDelta(messageRecord);
       applyUsage(record, messageRecord);
-      emitTokenUsage(usageDelta);
+      emitTokenUsage(usageDelta, {
+        model: stringField(messageRecord.model),
+        provider: stringField(messageRecord.provider),
+      });
       enforceTokenLimit();
       if (messageRecord.stopReason === "error") {
         sawAgentError = true;
@@ -1118,7 +1154,7 @@ const main = async (): Promise<void> => {
             const cacheRead = numberField(values.cachedTokens);
             const cost = typeof values.costUsd === "number" ? values.costUsd : 0;
             record.usage = { input, output, cacheRead, cacheWrite: 0, cost };
-            emitTokenUsage({ input, output, cacheRead, cacheWrite: 0, cost });
+            emitTokenUsage({ input, output, cacheRead, cacheWrite: 0, cost }, { model: stringField(vedaParsed.model) });
           }
           const envelopeErrors: string[] = [];
           const error = stringField(vedaParsed.error);

@@ -1340,6 +1340,20 @@ export const buildFabricSettingsItems = (
               "Maximum USD spend for agent work across the whole recursion tree. 0 disables the budget.",
             ),
           }),
+          setting("agents.sessionExport", "Usage export", config.agents.sessionExport ? "true" : "false", {
+            description:
+              "Write usage-only pi-format session files (tokens/cost, never transcript content) for every agent run so tokscale and ccusage can track Fabric subagents.",
+            values: BOOLEANS,
+          }),
+          setting("agents.sessionExportDir", "Usage export dir", config.agents.sessionExportDir || "~/.pi-fabric/agent", {
+            description:
+              "Root of the export store; sessions land under <dir>/sessions/. PI_FABRIC_AGENT_DIR overrides. Point at ~/.pi/agent to export into Pi's own session store instead.",
+            submenu: stringInputSubmenu(
+              theme,
+              "Usage export dir",
+              "Root of the export store; PI_FABRIC_AGENT_DIR overrides this value.",
+            ),
+          }),
           setting("agents.maxTokensPerChild", "Token limit", formatTokens(config.agents.maxTokensPerChild), {
             description:
               "Maximum cumulative tokens a single agent may use before it is terminated (0 disables). Caps a runaway child before the host session compacts.",

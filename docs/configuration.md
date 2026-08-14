@@ -92,7 +92,9 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
     "retainRuns": false,
     "notifyOnComplete": true,
     "budgetUsd": 0,
-    "maxTokensPerChild": 0
+    "maxTokensPerChild": 0,
+    "sessionExport": true,
+    "sessionExportDir": ""
   },
   "ui": {
     "enabled": true,
@@ -304,6 +306,22 @@ Other agent settings:
 - `budgetUsd` — shared append-only cost ledger across a recursion tree (0 disables).
 - `maxTokensPerChild` — per-child cumulative token bound (0 disables).
 - `notifyOnComplete` — send a follow-up completion message for a detached `agents.spawn()`.
+- `sessionExport` — export each agent run's usage as an attributed pi-format session file (on by default).
+- `sessionExportDir` — override the export store root (default `~/.pi-fabric/agent`; `PI_FABRIC_AGENT_DIR` wins).
+
+### Usage tracking with external tools
+
+Fabric children run with `--no-session`, so token trackers that scrape session files (tokscale, ccusage, …) cannot see subagent spend. With `sessionExport` enabled, every child writes one usage-only session file (tokens and cost, never transcript content) to `<root>/sessions/<encoded-cwd>/<run>.jsonl`, attributed via a `session_info` marker (`fabricagent-<name>`).
+
+- **ccusage** — register the export store as a named pi-format store; it then appears as its own `fabric` agent section in every all-agent report:
+
+  ```json
+  { "pi": { "stores": [ { "name": "fabric", "path": "~/.pi-fabric/agent/sessions" } ] } }
+  ```
+
+  ad-hoc (no config): `ccusage pi daily --pi-path ~/.pi-fabric/agent/sessions`
+- **tokscale** — the store follows the `senpi` layout (`<root>/sessions/…`), so a small dedicated-client patch is all it needs; the `session_info` name (`fabricagent-<name>`) is parsed as the per-agent attribution there. Files additionally placed in pi's own session area are counted by the stock pi client (without agent attribution, since that parser only recognizes pi's `subagent-` marker).
+- **Pi's own store** — pointing `sessionExportDir` at `~/.pi/agent` also works (sessions are then listed by pi itself and counted by both tools), but that mixes synthesized subagent sessions into pi's session area, which is why the default store lives at `~/.pi-fabric/agent` instead.
 
 See [agents, actors & mesh](agents.md) for the runner and transport details.
 

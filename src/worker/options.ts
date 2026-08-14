@@ -33,6 +33,7 @@ export const parseWorkerOptions = (
   const imagesFile = optional(args, "images-file");
   const systemPrompt = optional(args, "system-prompt");
   const sessionFile = optional(args, "session-file");
+  const sessionExportFile = optional(args, "session-export-file");
   const actorId = optional(args, "actor-id");
   const actorName = optional(args, "actor-name");
   const meshRoot = optional(args, "mesh-root");
@@ -79,6 +80,7 @@ export const parseWorkerOptions = (
     ...(thinking ? { thinking } : {}),
     ...(systemPrompt ? { systemPrompt } : {}),
     ...(sessionFile ? { sessionFile } : {}),
+    ...(sessionExportFile ? { sessionExportFile } : {}),
     ...(actorId ? { actorId } : {}),
     ...(actorName ? { actorName } : {}),
     ...(meshRoot ? { meshRoot } : {}),

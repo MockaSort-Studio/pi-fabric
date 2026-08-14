@@ -54,6 +54,9 @@ export const formatTokens = (tokens: number): string => {
   return `${(tokens / 1_000).toFixed(0)}k`;
 };
 
+export const formatCost = (usd: number): string =>
+  usd <= 0 ? "$0" : usd < 0.01 ? `$${usd.toFixed(4)}` : usd < 1 ? `$${usd.toFixed(3)}` : `$${usd.toFixed(2)}`;
+
 export const formatClock = (timestamp: number): string =>
   new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 

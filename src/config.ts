@@ -127,6 +127,10 @@ export interface FabricAgentConfig {
   notifyOnComplete: boolean;
   budgetUsd: number;
   maxTokensPerChild: number;
+  /** Write usage-only pi-format session files per agent run for external trackers. */
+  sessionExport: boolean;
+  /** Export store root override; PI_FABRIC_AGENT_DIR wins. Empty = ~/.pi-fabric/agent. */
+  sessionExportDir: string;
 }
 
 export type FabricCapabilityAdvisoryMode = "enabled" | "hidden" | "disabled";
@@ -321,6 +325,8 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     notifyOnComplete: true,
     budgetUsd: 0,
     maxTokensPerChild: 0,
+    sessionExport: true,
+    sessionExportDir: "",
   },
   capture: {
     enabled: true,
@@ -802,6 +808,14 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         0,
         100_000_000,
       ),
+      sessionExport: booleanValue(
+        agents.sessionExport,
+        DEFAULT_FABRIC_CONFIG.agents.sessionExport,
+      ),
+      sessionExportDir:
+        typeof agents.sessionExportDir === "string"
+          ? agents.sessionExportDir
+          : DEFAULT_FABRIC_CONFIG.agents.sessionExportDir,
     },
     capture: {
       enabled: booleanValue(capture.enabled, DEFAULT_FABRIC_CONFIG.capture.enabled),

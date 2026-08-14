@@ -62,6 +62,7 @@ import {
   markRunRootClosed,
   sweepTempRunRoots,
 } from "../storage/retention.js";
+import { resolveSessionExportDir, sessionExportFileFor } from "./session-export.js";
 import {
   isFabricLifecycleEventType,
   type FabricLifecycleEventType,
@@ -575,6 +576,10 @@ export class AgentManager {
       const thinking = request.thinking ?? this.config.thinking;
       const recursive = runner === "pi" && request.recursive === true;
       const extensions = recursive ? true : (request.extensions ?? this.config.extensions);
+      const sessionExportDir = resolveSessionExportDir(this.config);
+      const sessionExportFile = sessionExportDir
+        ? sessionExportFileFor(sessionExportDir, agentCwd, id, new Date())
+        : undefined;
       const workerArguments = [
         "--id",
         id,
@@ -626,6 +631,7 @@ export class AgentManager {
         ...(thinking ? ["--thinking", thinking] : []),
         ...(request.systemPrompt ? ["--system-prompt", request.systemPrompt] : []),
         ...(sessionFile ? ["--session-file", sessionFile] : []),
+        ...(sessionExportFile ? ["--session-export-file", sessionExportFile] : []),
         ...(request.actorId ? ["--actor-id", request.actorId] : []),
         ...(request.actorName ? ["--actor-name", request.actorName] : []),
         ...(request.meshRoot ?? this.#meshRoot
