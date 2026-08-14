@@ -11,9 +11,14 @@ _One type-checked program for tools, MCP, agents, workflows, actors, mesh, counc
 </p>
 
 [![npm version](https://img.shields.io/npm/v/pi-fabric?style=for-the-badge&logo=npm&color=cb3837)](https://www.npmjs.com/package/pi-fabric)
+[![ARC-AGI-3 scorecard](https://img.shields.io/badge/ARC--AGI--3-100%25%20across%2025%20envs-16a34a?style=for-the-badge)](https://arcprize.org/scorecards/bd7c7519-7e75-4d94-b1c9-f730036b8c61)
 [![checks](https://img.shields.io/github/actions/workflow/status/monotykamary/pi-fabric/test.yml?branch=main&style=for-the-badge&label=checks)](https://github.com/monotykamary/pi-fabric/actions/workflows/test.yml)
 [![pi extension](https://img.shields.io/badge/pi-extension-8b5cf6?style=for-the-badge)](https://github.com/earendil-works/pi-coding-agent)
 [![license](https://img.shields.io/badge/license-MIT-f4c430?style=for-the-badge)](LICENSE)
+
+<p align="center">
+  🏆 <strong><a href="https://arcprize.org/scorecards/bd7c7519-7e75-4d94-b1c9-f730036b8c61">100% on ARC-AGI-3</a></strong> — a Fabric-powered agent won <strong>all 25 environments</strong> in one 22.4-hour session with ~4 minutes of human time ($1,349 in model spend).
+</p>
 
 </div>
 
