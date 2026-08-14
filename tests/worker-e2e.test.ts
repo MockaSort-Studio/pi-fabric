@@ -177,7 +177,7 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
       expect(result.status).toBe("completed");
       expect(result.usage?.cost).toBeCloseTo(0.03);
 
-      const sessionsRoot = path.join(result.exportRoot, "sessions");
+      const sessionsRoot = path.join(result.exportRoot, "sessions", ".fabric");
       const files = fs
         .readdirSync(sessionsRoot)
         .flatMap((dir) =>

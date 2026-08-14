@@ -4,18 +4,21 @@ import type { FabricAgentConfig } from "../config.js";
 
 /**
  * Host-side resolution for the usage export store written by spawned workers
- * (see worker/session-export.ts). The layout mirrors pi-format session stores
- * understood by tokscale and ccusage:
+ * (see worker/session-export.ts). Files follow the pi-format store layout that
+ * tokscale and ccusage already scan:
  *
- *   <root>/sessions/<encoded-cwd>/<timestamp>_<runId>.jsonl
+ *   <root>/sessions/.fabric/<encoded-cwd>/<timestamp>_<runId>.jsonl
  *
- * with root resolved as:
+ * Both trackers walk their session roots recursively, while pi's own resume
+ * picker only reads its immediate "<encoded-cwd>" directory — so hosting the
+ * export under the ".fabric" namespace inside pi's store makes trackers count
+ * subagent usage with zero configuration while pi itself never lists these
+ * files. Root resolves as:
  *
- *   PI_FABRIC_AGENT_DIR env  >  agents.sessionExportDir  >  ~/.pi-fabric/agent
+ *   PI_FABRIC_AGENT_DIR env  >  agents.sessionExportDir  >  ~/.pi/agent
  *
- * tokscale scans the analogous `~/.senpi/agent/sessions` tree for senpi, and
- * ccusage accepts named pi-format stores via its `pi.stores` config; both
- * therefore ingest this store unmodified.
+ * Prefer an isolated store instead? Set agents.sessionExportDir to
+ * ~/.pi-fabric/agent and register it as a ccusage pi.stores named store.
  */
 
 export const SESSION_EXPORT_ENV = "PI_FABRIC_AGENT_DIR";
@@ -42,11 +45,15 @@ export const resolveSessionExportDir = (config: FabricAgentConfig): string | und
   const raw =
     process.env[SESSION_EXPORT_ENV]?.trim() ||
     config.sessionExportDir.trim() ||
-    path.join(os.homedir(), ".pi-fabric", "agent");
+    path.join(os.homedir(), ".pi", "agent");
   return expandHome(raw);
 };
 
-/** Final JSONL path for one run: `<root>/sessions/<encoded-cwd>/<ts>_<runId>.jsonl`. */
+/**
+ * Final JSONL path for one run: `<root>/sessions/.fabric/<encoded-cwd>/<ts>_<runId>.jsonl`.
+ * The ".fabric" namespace is deliberate: tokscale (walkdir) and ccusage both
+ * recurse past it, but pi's per-project resume picker never descends into it.
+ */
 export const sessionExportFileFor = (
   root: string,
   cwd: string,
@@ -57,6 +64,7 @@ export const sessionExportFileFor = (
   return path.join(
     root,
     "sessions",
+    ".fabric",
     encodeSessionExportCwd(cwd),
     `${fileTimestamp}_${runId}.jsonl`,
   );

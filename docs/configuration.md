@@ -311,17 +311,23 @@ Other agent settings:
 
 ### Usage tracking with external tools
 
-Fabric children run with `--no-session`, so token trackers that scrape session files (tokscale, ccusage, …) cannot see subagent spend. With `sessionExport` enabled, every child writes one usage-only session file (tokens and cost, never transcript content) to `<root>/sessions/<encoded-cwd>/<run>.jsonl`, attributed via a `session_info` marker (`fabricagent-<name>`).
+Fabric children run with `--no-session`, so token trackers that scrape session files (tokscale, ccusage, …) cannot see subagent spend. With `sessionExport` enabled (the default), every child writes one usage-only session file (tokens and cost, never transcript content) to:
 
-- **ccusage** — register the export store as a named pi-format store; it then appears as its own `fabric` agent section in every all-agent report:
+```text
+~/.pi/agent/sessions/.fabric/<encoded-cwd>/<run>.jsonl
+```
+
+attributed via a `session_info` marker (`fabricagent-<name>`). The placement is deliberate: tokscale and ccusage walk pi's session store recursively, while pi's own resume picker only reads its immediate `<encoded-cwd>` directory — so **both trackers count Fabric subagents with zero configuration, and pi's session UI never lists these files**. The exported sessions behave like a co-hosted namespace inside pi's store rather than pollution of it.
+
+- **tokscale** — counted under the Pi client automatically; a small dedicated-client patch (senpi-style, pointing at `~/.pi/agent/sessions/.fabric`) turns it into a separate "Pi Fabric" row with per-`fabricagent-*` attribution.
+- **ccusage** — counted in the default pi footprint automatically (`ccusage daily`, `ccusage pi …`). Ad-hoc Fabric-only view: `ccusage pi daily --pi-path ~/.pi/agent/sessions/.fabric`.
+- **Isolated store** — prefer no visibility inside pi's store at all? Set `agents.sessionExportDir` (or `PI_FABRIC_AGENT_DIR`) to `~/.pi-fabric/agent`, then register a ccusage named store for a dedicated `fabric` agent section:
 
   ```json
-  { "pi": { "stores": [ { "name": "fabric", "path": "~/.pi-fabric/agent/sessions" } ] } }
+  { "pi": { "stores": [ { "name": "fabric", "path": "~/.pi-fabric/agent/sessions/.fabric" } ] } }
   ```
 
-  ad-hoc (no config): `ccusage pi daily --pi-path ~/.pi-fabric/agent/sessions`
-- **tokscale** — the store follows the `senpi` layout (`<root>/sessions/…`), so a small dedicated-client patch is all it needs; the `session_info` name (`fabricagent-<name>`) is parsed as the per-agent attribution there. Files additionally placed in pi's own session area are counted by the stock pi client (without agent attribution, since that parser only recognizes pi's `subagent-` marker).
-- **Pi's own store** — pointing `sessionExportDir` at `~/.pi/agent` also works (sessions are then listed by pi itself and counted by both tools), but that mixes synthesized subagent sessions into pi's session area, which is why the default store lives at `~/.pi-fabric/agent` instead.
+  Note: a named store that overlaps the default pi store is rejected by ccusage's double-count guard, so the isolated-row form requires the separate directory.
 
 See [agents, actors & mesh](agents.md) for the runner and transport details.
 

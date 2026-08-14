@@ -56,10 +56,10 @@ describe("resolveSessionExportDir", () => {
     expect(resolveSessionExportDir(config(false, "/tmp/config-root"))).toBeUndefined();
   });
 
-  it("defaults to ~/.pi-fabric/agent", () => {
+  it("defaults to pi's agent dir so trackers pick subagent usage up unconfigured", () => {
     delete process.env[SESSION_EXPORT_ENV];
     expect(resolveSessionExportDir(config(true))).toBe(
-      path.join(os.homedir(), ".pi-fabric", "agent"),
+      path.join(os.homedir(), ".pi", "agent"),
     );
   });
 
@@ -89,7 +89,7 @@ describe("encodeSessionExportCwd", () => {
 });
 
 describe("sessionExportFileFor", () => {
-  it("builds <root>/sessions/<encoded-cwd>/<timestamp>_<runId>.jsonl", () => {
+  it("builds <root>/sessions/.fabric/<encoded-cwd>/<timestamp>_<runId>.jsonl", () => {
     const file = sessionExportFileFor(
       "/tmp/root",
       "/Users/dev/project",
@@ -100,6 +100,7 @@ describe("sessionExportFileFor", () => {
       path.join(
         "/tmp/root",
         "sessions",
+        ".fabric",
         "--Users-dev-project--",
         "2026-08-14T05-22-13-123Z_abc123.jsonl",
       ),

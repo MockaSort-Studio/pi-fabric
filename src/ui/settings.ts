@@ -1345,9 +1345,9 @@ export const buildFabricSettingsItems = (
               "Write usage-only pi-format session files (tokens/cost, never transcript content) for every agent run so tokscale and ccusage can track Fabric subagents.",
             values: BOOLEANS,
           }),
-          setting("agents.sessionExportDir", "Usage export dir", config.agents.sessionExportDir || "~/.pi-fabric/agent", {
+          setting("agents.sessionExportDir", "Usage export dir", config.agents.sessionExportDir || "~/.pi/agent (co-hosted, hidden .fabric namespace)", {
             description:
-              "Root of the export store; sessions land under <dir>/sessions/. PI_FABRIC_AGENT_DIR overrides. Point at ~/.pi/agent to export into Pi's own session store instead.",
+              "Root of the export store; sessions land under <dir>/sessions/.fabric/. Default reuses pi's own agent dir (tokscale/ccusage count it with zero setup; pi's resume picker never sees the hidden namespace). PI_FABRIC_AGENT_DIR overrides.",
             submenu: stringInputSubmenu(
               theme,
               "Usage export dir",
