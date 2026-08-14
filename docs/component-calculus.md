@@ -1,12 +1,12 @@
 # Component calculus and runtime laws
 
-This document records the mathematical contract of Pi Fabric's component plane. It is an implementation guide, not a claim that JavaScript can prove arbitrary program equivalence. The ordinary `fabric_exec` path remains outside this plane unless a committed capability view or supervised component is explicitly used.
+Pi Fabric's component plane follows this mathematical contract. JavaScript cannot prove arbitrary program equivalence. The ordinary `fabric_exec` path enters the plane only when code uses a committed capability view or a supervised component.
 
-The design follows the effect/coeffect calculus described in DeepSeek's dynamic-composition paper. Pi Fabric retains explicit provider/action refs and host policy rather than copying Cordis's proxy context API.
+DeepSeek's dynamic-composition paper describes the effect/coeffect calculus used here. Pi Fabric keeps explicit provider/action refs and host policy. Cordis's proxy context API stays outside this implementation.
 
 ## Runtime correspondence
 
-For a runtime context Γ, a component instance is represented by the operational tuple
+For a runtime context Γ, this operational tuple represents a component instance:
 
 ```text
 ⟨d, p, e, π, σ, τ, θ, ω⟩
@@ -14,20 +14,20 @@ For a runtime context Γ, a component instance is represented by the operational
 
 | Symbol | Pi Fabric realization |
 |---|---|
-| `d` | exact `requires` refs |
-| `p` | disjoint declared provider names in `provides` |
-| `e` | `activate()` and its yielded/returned inverses |
-| `π` | optional `parentId` created by `context.use()` |
-| `σ` | staged provider bindings owned by the instance |
+| `d` | the exact refs from `requires` |
+| `p` | the disjoint provider names declared in `provides` |
+| `e` | `activate()` with its yielded and returned inverses |
+| `π` | the optional `parentId` that `context.use()` creates |
+| `σ` | the staged provider bindings that the instance owns |
 | `τ` | monotone retirement plus a transition epoch |
-| `θ` | `waiting`, `loading`, `active`, `unloading`, `failed`, `quarantined`, or `disposed` |
-| `ω` | retained committed capability view |
+| `θ` | one of `waiting`, `loading`, `active`, `unloading`, `failed`, `quarantined`, or `disposed` |
+| `ω` | the retained committed capability view |
 
-Provider binding IDs are fresh atoms. A committed view pins the binding generation and descriptor hash, not merely a provider name. This prevents an ABA replacement from appearing unchanged.
+Provider binding IDs are fresh atoms. A committed view pins the binding generation and the descriptor hash. Two bindings that share one provider name still count as distinct atoms, so an ABA replacement always produces a new pin.
 
 ## The resolution square
 
-Activation has two observable paths that must agree:
+Activation exposes two observable paths that must agree:
 
 ```text
 component definition ── activate under ω ──▶ owned effects
@@ -37,11 +37,11 @@ component definition ── activate under ω ──▶ owned effects
 live provider state ─── target(d, Γ) ─────▶ active fiber
 ```
 
-The lower and upper paths commute only when the target at the final iteration boundary is still `ω`. Otherwise activation diverts, applies the accumulated inverse, and retries against the new target. `tests/component-laws.test.ts` checks that inserting a provider before its consumer or after the consumer reaches `waiting` has the same terminal observation.
+The two paths commute only when the target at the final iteration boundary is still `ω`. When the target differs, activation diverts, applies the accumulated inverse, and retries against the new target. `tests/component-laws.test.ts` checks both insertion orders. The two orders place the provider before its consumer exists, or after the consumer reaches `waiting`. Both orders produce the same terminal observation.
 
 ## Witnessed effects
 
-A tracked effect contributes a forward transformation `f` and an author-supplied inverse `g`:
+A tracked effect contributes a forward transformation `f` and an inverse `g` that the author supplies:
 
 ```text
 Γ ──f──▶ Γ′
@@ -51,13 +51,13 @@ A tracked effect contributes a forward transformation `f` and an author-supplied
 
 The runtime enforces the structural part of this triangle:
 
-- each landed iterator step contributes at most one callable inverse;
-- inverses run once in LIFO order;
-- setup failure and target diversion recover all landed steps;
-- iterator `return()` runs on diversion so generator `finally` blocks settle;
-- cleanup failure produces `quarantined`, never a false claim of recovery.
+- each landed iterator step contributes at most one callable inverse.
+- inverses run once in LIFO order.
+- setup failure and target diversion recover every landed step.
+- on diversion the iterator's `return()` runs, so generator `finally` blocks can settle.
+- a cleanup failure produces the `quarantined` state, never a false claim of recovery.
 
-The runtime cannot prove `g(f(Γ)) ≃ Γ`. Correctness of the inverse and the chosen observational equivalence `≃` remain author obligations. Ambient mutations performed outside `context.effect`, `context.defer`, `context.acquire`, `context.call`, `context.provide`, or `context.use` are outside the witnessed system.
+The runtime cannot prove that `g(f(Γ)) ≃ Γ`. The author must guarantee that the inverse is correct, and the author chooses the observational equivalence `≃`. Mutations performed outside `context.effect`, `context.defer`, `context.acquire`, `context.call`, `context.provide`, or `context.use` are ambient and sit outside the witnessed system.
 
 ## Iteration, diversion, and inertia
 
@@ -71,9 +71,9 @@ loading(ω, g₀)
   └─ iterator raises                         → unloading(ω, g, error)
 ```
 
-A launched asynchronous step is inertial: Fabric lets it land and records its inverse before inspecting the target again. It does not resume the stale continuation. Diversion is retryable and lands in `waiting`; an author error lands in `failed` and is not retried against the same target.
+A launched asynchronous step is inertial. Fabric lets the step land and records its inverse before it inspects the target again. The stale continuation never resumes. A diversion is retryable and lands in `waiting`. An author error lands in `failed`, and Fabric does not retry it against the same target.
 
-Retirement and replacement increment a transition epoch. A stale transition may clean up its own local scope, but it cannot publish providers or write a later lifecycle state. This prevents a late activation from resurrecting after `stop`, replacement, provider retirement, or shutdown.
+Retirement and replacement each increment a transition epoch. A stale transition may clean up its own local scope. It may not publish providers or write a later lifecycle state. The epoch rule stops a late activation from resurrecting after `stop`, replacement, provider retirement, or shutdown.
 
 ## Withdrawal and committed views
 
@@ -87,19 +87,19 @@ active provider
   → release owner bindings
 ```
 
-Consumer teardown retains its old `ω`, so it can still call the retiring provider. The binding closes only after owner retention, committed views, scoped acquisitions, and in-flight calls all release it.
+Consumer teardown retains the old `ω`, so the consumer can still call the retiring provider. The binding closes only after the owner retention, the committed views, the scoped acquisitions, and the in-flight calls all release it.
 
-The owner component's ambient supporting state must remain valid until its provider's `close()` runs. The registry can retain a provider object across external actor views, but it cannot infer hidden closure dependencies.
+The owner component must keep its ambient supporting state valid until the provider's `close()` runs. The registry can retain a provider object across external actor views. It cannot infer hidden closure dependencies.
 
 ## Provision disjointness
 
-Within the shared provider realm, two installed fibers may not declare the same provider name. The supervisor rejects the second insertion or replacement before disturbing either component. Staged bindings reserve their provider names, so an external registration cannot slip between staging and commit without an explicit overwrite. If an external orchestrator retires an active provision, the owner fiber leaves and reconciles instead of remaining falsely active.
+Inside the shared provider realm, two installed fibers may never declare the same provider name. The supervisor rejects the second insertion or replacement before it disturbs either component. Staged bindings reserve their provider names. An external registration can slip between staging and commit only through an explicit overwrite. When an external orchestrator retires an active provision, the owner fiber drops out of the active state and reconciles.
 
-This is stronger than relying on last-writer-wins registry replacement. It preserves a unique provider for every declared key and makes dependency edges unambiguous. Multiple implementations belong behind an explicit broker provider rather than ambiguous core resolution.
+This rule is stronger than last-writer-wins registry replacement. Every declared key keeps a unique provider, and dependency edges stay unambiguous. Put multiple implementations behind an explicit broker provider, and keep ambiguous selection out of core resolution.
 
 ## Parent-owned fibers
 
-`context.use(definition, options)` installs a child fiber as a tracked registration effect. The child is a normal supervised component with its own requirements, effects, failures, and committed view.
+`context.use(definition, options)` installs a child fiber as a tracked registration effect. The child behaves as a normal supervised component with its own requirements, effects, failures, and committed view.
 
 ```text
 parent scope ──use──▶ child fiber ──use──▶ grandchild fiber
@@ -107,11 +107,11 @@ parent scope ──use──▶ child fiber ──use──▶ grandchild fiber
      └──── inverse ───────┴── retires descendants first
 ```
 
-Parent ownership does not imply dependency injection. Requirement edges still determine provider/consumer withdrawal. Ownership ensures descendants are retired and removed before the parent's own inverse runs. A child activation failure remains local: healthy siblings and the parent continue. Registration occurs during parent activation, but the serial lifecycle activates the child only after the parent transition finishes; awaiting child readiness from the parent transition is therefore outside the calculus and rejected lifecycle re-entry is used instead of deadlock.
+Parent ownership implies no dependency injection. Requirement edges still determine provider and consumer withdrawal. Ownership ensures that descendants retire and are removed before the parent's own inverse runs. A child activation failure stays local, and healthy siblings and the parent keep running. The parent registers the child during its own activation. The serial lifecycle activates the child only after the parent transition finishes. Awaiting child readiness from inside the parent transition falls outside the calculus. Fabric rejects that lifecycle re-entry so the queue cannot deadlock.
 
 ## Independence
 
-For effects `a` and `b`, safe reordering requires more than concurrent-call non-overlap. Their forwards, inverses, and mixed forward/inverse compositions must commute under `≃`.
+Take two effects `a` and `b`. Safe reordering needs more than non-overlapping concurrent calls. The forwards of both effects, their inverses, and every mixed forward/inverse composition must commute under `≃`.
 
 Pi Fabric uses a conservative, declared approximation:
 
@@ -122,59 +122,57 @@ effect: {
 }
 ```
 
-Disjoint explicit resources are treated as independent. Shared resources are independent only when both effects declare `commutative`. Missing resources normalize to `*`, which is the top/unknown footprint rather than a literal resource name. An unknown noncommutative effect conflicts with every effect; an unknown commutative effect conflicts with peers that contain any noncommutative effect. Therefore a legacy string-label registration on a `revertible` component is deliberately conservative until it supplies explicit resources and ordering. A `revertible` component rejects a conflicting lifetime effect before installation where possible and rechecks before commit. Managed components retain bounded evidence without claiming or warning on the stronger theorem.
+Fabric treats disjoint explicit resources as independent. Shared resources count as independent only when both effects declare `commutative`. Missing resources normalize to `*`, the top/unknown footprint. The `*` marks unknown scope. No resource identity is literally named `*`. An unknown noncommutative effect conflicts with every effect. An unknown commutative effect conflicts with any peer that contains a noncommutative effect. A legacy string-label registration on a `revertible` component stays conservative until the author supplies explicit resources and ordering. A `revertible` component rejects a conflicting lifetime effect before installation where it can, and it checks again before commit. Managed components retain bounded evidence and leave the stronger theorem outside their claims and warnings.
 
-The `commutative` label is a witness supplied by the provider or component author; Fabric does not prove it. Component status exposes at most 256 effect-evidence records and strict conflicts so the claim remains inspectable. A revertible component refuses a 257th record rather than silently weakening its check. A failure caused by a peer footprint commits that peer environment into its blocked target, so removal of the conflicting component automatically retries the fiber. Shutdown uses reverse activation order, the conservative inverse order when no dependency edge gives a stronger constraint.
+The author of the provider or component supplies the `commutative` label as a witness. Fabric does not prove the claim. Component status exposes at most 256 effect-evidence records along with the strict conflicts, so the claim stays inspectable. A revertible component refuses a 257th record, because one more would silently weaken the check. A failure caused by a peer footprint commits that peer environment into the blocked target. Removing the conflicting component then retries the fiber automatically. Shutdown runs in reverse activation order, which is the conservative inverse order when no dependency edge gives a stronger constraint.
 
 ## System boundary
 
-The effect kind records where an operation sits relative to the recoverable system:
+The effect kind records where an operation stands relative to the recoverable system:
 
-- `none`: no tracked mutation;
-- `scoped`: acquisition with an explicit disposer;
-- `transactional`: provider or author claims recovery under its stated equivalence;
-- `emission`: output crossed the boundary and cannot be recovered by the component scope.
+- `none`: the operation performs no tracked mutation.
+- `scoped`: an acquisition that carries an explicit disposer.
+- `transactional`: the provider or author claims recovery under its stated equivalence.
+- `emission`: output crossed the boundary, and the component scope cannot recover it.
 
-A `revertible` component may use `none`, `scoped`, and `transactional` effects. It rejects emissions whether they arrive through a provider action or a custom effect registration. This does not turn `transactional` into a proof: its compensation or rollback semantics remain a provider obligation.
+A `revertible` component may use `none`, `scoped`, and `transactional` effects. It rejects emissions, whether they arrive through a provider action or through a custom effect registration. The `transactional` kind stays a claim. Its compensation or rollback semantics remain a provider obligation.
 
-Output withholding, compensation frameworks, and coarser application-specific equivalences are deliberately not implicit. They require an explicit protocol because silently buffering arbitrary host output would alter existing Pi Fabric behavior and model-visible timing.
+Output withholding, compensation frameworks, and coarser application-specific equivalences stay explicit opt-ins. Each one needs its own protocol. Silent buffering of arbitrary host output would alter existing Pi Fabric behavior and model-visible timing.
 
 ## Enforced invariants
 
-The runtime and tests enforce:
+The runtime and the tests enforce these invariants:
 
-1. unique component identity and disjoint provisions;
-2. closed-world, retained committed views;
-3. staged provider publication only after stable activation;
-4. LIFO, single-fire partial recovery;
-5. asynchronous inertia with yield-boundary diversion;
-6. transition epochs preventing stale lifecycle writes;
-7. dependent-before-provider withdrawal;
-8. descendant-before-parent removal;
-9. per-fiber failure isolation;
-10. quarantine on unverifiable cleanup;
-11. conservative lifetime-effect independence for `revertible` components;
-12. reverse-activation shutdown order;
-13. forced removal of a quarantined registry record without pretending leaked ambient state was recovered.
+1. component identity stays unique, and provisions stay disjoint.
+2. committed views stay closed-world, and the caller retains them.
+3. staged providers publish only after stable activation.
+4. partial recovery runs LIFO and fires once.
+5. asynchronous steps keep inertia, and diversion happens at yield boundaries.
+6. transition epochs block stale lifecycle writes.
+7. dependents withdraw before their provider.
+8. the supervisor removes descendants before their parent.
+9. failure stays isolated per fiber.
+10. unverifiable cleanup leads to quarantine.
+11. lifetime-effect independence checks stay conservative for `revertible` components.
+12. shutdown follows reverse activation order.
+13. force-removal of a quarantined registry record makes no claim that leaked ambient state was recovered.
 
-The ordinary uncommitted action path is pinned separately by `tests/default-path-compatibility.test.ts`, including derived effect metadata and capability hash bytes.
+`tests/default-path-compatibility.test.ts` pins the ordinary uncommitted action path separately. The pin covers derived effect metadata and capability hash bytes.
 
 ## Liveness and performance boundary
 
-The progress argument assumes every launched transition eventually settles, either normally or after cooperative `context.signal` cancellation, and that provider targets eventually quiesce. Fabric signals cancellation before awaiting inertia, rejects lifecycle calls re-entered from activation or teardown, and never runs an inverse concurrently with the forward step it is meant to recover. Repeated target diversions use an exponential delay capped at 100 ms, preventing a flapping provider from turning the serial reconcile loop into a CPU spin. Fabric does not detach an uncooperative infinite host promise and then pretend cleanup was sound.
+The progress argument assumes two facts: every launched transition eventually settles, either normally or after cooperative `context.signal` cancellation, and provider targets eventually quiesce. Fabric signals cancellation before it awaits inertia. It rejects lifecycle calls that re-enter from activation or teardown. An inverse never runs concurrently with the forward step it recovers. Repeated target diversions apply an exponential delay capped at 100 ms. The cap keeps a flapping provider from turning the serial reconcile loop into a CPU spin. Fabric never detaches an uncooperative infinite host promise and then claims the cleanup was sound.
 
-The ordinary ARC-sensitive execution path does not perform component target checks, footprint summaries, or async-context tracking. Async lifecycle context is dynamically imported on the first actual component transition. Component evidence is bounded, conflict checks use linear footprint summaries, and one dashboard list pass projects each component and pair once. A supervisor admits at most 1,024 fibers and each parent at most 256 live children, keeping the remaining pairwise graph projection finite. Provider staged-name reservations use a direct index rather than scanning bindings.
+The ordinary ARC-sensitive execution path skips component target checks, footprint summaries, and async-context tracking. Fabric dynamically imports the async lifecycle context on the first component transition. Component evidence stays bounded. Conflict checks use linear footprint summaries. One dashboard list pass projects each component and each pair once. A supervisor admits at most 1,024 fibers, and each parent admits at most 256 live children. These limits keep the remaining pairwise graph projection finite. Provider staged-name reservations use a direct index. The index avoids scanning bindings.
 
-## Deliberate frontier
+## Implementation boundary
 
-The current calculus stays in one shared provider realm. Isolation realms, interception metadata, structural service versioning, output commit, compensation, module-cache HMR, and guest component sandboxing are separate architectural layers, not missing premises of the implemented single-realm lifecycle calculus.
+The current calculus stays inside one shared provider realm. Isolation realms, interception metadata, structural service versioning, output commit, compensation, module-cache HMR, and guest component sandboxing form separate architectural layers. The implemented single-realm lifecycle calculus does not depend on any of them as premises.
 
-They should be introduced only when their use case supplies the needed equivalence and policy semantics. In particular:
+Introduce a layer only when its use case supplies the needed equivalence and policy semantics. Apply these rules to each candidate layer:
 
-- use explicit broker components for multiplexing rather than ambiguous provider selection;
-- prefer process or QuickJS replacement boundaries over Node-internal ESM cache mutation;
-- keep explicit `call` and `acquire` APIs for auditability;
-- never infer commutativity from successful examples;
-- do not describe trusted host components as sandboxed.
-
-This stop line preserves a small UX: authors declare requirements, provisions, effect footprints, and ownership; the dashboard shows the resulting evidence; the runtime enforces only laws it can observe.
+- multiplex through explicit broker components, and keep ambiguous provider selection out.
+- favor process or QuickJS replacement boundaries over Node-internal ESM cache mutation.
+- keep the `call` and `acquire` APIs explicit for auditability.
+- never infer commutativity from successful examples.
+- describe trusted host components as trusted host code, because the word sandboxed overstates the boundary.
