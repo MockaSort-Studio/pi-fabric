@@ -35,9 +35,15 @@ const expandHome = (value: string): string =>
  * getDefaultSessionDirPath): `/Users/dev/project` becomes `--Users-dev-project--`.
  * Both trackers only require the directory to sit under the scanned tree; using
  * pi's encoding keeps fabric sessions visually consistent with native ones.
+ * Already-absolute inputs are encoded verbatim: resolving a POSIX path on win32
+ * would prepend the current drive (`/x` → `D:\\x`) and skew the encoding, so
+ * only relative inputs go through the platform resolver like pi does.
  */
-export const encodeSessionExportCwd = (cwd: string): string =>
-  `--${path.resolve(cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+export const encodeSessionExportCwd = (cwd: string): string => {
+  const absolute =
+    path.isAbsolute(cwd) || path.win32.isAbsolute(cwd) ? cwd : path.resolve(cwd);
+  return `--${absolute.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+};
 
 /** Root of the export store, or undefined when `agents.sessionExport` is off. */
 export const resolveSessionExportDir = (config: FabricAgentConfig): string | undefined => {
