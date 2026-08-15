@@ -92,6 +92,14 @@ export class FabricState {
     return this.#current()?.initialized === true;
   }
 
+  // Lightweight bootstrap seam: true once configuration is loaded, with no
+  // dependency on the heavyweight runtime. Rendering reads this instead of
+  // initialized so a resumed session honors bootstrapped presentation
+  // preferences while the runtime is intentionally inactive.
+  get bootstrapped(): boolean {
+    return this.#config !== undefined;
+  }
+
   get activated(): boolean {
     return this.#everActivated;
   }
@@ -132,6 +140,10 @@ export class FabricState {
   async bootstrap(context: ExtensionContext): Promise<void> {
     const generation = ++this.#generation;
     this.#cwd = context.cwd;
+    // A failed config load must not leak the previous session's configuration
+    // into this one: clear before the read so bootstrapped stays false and
+    // presentation falls back to the safe default until a load succeeds.
+    this.#config = undefined;
     const config = loadFabricConfig({
       cwd: context.cwd,
       agentDir: getAgentDir(),

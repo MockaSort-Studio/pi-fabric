@@ -1,0 +1,527 @@
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { describe, expect, it, vi } from "vitest";
+import type { FabricState } from "../src/fabric-state.js";
+import { createFabricExecTool } from "../src/fabric-exec-tool.js";
+import { defaultCodePreviewSettings } from "../src/ui/code-preview.js";
+import { FabricToolDisplayController } from "../src/ui/tool-display.js";
+
+const plainTheme = {
+  fg: (_color: string, text: string) => text,
+  bold: (text: string) => text,
+} as unknown as Theme;
+
+const semanticTheme = {
+  fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+  bold: (text: string) => `<bold>${text}</bold>`,
+} as unknown as Theme;
+
+const stateFor = (
+  toolDisplay: "full" | "compact",
+  overrides: Partial<{ bootstrapped: boolean; initialized: boolean }> = {},
+) => ({
+  bootstrapped: true,
+  initialized: true,
+  config: {
+    ui: { showAgentToolPreview: true, toolDisplay },
+  },
+  ...overrides,
+}) as unknown as FabricState;
+
+const toolFor = (
+  state: FabricState,
+  display?: FabricToolDisplayController,
+) => createFabricExecTool(
+  state,
+  defaultCodePreviewSettings(),
+  new Map(),
+  (tool) => tool,
+  display,
+);
+
+const renderContext = (
+  args: Record<string, unknown>,
+  overrides: Record<string, unknown> = {},
+) => ({
+  args,
+  toolCallId: "fabric-call-1",
+  invalidate: vi.fn(),
+  lastComponent: undefined,
+  state: {},
+  cwd: process.cwd(),
+  executionStarted: true,
+  argsComplete: true,
+  isPartial: false,
+  expanded: false,
+  showImages: true,
+  isError: false,
+  ...overrides,
+});
+
+const renderCall = (
+  tool: ReturnType<typeof toolFor>,
+  args: Record<string, unknown>,
+  expanded = false,
+  theme: Theme = plainTheme,
+) => tool.renderCall!(args as never, theme, renderContext(args, { expanded }) as never).render(120).join("\n");
+
+const renderResult = (
+  tool: ReturnType<typeof toolFor>,
+  args: Record<string, unknown>,
+  details: Record<string, unknown>,
+  output: string,
+  options: { expanded?: boolean; partial?: boolean; theme?: Theme; context?: Record<string, unknown>; width?: number } = {},
+) => tool.renderResult!(
+  { content: output ? [{ type: "text", text: output }] : [], details } as never,
+  { expanded: options.expanded ?? false, isPartial: options.partial ?? false },
+  options.theme ?? plainTheme,
+  renderContext(args, { expanded: options.expanded ?? false, isPartial: options.partial ?? false, ...options.context }) as never,
+).render(options.width ?? 120).join("\n");
+
+const nestedRows = (rendered: string): string[] => rendered.split("\n").slice(1);
+
+describe("registered fabric_exec compact transcript rendering", () => {
+  it("keeps full source while compact elevates intent and falls back to Tool for absent or blank names", () => {
+    const args = {
+      code: "const implementationSecret = await discover();\nreturn implementationSecret;",
+      display: { name: "Apply migration", description: "Persist the verified setting" },
+    };
+
+    const full = renderCall(toolFor(stateFor("full")), args, true);
+    const compact = renderCall(toolFor(stateFor("compact")), args, true);
+    const fallback = renderCall(toolFor(stateFor("compact")), { code: args.code });
+    const blank = renderCall(toolFor(stateFor("compact")), { code: args.code, display: { name: "   " } });
+
+    expect(full).toContain("fabric");
+    expect(full).toContain("TypeScript · 2 lines");
+    expect(full).toContain("implementationSecret");
+    expect(compact).toContain("Apply migration");
+    expect(compact).toContain("Persist the verified setting");
+    expect(compact).not.toContain("fabric");
+    expect(compact).not.toContain("TypeScript");
+    expect(compact).not.toContain("implementationSecret");
+    expect(fallback).toContain("Tool");
+    expect(blank).toContain("Tool");
+  });
+
+  it("uses Tools or Done summaries while preserving completed nested detail and bounded returns", () => {
+    const args = { code: "await Promise.all([]);" };
+    const details = {
+      success: false,
+      error: "Fabric execution failed",
+      audits: [
+        { ref: "pi.read", provider: "pi", tool: "read", args: { path: "src/config.ts" }, success: true, result: "export const value = true;" },
+        { ref: "pi.bash", provider: "pi", tool: "bash", args: { command: "pnpm test" }, success: false, error: "tests failed" },
+      ],
+      phases: [],
+    };
+    const full = renderResult(toolFor(stateFor("full")), args, details, "outer failure details");
+    const compact = renderResult(toolFor(stateFor("compact")), args, details, "outer failure details");
+    const done = renderResult(
+      toolFor(stateFor("compact")),
+      args,
+      { success: true, audits: [], phases: [] },
+      "quiet outer return",
+    );
+    const expandedDone = renderResult(
+      toolFor(stateFor("compact")),
+      args,
+      { success: true, audits: [], phases: [] },
+      "quiet outer return",
+      { expanded: true },
+    );
+
+    expect(full).toContain("Fabric failed");
+    expect(compact).toContain("Tools");
+    expect(compact).toContain("2 calls");
+    expect(compact).toContain("1 failed");
+    expect(compact).toContain("read src/config.ts");
+    expect(compact).toContain("tests failed");
+    expect(compact).toContain("outer failure details");
+    expect(done).toContain("Done");
+    expect(done).not.toContain("quiet outer return");
+    expect(expandedDone).toContain("quiet outer return");
+  });
+
+  it("summarizes one nested call while keeping its successful outer return quiet in compact mode", () => {
+    const args = { code: "await extensions.remote({ strings: 'single-headline' });" };
+    const details = {
+      success: true,
+      audits: [
+        {
+          ref: "extensions.remote",
+          provider: "extensions",
+          tool: "remote",
+          args: { strings: "single-headline" },
+          success: true,
+        },
+      ],
+      phases: [],
+    };
+    const failedDetails = {
+      success: false,
+      audits: [
+        {
+          ref: "extensions.remote",
+          provider: "extensions",
+          tool: "remote",
+          args: { strings: "failed-headline" },
+          success: false,
+          error: "nested failure",
+        },
+      ],
+      phases: [],
+    };
+
+    const full = renderResult(toolFor(stateFor("full")), args, details, "successful outer return");
+    const compact = renderResult(toolFor(stateFor("compact")), args, details, "successful outer return");
+    const expandedCompact = renderResult(
+      toolFor(stateFor("compact")),
+      args,
+      details,
+      "successful outer return",
+      { expanded: true },
+    );
+    const failedCompact = renderResult(
+      toolFor(stateFor("compact")),
+      args,
+      failedDetails,
+      "outer failure return",
+    );
+
+    expect(full).toContain("successful outer return");
+    expect(compact).toContain("Tools");
+    expect(compact).toContain("1 call");
+    expect(compact).toContain("single-headline");
+    expect(compact).not.toContain("successful outer return");
+    expect(expandedCompact).toContain("successful outer return");
+    expect(failedCompact).toContain("Tools");
+    expect(failedCompact).toContain("1 call");
+    expect(failedCompact).toContain("1 failed");
+    expect(failedCompact).toContain("nested failure");
+  });
+
+  it("leaves completed nested bash and dynamic calls unchanged apart from the grouped header", () => {
+    const args = { code: "await Promise.all([]);" };
+    const details = {
+      success: true,
+      audits: [
+        {
+          ref: "pi.bash",
+          provider: "pi",
+          tool: "bash",
+          args: { command: "echo alpha\necho beta" },
+          result: { output: "bash result" },
+          success: true,
+        },
+        {
+          ref: "extensions.remote",
+          provider: "extensions",
+          tool: "remote",
+          args: { strings: "existing-string-headline" },
+          success: true,
+        },
+      ],
+      phases: [],
+    };
+    const full = renderResult(toolFor(stateFor("full")), args, details, "", { expanded: true, theme: semanticTheme });
+    const compact = renderResult(toolFor(stateFor("compact")), args, details, "", { expanded: true, theme: semanticTheme });
+
+    expect(full).toContain("<accent>echo alpha</accent>");
+    expect(compact).toContain("<accent>echo alpha</accent>");
+    expect(full).toContain("<accent>echo beta</accent>");
+    expect(compact).toContain("<accent>echo beta</accent>");
+    expect(full).toContain("existing-string-headline");
+    expect(compact).toContain("existing-string-headline");
+    expect(full).toContain("Fabric complete");
+    expect(compact).toContain("Tools");
+    expect(compact.split("\n").slice(1)).toEqual(full.split("\n").slice(1));
+  });
+
+  it("uses a compact pre-tool live status and Tools for grouped activity without changing its nested calls", () => {
+    const args = { code: "await Promise.all([]);" };
+    const details = {
+      audits: [
+        { ref: "pi.read", provider: "pi", tool: "read", args: { path: "src/example.ts" }, success: true },
+        { ref: "extensions.remote", provider: "extensions", tool: "remote", args: { strings: "live-string-headline" } },
+      ],
+      phases: [],
+    };
+    const full = renderResult(toolFor(stateFor("full")), args, details, "", { partial: true });
+    const compact = renderResult(toolFor(stateFor("compact")), args, details, "", { partial: true });
+    const compactBeforeFirstTool = renderResult(
+      toolFor(stateFor("compact")),
+      args,
+      { progress: "Running Fabric program…", audits: [], phases: [] },
+      "",
+      { partial: true },
+    );
+
+    expect(full).toContain("Fabric running");
+    expect(compact).toContain("Tools running");
+    expect(full).toContain("live-string-headline");
+    expect(compact).toContain("live-string-headline");
+    expect(compact.split("\n").slice(1)).toEqual(full.split("\n").slice(1));
+    expect(compactBeforeFirstTool).toContain("Running…");
+    expect(compactBeforeFirstTool).not.toContain("Fabric program");
+  });
+
+  it("retains specialized write previews while compact hides outer source", () => {
+    const args = {
+      code: 'await pi.write({ path: "README.md", content: π.content });',
+      strings: { content: "# Visible write preview", secret: "never-show-this" },
+      display: { name: "Update README" },
+    };
+    const tool = toolFor(stateFor("compact"));
+    const preview = tool.renderCall!(
+      args as never,
+      plainTheme,
+      renderContext(args, { executionStarted: false }) as never,
+    ).render(120).join("\n");
+
+    expect(preview).toContain("Update README");
+    expect(preview).toContain("README.md");
+    expect(preview).toContain("Visible write preview");
+    expect(preview).not.toContain("await pi.write");
+  });
+
+  it("keeps specialized collapsed and expanded core detail plus hidden-call bounds unchanged", () => {
+    const args = { code: "await Promise.all([]);" };
+    const details = {
+      success: true,
+      audits: [
+        {
+          ref: "pi.read",
+          provider: "pi",
+          tool: "read",
+          args: { path: "src/example.ts" },
+          result: "export const preview = true;",
+          success: true,
+        },
+        {
+          ref: "pi.grep",
+          provider: "pi",
+          tool: "grep",
+          args: { pattern: "needle", path: "src", literal: true },
+          result: "src/example.ts:3: needle\nsrc/example.ts-4- context",
+          success: true,
+        },
+        {
+          ref: "pi.find",
+          provider: "pi",
+          tool: "find",
+          args: { pattern: "*.ts", path: "src" },
+          result: "src/example.ts",
+          success: true,
+        },
+        {
+          ref: "pi.ls",
+          provider: "pi",
+          tool: "ls",
+          args: { path: "src" },
+          result: "example.ts",
+          success: true,
+        },
+        {
+          ref: "pi.edit",
+          provider: "pi",
+          tool: "edit",
+          args: { path: "src/example.ts", edits: [{ oldText: "before", newText: "after" }] },
+          result: { details: { diff: "-before\n+after" } },
+          success: true,
+        },
+        {
+          ref: "pi.write",
+          provider: "pi",
+          tool: "write",
+          args: { path: "src/new.ts", content: "export const preview = true;" },
+          preview: { details: { codePreviewBeforeWrite: { kind: "content", content: "" } }, writeBeforeCaptured: true },
+          success: true,
+        },
+        ...Array.from({ length: 7 }, (_, index) => ({
+          ref: "extensions.remote",
+          provider: "extensions",
+          tool: "remote",
+          args: { strings: `hidden-call-${index}` },
+          success: true,
+        })),
+      ],
+      phases: [],
+    };
+
+    for (const expanded of [false, true]) {
+      const full = renderResult(toolFor(stateFor("full")), args, details, "", { expanded, theme: semanticTheme });
+      const compact = renderResult(toolFor(stateFor("compact")), args, details, "", { expanded, theme: semanticTheme });
+      expect(nestedRows(compact)).toEqual(nestedRows(full));
+    }
+  });
+
+  it("keeps agent and actor preview trees plus failed nested calls unchanged", () => {
+    const args = { code: "await agents.wait({ id: 'worker' });" };
+    const details = {
+      success: false,
+      audits: [
+        {
+          ref: "agents.wait",
+          provider: "agents",
+          tool: "wait",
+          args: { id: "worker" },
+          success: true,
+          preview: {
+            kind: "fabric-agent-tools",
+            id: "worker",
+            name: "researcher",
+            status: "completed",
+            owner: "agent",
+            tools: [
+              {
+                id: "worker-edit",
+                kind: "tool",
+                label: "edit",
+                toolName: "edit",
+                status: "completed",
+                args: { path: "src/worker.ts", edits: [{ oldText: "old", newText: "new" }] },
+                result: { details: { diff: "-old\n+new" } },
+              },
+            ],
+            agents: [
+              {
+                id: "actor",
+                name: "reviewer",
+                status: "failed",
+                owner: "actor",
+                currentTool: "bash",
+                tools: [
+                  {
+                    id: "actor-bash",
+                    kind: "tool",
+                    label: "bash",
+                    toolName: "bash",
+                    status: "failed",
+                    args: { command: "echo actor" },
+                    result: { output: "actor failure" },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        {
+          ref: "extensions.remote",
+          provider: "extensions",
+          tool: "remote",
+          args: { strings: "failed-child" },
+          success: false,
+          error: "remote child failed",
+        },
+      ],
+      phases: [],
+    };
+    for (const expanded of [false, true]) {
+      const full = renderResult(toolFor(stateFor("full")), args, details, "outer failure", {
+        expanded,
+        theme: semanticTheme,
+      });
+      const compact = renderResult(toolFor(stateFor("compact")), args, details, "outer failure", {
+        expanded,
+        theme: semanticTheme,
+      });
+
+      expect(nestedRows(compact)).toEqual(nestedRows(full));
+    }
+  });
+
+  it("honors the bootstrapped compact preference while the heavyweight runtime is inactive", () => {
+    const args = {
+      code: "const lazyResume = await readHistory();\nreturn lazyResume;",
+      display: { name: "Resume history", description: "Render the resumed card" },
+    };
+    const bootstrappedOnly = stateFor("compact", { initialized: false });
+
+    const compact = renderCall(toolFor(bootstrappedOnly), args, true);
+
+    expect(compact).toContain("Resume history");
+    expect(compact).toContain("Render the resumed card");
+    expect(compact).not.toContain("lazyResume");
+    expect(compact).not.toContain("TypeScript");
+  });
+
+  it("falls back to full before bootstrap and for an explicit full preference", () => {
+    const args = {
+      code: "const untouchedSource = true;",
+      display: { name: "Keep full" },
+    };
+    const preBootstrap = stateFor("full", { bootstrapped: false });
+    const bootstrappedFull = stateFor("full", { initialized: false });
+    // Failed-bootstrap window: bootstrap() sets cwd before config loads, so a
+    // config read failure leaves cwd set with no bootstrapped config. Rendering
+    // must still fall back to full instead of throwing.
+    const failedBootstrap = { cwd: "/workspace" } as unknown as FabricState;
+
+    const fallback = renderCall(toolFor(preBootstrap), args, true);
+    const full = renderCall(toolFor(bootstrappedFull), args, true);
+    const failedFallback = renderCall(toolFor(failedBootstrap), args, true);
+
+    expect(fallback).toContain("untouchedSource");
+    expect(fallback).toContain("TypeScript");
+    expect(full).toContain("untouchedSource");
+    expect(full).toContain("TypeScript");
+    expect(full).toContain("fabric");
+    expect(failedFallback).toContain("untouchedSource");
+    expect(failedFallback).toContain("TypeScript");
+  });
+
+  it("invalidates completed cards so their current display preference redraws immediately", () => {
+    const state = stateFor("full");
+    const display = new FabricToolDisplayController();
+    const tool = toolFor(state, display);
+    const args = { code: "const currentPresentation = true;" };
+    const context = renderContext(args);
+    const resultContext = renderContext(args);
+    const result = {
+      content: [] as Array<{ type: "text"; text: string }>,
+      details: { success: true, audits: [], phases: [] },
+    };
+
+    const full = tool.renderCall!(args as never, plainTheme, context as never).render(120).join("\n");
+    const fullResult = tool.renderResult!(
+      result as never,
+      { expanded: false, isPartial: false },
+      plainTheme,
+      resultContext as never,
+    ).render(120).join("\n");
+    (state.config.ui as { toolDisplay: "full" | "compact" }).toolDisplay = "compact";
+    display.refresh();
+    const compact = tool.renderCall!(args as never, plainTheme, context as never).render(120).join("\n");
+    const compactResult = tool.renderResult!(
+      result as never,
+      { expanded: false, isPartial: false },
+      plainTheme,
+      resultContext as never,
+    ).render(120).join("\n");
+
+    expect(full).toContain("currentPresentation");
+    expect(fullResult).toContain("Fabric");
+    expect(context.invalidate).toHaveBeenCalledOnce();
+    expect(resultContext.invalidate).toHaveBeenCalledOnce();
+    expect(compact).not.toContain("currentPresentation");
+    expect(compactResult).toContain("Done");
+
+    // Switching back to full re-renders the same historical cards and restores
+    // the TypeScript presentation for both the call and the result component.
+    (state.config.ui as { toolDisplay: "full" | "compact" }).toolDisplay = "full";
+    display.refresh();
+    const fullAgain = tool.renderCall!(args as never, plainTheme, context as never).render(120).join("\n");
+    const fullResultAgain = tool.renderResult!(
+      result as never,
+      { expanded: false, isPartial: false },
+      plainTheme,
+      resultContext as never,
+    ).render(120).join("\n");
+
+    expect(context.invalidate).toHaveBeenCalledTimes(2);
+    expect(resultContext.invalidate).toHaveBeenCalledTimes(2);
+    expect(fullAgain).toContain("currentPresentation");
+    expect(fullResultAgain).toContain("Fabric");
+    expect(fullResultAgain).not.toContain("Done");
+  });
+});

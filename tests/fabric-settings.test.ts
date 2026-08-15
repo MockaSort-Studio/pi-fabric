@@ -361,11 +361,15 @@ describe("FabricSettingsComponent", () => {
     expect(lines).toContain("session.jsonl");
   });
 
-  it("surfaces nested-tool visibility and the global debounce in UI settings", () => {
-    const items = buildItems();
-    const ui = items.find((item) => item.id === "ui");
-    expect(ui?.submenu).toBeDefined();
-    const lines = ui!.submenu!("", () => {}).render(80).join("\n");
+  it("presents the Tool display row in the UI settings section", () => {
+    const component = new FabricSettingsComponent(theme, buildItems(), () => {}, () => {});
+
+    component.handleInput("ui");
+    expect(component.render(80).join("\n")).toContain("→ UI ›");
+    component.handleInput("\r");
+    const lines = component.render(80).join("\n");
+    expect(lines).toContain("Tool display");
+    expect(lines).toContain("full");
     expect(lines).toContain("Agent tool preview");
     expect(lines).toContain("Update debounce");
     expect(lines).toContain("100ms");
@@ -750,6 +754,63 @@ describe("FabricSettingsComponent", () => {
     const lines = agents.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Token limit");
     expect(lines).toContain("500k");
+  });
+
+  it("persists tool-display changes through the real settings dialog flow", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-settings-display-"));
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    const inheritedAgentDir = process.env.PI_CODING_AGENT_DIR;
+    fs.mkdirSync(cwd, { recursive: true });
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+      const applyFabricMode = vi.fn();
+      const onConfigApplied = vi.fn();
+      const state = {
+        config,
+        ensure: vi.fn().mockResolvedValue(undefined),
+        reloadConfig: vi.fn(() => Object.assign(
+          config,
+          loadFabricConfig({ cwd, agentDir, projectTrusted: true }),
+        )),
+        agents: { claudeModels: vi.fn().mockResolvedValue([]) },
+      } as unknown as FabricState;
+      const context = {
+        mode: "tui",
+        cwd,
+        isProjectTrusted: () => true,
+        modelRegistry: { getAvailable: () => fakeModelSource.models },
+        ui: {
+          notify: vi.fn(),
+          custom: vi.fn(async (factory) => {
+            const component = factory({}, theme, {}, () => {}) as FabricSettingsComponent;
+            component.handleInput("ui");
+            component.handleInput("\r");
+            component.handleInput("\x1b[B");
+            component.handleInput("\x1b[B");
+            component.handleInput("\r");
+          }),
+        },
+      } as unknown as ExtensionContext;
+
+      await openFabricSettings(context, {
+        state,
+        applyFabricMode,
+        capturedTools: { list: () => [] } as unknown as CapturedToolCatalog,
+        onConfigApplied,
+      });
+
+      expect(JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8")))
+        .toMatchObject({ ui: { toolDisplay: "compact" } });
+      expect(config.ui.toolDisplay).toBe("compact");
+      expect(onConfigApplied).toHaveBeenCalledOnce();
+      expect(applyFabricMode).toHaveBeenCalledOnce();
+    } finally {
+      if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = inheritedAgentDir;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("persists trusted-project changes globally after Ctrl+G", async () => {

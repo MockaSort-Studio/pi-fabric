@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import type { CapturedToolCatalog } from "../capture/catalog.js";
 import type { FabricActorHostEvent } from "../actors/types.js";
@@ -17,6 +17,7 @@ interface FabricCommandDeps {
   suspendToolCapture: () => void;
   autoArmPrewalk?: (context: ExtensionContext) => Promise<void>;
   refreshCodePreviewSettings?: () => void;
+  refreshToolDisplay?: () => void;
 }
 
 const extractContentText = (content: unknown): string => {
@@ -225,6 +226,9 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           throw error;
         }
         context.ui.notify("Pi Fabric reloaded", "info");
+        // initialize() reloads configuration, so an externally edited
+        // ui.toolDisplay must re-render existing transcript cards too.
+        deps.refreshToolDisplay?.();
         return;
       }
       if (command === "settings") {
@@ -233,9 +237,10 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           state,
           applyFabricMode,
           capturedTools,
-          ...(deps.refreshCodePreviewSettings
-            ? { onConfigApplied: deps.refreshCodePreviewSettings }
-            : {}),
+          onConfigApplied: () => {
+            deps.refreshCodePreviewSettings?.();
+            deps.refreshToolDisplay?.();
+          },
         });
         return;
       }

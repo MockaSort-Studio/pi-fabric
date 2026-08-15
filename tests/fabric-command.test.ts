@@ -48,6 +48,30 @@ describe("/fabric command", () => {
     expect(fabricUi.openDashboard).toHaveBeenCalledWith(context);
   });
 
+  it("keeps the /fabric ui dashboard alias", async () => {
+    let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
+    const pi = {
+      registerCommand: vi.fn((_name: string, definition: { handler: typeof handler }) => {
+        handler = definition.handler;
+      }),
+    } as unknown as ExtensionAPI;
+    const state = { ensure: vi.fn().mockResolvedValue(undefined) } as unknown as FabricState;
+    const fabricUi = { openDashboard: vi.fn().mockResolvedValue(undefined) } as unknown as FabricUiController;
+    const context = {} as ExtensionContext;
+
+    registerFabricCommand(pi, {
+      state,
+      fabricUi,
+      capturedTools: {} as CapturedToolCatalog,
+      applyFabricMode: vi.fn(),
+      suspendToolCapture: vi.fn(),
+      autoArmPrewalk: vi.fn(async () => {}),
+    });
+    await handler!("ui", context);
+
+    expect(fabricUi.openDashboard).toHaveBeenCalledWith(context);
+  });
+
   it("lets the activation hook own reload setup and keeps failure suspended", async () => {
     let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
     const pi = {
@@ -78,6 +102,37 @@ describe("/fabric command", () => {
     expect(applyFabricMode).not.toHaveBeenCalled();
     expect(fabricUi.start).not.toHaveBeenCalled();
     expect(autoArmPrewalk).not.toHaveBeenCalled();
+  });
+
+  it("re-renders existing cards after a successful reload so external edits apply", async () => {
+    let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
+    const pi = {
+      registerCommand: vi.fn((_name, command) => { handler = command.handler; }),
+    } as unknown as ExtensionAPI;
+    const state = {
+      ensure: vi.fn().mockResolvedValue(undefined),
+      initialize: vi.fn().mockResolvedValue(undefined),
+    } as unknown as FabricState;
+    const fabricUi = { stop: vi.fn(), start: vi.fn() } as unknown as FabricUiController;
+    const refreshToolDisplay = vi.fn();
+    const notify = vi.fn();
+    const context = {
+      ui: { notify },
+    } as unknown as ExtensionContext;
+
+    registerFabricCommand(pi, {
+      state,
+      fabricUi,
+      capturedTools: {} as CapturedToolCatalog,
+      applyFabricMode: vi.fn(),
+      suspendToolCapture: vi.fn(),
+      refreshToolDisplay,
+    });
+
+    await handler!("reload", context);
+    expect(state.initialize).toHaveBeenCalledWith(context);
+    expect(notify).toHaveBeenCalledWith("Pi Fabric reloaded", "info");
+    expect(refreshToolDisplay).toHaveBeenCalledOnce();
   });
 
   it("arms prewalk with the configured executor and submits an inline task", async () => {
@@ -249,6 +304,52 @@ describe("/fabric command", () => {
 
     expect(arm).toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("registers no dedicated display subcommand or completion", async () => {
+    let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
+    let completions: ((prefix: string) => Array<{ value: string }> | null) | undefined;
+    const pi = {
+      registerCommand: vi.fn((_name: string, definition: {
+        handler: typeof handler;
+        getArgumentCompletions: typeof completions;
+      }) => {
+        handler = definition.handler;
+        completions = definition.getArgumentCompletions;
+      }),
+    } as unknown as ExtensionAPI;
+    const state = {
+      initialized: true,
+      ensure: vi.fn().mockResolvedValue(undefined),
+      config: { ui: { toolDisplay: "full" } },
+      reloadConfig: vi.fn(),
+    } as unknown as FabricState;
+    const refreshToolDisplay = vi.fn();
+    const notify = vi.fn();
+    const context = {
+      cwd: process.cwd(),
+      isProjectTrusted: () => true,
+      ui: { notify },
+    } as unknown as ExtensionContext;
+
+    registerFabricCommand(pi, {
+      state,
+      fabricUi: {} as FabricUiController,
+      capturedTools: {} as CapturedToolCatalog,
+      applyFabricMode: vi.fn(),
+      suspendToolCapture: vi.fn(),
+      autoArmPrewalk: vi.fn(async () => {}),
+      refreshToolDisplay,
+    });
+
+    expect(completions!("dis")).toBeNull();
+    await handler!("display compact", context);
+    expect(notify).toHaveBeenCalledWith(
+      expect.stringContaining("Usage: /fabric"),
+      "warning",
+    );
+    expect(state.reloadConfig).not.toHaveBeenCalled();
+    expect(refreshToolDisplay).not.toHaveBeenCalled();
   });
 
 });

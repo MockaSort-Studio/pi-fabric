@@ -112,6 +112,7 @@ Treat `node-process` as an explicit escape hatch for trusted code. It offers no 
     "eventHistory": 80,
     "haltOnEscape": true,
     "showAgentToolPreview": true,
+    "toolDisplay": "full",
     "updateDebounceMs": 100
   },
   "compaction": {
@@ -367,6 +368,7 @@ See the [`mcp` reference](../skills/fabric-exec/references/mcp.md) for the call 
 
 - `ui.widget` is `auto`, `always`, or `hidden`. `auto` shows active or retained Fabric runs and worker activity. Active one-shot agents and actor workers occupy rows. Their recent nested tools appear beneath them when enabled.
 - `ui.showAgentToolPreview` defaults to `true` and controls the child-agent and actor tool rows in both the parent `fabric_exec` card and the widget. Recursive agents render their full descendant tree, bounded by the preview depth/node budget. The version 2 config migration renamed this key from `ui.showNestedToolCalls`.
+- `ui.toolDisplay` is `"full"` (default) or `"compact"`. Full retains the outer Fabric TypeScript transcript; compact elevates the declared display name and description, hides that outer source even when expanded, and keeps bounded nested tool detail visible. Invalid values fall back to `"full"`. Change it under `/fabric settings` → **UI**; successful changes apply immediately to live and completed cards.
 - `ui.updateDebounceMs` defaults to `100`. It applies one execution-wide coalescing interval to every live `fabric_exec` card update: nested calls, progress text, and agent tool previews. Continuous streams emit at most once per interval, so a long call no longer postpones every render until completion. Set it to `0` to emit every update. Accepted values clamp to `0..2000`. The version 3 config migration renamed this key from `ui.nestedToolDebounceMs`.
 - The widget renders above the chat, like `pi-supervisor`. Set `ui.enabled` to `false` to disable both the widget and the dashboard controller.
 

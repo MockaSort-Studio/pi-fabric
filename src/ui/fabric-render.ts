@@ -918,6 +918,7 @@ export interface FabricMulticallPartialInput {
   core?: { cwd: string; settings: CodePreviewSettings } | undefined;
   showAgentToolPreview?: boolean | undefined;
   spinner?: string | undefined;
+  activityLabel?: string | undefined;
 }
 
 export const singleCallProgressLine = (
@@ -943,7 +944,7 @@ export const renderFabricMulticallPartial = (
   const done = input.audits.filter((audit) => audit.success !== undefined).length;
   let header = theme.fg(
     "warning",
-    `◆ Fabric running · ${done}/${input.audits.length} calls`,
+    `◆ ${input.activityLabel ?? "Fabric"} running · ${done}/${input.audits.length} calls`,
   );
   const progress = input.progress ? compactProgressPreview(input.progress) : "";
   if (progress) header += theme.fg("dim", ` · ${progress}`);

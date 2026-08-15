@@ -1,5 +1,6 @@
 import {
   defineTool,
+  type Theme,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
@@ -65,6 +66,7 @@ import {
   type ResultRowBalance,
 } from "./ui/row-balance.js";
 import { type SpinnerTimerState, updateSpinner } from "./ui/spinner.js";
+import type { FabricToolDisplayController } from "./ui/tool-display.js";
 import { boundModelOutput, modelOutputBudget } from "./output-budget.js";
 import { formatFabricValue } from "./ui/structured.js";
 import { countNewlines } from "./util.js";
@@ -83,6 +85,31 @@ type FabricRendererState = {
   fabricSpinner?: SpinnerTimerState;
 };
 
+type FabricToolDisplayMode = "full" | "compact";
+
+// Bootstrap, not runtime activation, is the config-readiness seam: upstream's
+// deferred startup loads configuration into FabricState without creating the
+// heavyweight runtime, so a resumed session must honor the bootstrapped
+// ui.toolDisplay even while state.initialized is still false. The explicit
+// bootstrapped getter also guards the failed-bootstrap window (config loaded
+// unsuccessfully), where full must remain the safe fallback.
+const toolDisplayMode = (state: FabricState): FabricToolDisplayMode =>
+  state.bootstrapped ? state.config.ui.toolDisplay : DEFAULT_FABRIC_CONFIG.ui.toolDisplay;
+
+const compactResultHeader = (
+  theme: Theme,
+  audits: FabricRenderAudit[],
+  failed: boolean,
+): string => {
+  const failedCalls = audits.filter((audit) => audit.success === false).length;
+  const isFailed = failed || failedCalls > 0;
+  return theme.fg(isFailed ? "error" : "success", `${isFailed ? "✗" : "✓"} Tools`) +
+    theme.fg(
+      "dim",
+      ` · ${countLabel(audits.length, "call")}${failedCalls > 0 ? ` · ${failedCalls} failed` : ""}`,
+    );
+};
+
 const countLabel = (count: number, singular: string): string =>
   `${count} ${count === 1 ? singular : `${singular}s`}`;
 
@@ -91,6 +118,7 @@ export const createFabricExecTool = (
   codePreviewSettings: CodePreviewSettings,
   pendingHandoffs: Map<string, PendingFabricHandoff>,
   decorateShell: FabricToolShellDecorator = withCodePreviewShell,
+  toolDisplay?: FabricToolDisplayController,
 ): ToolDefinition<any, any, any> => decorateShell(
   defineTool({
     name: "fabric_exec",
@@ -174,7 +202,9 @@ export const createFabricExecTool = (
     renderCall(params, theme, context) {
       observePiTheme(theme);
       const code = Array.isArray(params.code) ? params.code.join("\n") : params.code;
+      const mode = toolDisplayMode(state);
       const rendererState = context.state as FabricRendererState;
+      toolDisplay?.observe(context.toolCallId, "call", context.invalidate);
       const spinner = updateSpinner(
         rendererState.fabricSpinner ??= {},
         context.isPartial,
@@ -199,6 +229,25 @@ export const createFabricExecTool = (
             theme,
             context.invalidate,
           );
+      if (mode === "compact") {
+        const display = normalizeRunDisplay(params.display);
+        const header = renderBoundedLines(
+          [
+            theme.fg("toolTitle", theme.bold(safeTerminalText(display?.name?.trim() || "Tool"))),
+            ...(display?.description
+              ? [theme.fg("dim", safeTerminalText(display.description))]
+              : []),
+          ],
+          theme,
+          codePreviewSettings.diffIntensity,
+        );
+        if (!writePreview) return header;
+        const composite = new Container();
+        composite.addChild(header);
+        composite.addChild(new Text("\n", 0, 0));
+        composite.addChild(writePreview);
+        return composite;
+      }
 
       const lines = safeTerminalText(code).split("\n");
       const runDisplay = normalizeRunDisplay(params.display);
@@ -251,6 +300,7 @@ export const createFabricExecTool = (
         context.args,
       );
       const rendererState = context.state as FabricRendererState;
+      toolDisplay?.observe(context.toolCallId, "result", context.invalidate);
       const spinner = updateSpinner(
         rendererState.fabricSpinner ??= {},
         isPartial,
@@ -302,6 +352,7 @@ export const createFabricExecTool = (
       const nl = "\n";
       const allRowIndexes = (lines: string[], enabled: boolean): ReadonlySet<number> | undefined =>
         enabled ? new Set(lines.map((_line, index) => index)) : undefined;
+      const compact = toolDisplayMode(state) === "compact";
       const corePreviewContext = { cwd: context.cwd, settings: codePreviewSettings };
       const showAgentToolPreview = state.initialized
         ? state.config.ui.showAgentToolPreview
@@ -340,15 +391,9 @@ export const createFabricExecTool = (
       if (isPartial) {
         const progress = details.progress;
         if (audits.length === 0) {
+          const label = compact ? "Running…" : progress ?? "Running Fabric program…";
           return trackRows(
-            new Text(
-              theme.fg(
-                "warning",
-                `◆ ${safeTerminalText(progress ?? "Running Fabric program…")}`,
-              ),
-              0,
-              0,
-            ),
+            new Text(theme.fg("warning", `◆ ${safeTerminalText(label)}`), 0, 0),
           );
         }
         if (audits.length === 1) {
@@ -427,6 +472,7 @@ export const createFabricExecTool = (
               core: corePreviewContext,
               showAgentToolPreview,
               spinner,
+              ...(compact ? { activityLabel: "Tools" } : {}),
             },
             theme,
             context?.invalidate,
@@ -483,11 +529,25 @@ export const createFabricExecTool = (
             ),
           );
         }
-        if (!output) return trackRows(new Text(theme.fg("dim", "✓ Fabric"), 0, 0));
+        if (compact && !failed && !expanded) {
+          return trackRows(new Text(theme.fg("success", "✓ Done"), 0, 0));
+        }
+        if (!output) {
+          return trackRows(new Text(
+            compact
+              ? theme.fg(failed ? "error" : "success", failed ? "✗ Failed" : "✓ Done")
+              : theme.fg("dim", "✓ Fabric"),
+            0,
+            0,
+          ));
+        }
         const lines = safeTerminalText(output).split(nl);
         const limit = expanded ? Math.min(lines.length, 200) : 12;
         const shown = lines.slice(0, limit);
         let text = styleOutputLines(shown).join(nl);
+        if (compact) {
+          text = theme.fg(failed ? "error" : "success", failed ? "✗ Failed" : "✓ Done") + nl + text;
+        }
         if (lines.length > shown.length) {
           text += nl + theme.fg("dim", `… ${countLabel(lines.length - shown.length, "line")}`);
           if (!expanded) text += theme.fg("dim", " · ") + expandHint(theme);
@@ -499,7 +559,14 @@ export const createFabricExecTool = (
 
       if (audits.length === 1) {
         const audit = audits[0]!;
-        let text = nestedCallTitle(audit, theme, context?.invalidate, corePreviewContext);
+        let text = compact
+          ? `${compactResultHeader(theme, audits, failed)}${nl}${nestedCallTitle(
+              audit,
+              theme,
+              context?.invalidate,
+              corePreviewContext,
+            )}`
+          : nestedCallTitle(audit, theme, context?.invalidate, corePreviewContext);
         const previewLines = renderAgentToolPreviewLines(audit, theme, {
           expanded,
           showTools: showAgentToolPreview,
@@ -533,7 +600,12 @@ export const createFabricExecTool = (
           !coreToolPreviewEnabled(audit, codePreviewSettings)
         ) {
           text += nl + arcItemStyled(theme, expandHint(theme));
-        } else if (previewLines.length === 0 && output && !isCoreToolAudit(audit)) {
+        } else if (
+          previewLines.length === 0 &&
+          output &&
+          !isCoreToolAudit(audit) &&
+          (!compact || failed || expanded)
+        ) {
           const lines = safeTerminalText(output).split(nl);
           const outLimit = expanded ? Math.min(lines.length, 200) : 12;
           const outShown = lines.slice(0, outLimit);
@@ -564,11 +636,13 @@ export const createFabricExecTool = (
         failedCalls > 0 ? `${failedCalls} failed` : undefined,
         phases.length > 0 ? countLabel(phases.length, "phase") : undefined,
       ].filter((value): value is string => Boolean(value));
-      let text = theme.fg(
-        statusColor,
-        `${failed ? "✗" : "✓"} Fabric ${status}`,
-      );
-      if (metadata.length > 0) text += theme.fg("dim", ` · ${metadata.join(" · ")}`);
+      let text = compact
+        ? compactResultHeader(theme, audits, failed)
+        : theme.fg(
+            statusColor,
+            `${failed ? "✗" : "✓"} Fabric ${status}`,
+          );
+      if (!compact && metadata.length > 0) text += theme.fg("dim", ` · ${metadata.join(" · ")}`);
       if (phases.length > 0)
         text += nl + theme.fg("dim", phases.map((phase) => `◆ ${phase}`).join("  "));
 
