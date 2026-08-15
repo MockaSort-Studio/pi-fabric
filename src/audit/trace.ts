@@ -42,6 +42,7 @@ export interface FabricExecutionTraceOperationV1 {
   failureStage?: FabricExecutionFailureStageV1;
   error?: string;
   result?: FabricTraceJsonValue;
+  resultTruncated?: boolean;
 }
 
 export interface FabricExecutionTraceCountsV1 {
@@ -67,6 +68,10 @@ interface MutableCounts {
   redactedValues: number;
 }
 
+interface TraceResultMeta {
+  resultTruncated?: boolean;
+}
+
 interface Sanitized<T extends FabricTraceJsonValue> {
   value: T;
   counts: MutableCounts;
@@ -85,6 +90,7 @@ interface MutableOperation {
   failureStage?: FabricExecutionFailureStageV1;
   error?: Sanitized<string>;
   result?: Sanitized<FabricTraceJsonValue>;
+  resultTruncated?: boolean;
   droppedResultValues: number;
 }
 
@@ -405,7 +411,7 @@ export class FabricExecutionTraceOperationHandle {
     this.operation.args = projectedArgs(this.operation.projectionRef, args);
   }
 
-  succeed(result: unknown): void {
+  succeed(result: unknown, meta?: TraceResultMeta): void {
     if (!this.operation || this.recorder.sealed) return;
     const projected = projectFabricAuditResult(this.operation.projectionRef, result);
     if (projected !== undefined) {
@@ -415,6 +421,7 @@ export class FabricExecutionTraceOperationHandle {
       this.operation.droppedResultValues++;
     }
     this.operation.outcome = "succeeded";
+    if (meta?.resultTruncated === true) this.operation.resultTruncated = true;
   }
 
   fail(
@@ -422,6 +429,7 @@ export class FabricExecutionTraceOperationHandle {
     error: unknown,
     outcome: FabricExecutionOutcomeV1 = "failed",
     result?: unknown,
+    meta?: TraceResultMeta,
   ): void {
     if (!this.operation || this.recorder.sealed) return;
     this.operation.failureStage = stage;
@@ -437,6 +445,7 @@ export class FabricExecutionTraceOperationHandle {
       MAX_ERROR_BYTES,
     );
     this.operation.outcome = outcome;
+    if (meta?.resultTruncated === true) this.operation.resultTruncated = true;
     const projected = projectFabricAuditResult(this.operation.projectionRef, result);
     if (projected !== undefined) {
       this.operation.result = sanitize(projected.value, MAX_RESULT_BYTES);
@@ -537,6 +546,7 @@ export class FabricExecutionTraceRecorder {
         ...(operation.failureStage ? { failureStage: operation.failureStage } : {}),
         ...(operation.error ? { error: operation.error.value } : {}),
         ...(operation.result ? { result: operation.result.value } : {}),
+        ...(operation.resultTruncated === true ? { resultTruncated: true as const } : {}),
       };
     });
     const boundedPhases = phases.slice(0, MAX_PHASES).map((phase) => {
@@ -661,7 +671,7 @@ const isFabricExecutionTraceOperationV1Unchecked = (
   value: unknown,
 ): value is FabricExecutionTraceOperationV1 => {
   if (!isRecord(value)) return false;
-  if (!hasOnlyKeys(value, ["type", "sequence", "ref", "provider", "action", "args", "outcome", "failureStage", "error", "result"])) return false;
+  if (!hasOnlyKeys(value, ["type", "sequence", "ref", "provider", "action", "args", "outcome", "failureStage", "error", "result", "resultTruncated"])) return false;
   if (value.type !== "call" || !Number.isSafeInteger(value.sequence) || (value.sequence as number) < 0) return false;
   if (typeof value.ref !== "string" || !isRecord(value.args) || !isJsonValue(value.args)) return false;
   if (!outcomes.has(value.outcome as FabricExecutionOutcomeV1)) return false;
@@ -669,6 +679,7 @@ const isFabricExecutionTraceOperationV1Unchecked = (
   if (value.action !== undefined && typeof value.action !== "string") return false;
   if (value.failureStage !== undefined && !stages.has(value.failureStage as FabricExecutionFailureStageV1)) return false;
   if (value.error !== undefined && typeof value.error !== "string") return false;
+  if (value.resultTruncated !== undefined && typeof value.resultTruncated !== "boolean") return false;
   return value.result === undefined || isJsonValue(value.result);
 };
 

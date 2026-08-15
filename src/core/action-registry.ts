@@ -953,9 +953,11 @@ export class ActionRegistry {
         ...(resultError ? { error: resultError } : {}),
       });
       if (resultError) {
-        traceOperation?.fail("invoke", resultError, failedResultOutcome(value), bounded.value);
+        traceOperation?.fail("invoke", resultError, failedResultOutcome(value), bounded.value, {
+          resultTruncated: bounded.truncated,
+        });
       } else {
-        traceOperation?.succeed(bounded.value);
+        traceOperation?.succeed(bounded.value, { resultTruncated: bounded.truncated });
       }
       return bounded.value;
     } catch (error) {

@@ -1134,3 +1134,40 @@ return true;
     expect(readFabricExecutionTraceV1(hostile)).toBeUndefined();
   });
 });
+
+describe("result truncation persistence", () => {
+  it("stamps resultTruncated into trace operations and reconstructed audits", () => {
+    const recorder = new FabricExecutionTraceRecorder();
+    const operation = recorder.issueCall("pi.bash", { cmd: "yes | head -c 200000" });
+    operation.succeed({ ok: true, output: "tail slice" }, { resultTruncated: true });
+    const trace = recorder.seal("succeeded", []);
+
+    expect(trace.operations[0]?.resultTruncated).toBe(true);
+    expect(
+      readFabricExecutionRenderDetails({ success: true, trace }).audits[0]?.resultTruncated,
+    ).toBe(true);
+    expect(readFabricExecutionTraceV1(trace)?.operations[0]?.resultTruncated).toBe(true);
+  });
+
+  it("stamps resultTruncated on failed invocations carrying a truncated result", () => {
+    const recorder = new FabricExecutionTraceRecorder();
+    const operation = recorder.issueCall("pi.bash", { cmd: "big && false" });
+    operation.fail("invoke", new Error("exit 1"), "failed", { ok: false, output: "tail" }, {
+      resultTruncated: true,
+    });
+    const trace = recorder.seal("failed", []);
+
+    expect(trace.operations[0]?.resultTruncated).toBe(true);
+  });
+
+  it("omits the flag for untruncated results", () => {
+    const recorder = new FabricExecutionTraceRecorder();
+    recorder.issueCall("pi.read", { path: "x" }).succeed("small body");
+    const trace = recorder.seal("succeeded", []);
+
+    expect(trace.operations[0]?.resultTruncated).toBeUndefined();
+    expect(
+      readFabricExecutionRenderDetails({ success: true, trace }).audits[0]?.resultTruncated,
+    ).toBeUndefined();
+  });
+});

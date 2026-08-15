@@ -121,6 +121,7 @@ const auditFromOperation = (
   ...(operation.error ? { error: operation.error } : {}),
   ...(Object.keys(operation.args).length > 0 ? { args: operation.args } : {}),
   ...(operation.result !== undefined ? { result: operation.result } : {}),
+  ...(operation.resultTruncated === true ? { resultTruncated: true } : {}),
 });
 
 /**
