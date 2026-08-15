@@ -475,7 +475,10 @@ export const createFabricExecTool = (
         let preview: { auditIndex: number; body: string; hidden: number } | undefined;
         for (let index = audits.length - 1; index >= 0; index--) {
           const audit = audits[index]!;
-          if (audit.tool !== "write" || audit.success === false) continue;
+          if (
+            (audit.tool !== "write" && audit.tool !== "edit") ||
+            audit.success === false
+          ) continue;
           const rendered = renderBody(audit, expanded ? 20 : 10);
           if (rendered) {
             preview = { auditIndex: index, ...rendered };
@@ -673,7 +676,10 @@ export const createFabricExecTool = (
       if (!expanded) {
         for (let index = callsShown.length - 1; index >= 0; index--) {
           const audit = callsShown[index]!;
-          if (audit.tool !== "write" || audit.success === false) continue;
+          if (
+            (audit.tool !== "write" && audit.tool !== "edit") ||
+            audit.success === false
+          ) continue;
           const rendered = renderBody(audit, 10);
           if (rendered) {
             collapsedPreview = { auditIndex: index, ...rendered };

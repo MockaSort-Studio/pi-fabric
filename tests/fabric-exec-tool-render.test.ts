@@ -490,6 +490,50 @@ describe("registered fabric_exec compact transcript rendering", () => {
     expect(streaming).toContain("Visible write preview");
   });
 
+  it("streams and retains edit diffs in collapsed multicall results", () => {
+    const args = { code: "await pi.read({ path: 'before.ts' });\nawait pi.edit({ path: 'target.ts', old: 'before', new: 'after' });" };
+    const partialDetails = {
+      audits: [
+        {
+          ref: "pi.read",
+          provider: "pi",
+          tool: "read",
+          args: { path: "before.ts" },
+          success: true,
+        },
+        {
+          ref: "pi.edit",
+          provider: "pi",
+          tool: "edit",
+          args: {
+            path: "target.ts",
+            edits: [{ oldText: "const value = 'before';", newText: "const value = 'after';" }],
+          },
+        },
+      ],
+      phases: [],
+    };
+    const completedDetails = {
+      ...partialDetails,
+      success: true,
+      audits: partialDetails.audits.map((audit, index) =>
+        index === 1
+          ? { ...audit, success: true, result: { details: { diff: "-const value = 'before';\n+const value = 'after';" } } }
+          : audit,
+      ),
+    };
+    const tool = toolFor(stateFor("compact"));
+    const partial = renderResult(tool, args, partialDetails, "", { partial: true });
+    const completed = renderResult(tool, args, completedDetails, "");
+
+    expect(partial).toContain("proposed edit");
+    expect(partial).toContain("before");
+    expect(partial).toContain("after");
+    expect(completed).toContain("1 hunk");
+    expect(completed).toContain("before");
+    expect(completed).toContain("after");
+  });
+
   it("keeps specialized collapsed and expanded core detail plus hidden-call bounds unchanged", () => {
     const args = { code: "await Promise.all([]);" };
     const details = {
