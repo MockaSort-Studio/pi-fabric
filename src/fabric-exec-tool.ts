@@ -550,13 +550,10 @@ export const createFabricExecTool = (
             ),
           );
         }
-        if (compact && !failed) {
-          return trackRows(new Text(theme.fg("success", "✓ Done"), 0, 0));
-        }
         if (!output) {
           return trackRows(new Text(
             compact
-              ? theme.fg(failed ? "error" : "success", failed ? "✗ Failed" : "✓ Done")
+              ? theme.fg(failed ? "error" : "success", failed ? "✗ Failed" : "✓ Evaluated")
               : theme.fg("dim", "✓ Fabric"),
             0,
             0,
@@ -567,7 +564,7 @@ export const createFabricExecTool = (
         const shown = lines.slice(0, limit);
         let text = styleOutputLines(shown).join(nl);
         if (compact) {
-          text = theme.fg(failed ? "error" : "success", failed ? "✗ Failed" : "✓ Done") + nl + text;
+          text = theme.fg(failed ? "error" : "success", failed ? "✗ Failed" : "✓ Evaluated") + nl + text;
         }
         if (lines.length > shown.length) {
           text += nl + theme.fg("dim", `… ${countLabel(lines.length - shown.length, "line")}`);

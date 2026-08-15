@@ -139,7 +139,7 @@ describe("registered fabric_exec compact transcript rendering", () => {
     expect(compactExpanded).toContain("Fabric complete");
   });
 
-  it("uses Tools or Done summaries while preserving completed nested detail and bounded returns", () => {
+  it("uses Tools or Evaluated summaries while preserving completed nested detail and bounded returns", () => {
     const args = { code: "await Promise.all([]);" };
     const details = {
       success: false,
@@ -152,17 +152,24 @@ describe("registered fabric_exec compact transcript rendering", () => {
     };
     const full = renderResult(toolFor(stateFor("full")), args, details, "outer failure details");
     const compact = renderResult(toolFor(stateFor("compact")), args, details, "outer failure details");
-    const done = renderResult(
+    const evaluated = renderResult(
       toolFor(stateFor("compact")),
       args,
       { success: true, audits: [], phases: [] },
       "quiet outer return",
     );
-    const expandedDone = renderResult(
+    const longReturn = Array.from({ length: 14 }, (_, index) => `line ${index + 1}`).join("\n");
+    const boundedEvaluation = renderResult(
       toolFor(stateFor("compact")),
       args,
       { success: true, audits: [], phases: [] },
-      "quiet outer return",
+      longReturn,
+    );
+    const expandedEvaluation = renderResult(
+      toolFor(stateFor("compact")),
+      args,
+      { success: true, audits: [], phases: [] },
+      longReturn,
       { expanded: true },
     );
 
@@ -173,9 +180,14 @@ describe("registered fabric_exec compact transcript rendering", () => {
     expect(compact).toContain("read src/config.ts");
     expect(compact).toContain("tests failed");
     expect(compact).toContain("outer failure details");
-    expect(done).toContain("Done");
-    expect(done).not.toContain("quiet outer return");
-    expect(expandedDone).toContain("quiet outer return");
+    expect(evaluated).toContain("Evaluated");
+    expect(evaluated).toContain("quiet outer return");
+    expect(boundedEvaluation).toContain("line 12");
+    expect(boundedEvaluation).not.toContain("line 13");
+    expect(boundedEvaluation).toContain("… 2 lines");
+    expect(boundedEvaluation).toContain("to expand");
+    expect(expandedEvaluation).not.toContain("Evaluated");
+    expect(expandedEvaluation).toContain("line 14");
   });
 
   it("summarizes one nested call while keeping its successful outer return quiet in compact mode", () => {
@@ -638,7 +650,7 @@ describe("registered fabric_exec compact transcript rendering", () => {
     expect(context.invalidate).toHaveBeenCalledOnce();
     expect(resultContext.invalidate).toHaveBeenCalledOnce();
     expect(compact).not.toContain("currentPresentation");
-    expect(compactResult).toContain("Done");
+    expect(compactResult).toContain("Evaluated");
 
     // Switching back to full re-renders the same historical cards and restores
     // the TypeScript presentation for both the call and the result component.
@@ -656,6 +668,6 @@ describe("registered fabric_exec compact transcript rendering", () => {
     expect(resultContext.invalidate).toHaveBeenCalledTimes(2);
     expect(fullAgain).toContain("currentPresentation");
     expect(fullResultAgain).toContain("Fabric");
-    expect(fullResultAgain).not.toContain("Done");
+    expect(fullResultAgain).not.toContain("Evaluated");
   });
 });
