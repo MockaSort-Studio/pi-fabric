@@ -136,12 +136,18 @@ Prefer `agents.steer` over `agents.stop` + `agents.spawn` when the child has use
 
 `agents.create(args)` returns `FabricActorInfo`. An actor has a fixed `runner`, a serial mailbox, and optional subscriptions to parent events or durable mesh topics. It processes messages one at a time, coalesces repeated host events by default, and restores with the project actor registry. Pi actors resume their Fabric-owned Pi session file. Claude actors persist the session ID emitted by `claude -p` and launch later activations with `--resume <id>` while keeping a Fabric-owned stream transcript.
 
-`args` is a `FabricActorRequest`. `delivery` defaults to `mailbox`; `steer`/`followUp` require an explicit `triggerTurn: true | false`, while `mailbox`/`nextTurn` reject `triggerTurn: true`.
+`args` is a `FabricActorRequest`. `delivery` defaults to `mailbox`. `steer` and `followUp` require `triggerTurn: true | false`; `mailbox` and `nextTurn` reject `triggerTurn: true`.
+
+With project actor scope, all trusted sessions read one definition, mailbox, and history. Each Pi session has its own model and thinking binding. One authenticated owner runs the actor and processes host events once. Fabric stores the resolved values on each mailbox item before it queues:
+
+```text
+call override → session binding → project default → Fabric or runner default
+```
 
 - `runner` is fixed at creation. Omitted uses `agents.runner`. Pi actors are recursively Fabric-equipped; Claude actors retain Claude context and use Claude Code tools, while mailbox/event delivery and coordination remain host-managed (no `fabric_exec` or direct `mesh.*` inside Claude).
-- `residency` is `session` by default. Set `residency: "durable"` to transfer the actor's persisted definition, mailbox/session ownership, mesh topics, and relayed host-event activations to Fabric's hidden resident host. Use `tell`, `steer`, `followUp`, and `stop` remotely; blocking `ask`, private mailbox/log reads, export, and live setting mutations remain owner-local. Durable residency requires a trusted project mesh and is unavailable in Schema enforce mode.
-- `model` follows the selected runner's key format. Omitted uses that runner's configured/default model. `agents.setModel({ id, model? })` changes or clears the override for the next activation without replacing the actor session; `tell`/`ask` payloads do not change it.
-- `thinking` is the reasoning effort forwarded to the actor's runs (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Omitted inherits `agents.thinking` (default `medium`), clamped to the model's supported levels. Change it later with `agents.setThinking({ id, thinking? })` or `e` from the dashboard actor detail; omitting `thinking` clears the override.
+- `residency` is `session` by default. Set `residency: "durable"` to transfer execution to Fabric's hidden resident host. Project sessions can still call `ask`, `tell`, `steer`, `followUp`, and `stop`, and can read the shared definition, mailbox, and logs. Shared runtime settings stay owner-only. Fabric routes durable actor removal to the resident owner. Durable residency requires a trusted project mesh and is unavailable in Schema enforce mode.
+- `model` follows the selected runner's key format. At creation it is the project default. `agents.setModel({ id, model? })` changes this session binding by default; add `scope: "project"` for an owner-gated shared pin. `ask`/`tell` also accept `model` for one activation.
+- `thinking` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. It uses the same call/session/project layering as `model`, then inherits `agents.thinking` (default `medium`). Use `agents.setThinking({ id, thinking?, scope? })`; omitting the value clears the selected layer.
 - `events` may contain any session-bound public Pi extension event: `resources_discover`; `session_start`, `session_info_changed`, `session_before_switch`, `session_before_fork`, `session_before_compact`, `session_compact`, `session_shutdown`, `session_before_tree`, `session_tree`; `input`, `before_agent_start`; `agent_start`, `agent_end`, `agent_settled`; `turn_start`, `turn_end`; `message_start`, `message_update`, `message_end`; `context`, `before_provider_headers`, `before_provider_request`, `after_provider_response`; `tool_execution_start`, `tool_call`, `tool_execution_update`, `tool_result`, `tool_execution_end`; `model_select`, `thinking_level_select`, and `user_bash`. Fabric also provides synthetic `tool_error`. `project_trust` is unavailable because it precedes trusted actor-registry initialization. These are asynchronous observations and cannot mutate or block the originating Pi hook.
 - Host events automatically forward every Pi `ImageContent` block to the actor's selected model. The JSON envelope and persisted mailbox contain only redacted indexed descriptors; raw base64 travels through the transient worker prompt and may then follow the selected runner's ordinary persistent-session semantics. No media flag is required. Credential-shaped fields and unrelated encoded blobs are redacted before persistence.
 - `topics` lists durable mesh topics to subscribe to (see `mesh.md`).
@@ -174,15 +180,15 @@ For a native asynchronous vision handoff, create one actor with an explicit mult
 
 Mailbox:
 
-- `agents.ask({ id, message, data? })` returns a `FabricActorMessage` (blocking exchange).
-- `agents.tell({ id, message, data? })` returns `{ queued, messageId }` (fire and forget).
-- `agents.actorStatus({ id })` and `agents.actors()` return full info only for locally owned actors. Discover remote actors through `agents.members({ kinds: ["actor"] })`.
-- `agents.setModel({ id, model? })` and `agents.setThinking({ id, thinking? })` migrate the next activation while preserving the actor's runner session.
+- `agents.ask({ id, message, data?, model?, thinking? })` waits for a `FabricActorMessage` from the live owner. Its deadline follows the actor timeout. Caller cancellation aborts work on that owner. Large text and structured data share the mesh event budget; truncated data carries `fabricTruncated: true`.
+- `agents.tell({ id, message, data?, model?, thinking? })` returns `{ queued, messageId }`. Optional binding values affect only that mailbox item.
+- `agents.actorStatus({ id })` and `agents.actors()` return the shared project actor view. `model`/`thinking` are effective for this caller; `binding` and `projectDefaults` expose the two persisted layers.
+- `agents.setModel({ id, model?, scope? })` and `agents.setThinking({ id, thinking?, scope? })` default to `scope: "session"`. Use `scope: "project"` only to pin a shared default.
 - `agents.setTools({ id, tools, scope? })` replaces the persisted tool allowlist for a project actor (default) or global template.
 - `agents.setDeliveryPolicy({ id, delivery, triggerTurn, scope? })` replaces the explicit project/global continuation policy without recreating the actor. In the dashboard, press `y` on an actor/template for the same control.
-- `agents.messages({ id, limit? })` returns owner-local message history; passive shared-registry views cannot read another owner's mailbox.
-- `agents.remove({ id })` returns `{ removed }`.
-- `agents.log({ id, type?, lines?, runId? })` reads the LLM/agent log for a locally owned actor or one-shot run. `type` is `session` (the actor's `session.jsonl` transcript — every user/assistant turn and tool call), `run` (the last retained run's `events.jsonl` event stream), or `all` (both; default `session` for actors). Actors retain their last `MAX_RETAINED_RUNS` runs so logs survive after success. Returns `{ actorId, actorName, sessionFile, logDir, session, run?, retainedRuns }` (actors) or `{ id, runDirectory, logFile, status?, events }` (one-shot runs). Use this to inspect what an "offending" actor actually sent to its model. From the TUI: `/fabric log <id>` previews, `/fabric export-log <id> [path]` writes the raw `session.jsonl` + retained `runs/` to disk.
+- `agents.messages({ id, limit? })` returns the shared project mailbox history. Use `mesh.actorScope: "session"` when histories must be private per Pi session.
+- `agents.remove({ id })` returns `{ removed }`. Session actors require the local owner. Durable actor removal routes to the resident owner.
+- `agents.log({ id, type?, lines?, runId? })` reads the shared actor log or a locally owned one-shot run. `type` is `session` (the actor's `session.jsonl` transcript — every user/assistant turn and tool call), `run` (the last retained run's `events.jsonl` event stream), or `all` (both; default `session` for actors). Actors retain their last `MAX_RETAINED_RUNS` runs so logs survive after success. Returns `{ actorId, actorName, sessionFile, logDir, session, run?, retainedRuns }` (actors) or `{ id, runDirectory, logFile, status?, events }` (one-shot runs). Use this to inspect what an "offending" actor actually sent to its model. From the TUI: `/fabric log <id>` previews, `/fabric export-log <id> [path]` writes the raw `session.jsonl` + retained `runs/` to disk.
 
 ## Recursive queries
 

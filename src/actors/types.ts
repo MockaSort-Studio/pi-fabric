@@ -63,6 +63,22 @@ export const isFabricActorHostEvent = (value: unknown): value is FabricActorHost
 export type FabricActorDelivery = "mailbox" | "steer" | "followUp" | "nextTurn";
 export type FabricActorResponseMode = "text" | "directive";
 export type FabricActorStatus = "idle" | "queued" | "running" | "stopped";
+export type FabricActorBindingScope = "session" | "project";
+
+export interface FabricActorRunBinding {
+  model?: string;
+  thinking?: FabricThinking;
+}
+
+interface FabricActorBindingView extends FabricActorRunBinding {
+  scope: "session";
+  sessionId: string;
+  updatedAt?: number;
+}
+
+interface FabricActorProjectDefaults extends FabricActorRunBinding {
+  scope: "project";
+}
 
 export interface FabricActorValidWhileSource {
   version: 1;
@@ -162,9 +178,14 @@ export interface FabricActorInfo {
   triggerTurn: boolean;
   coalesce: boolean;
   residency?: FabricParticipantResidency;
+  /** Effective value for this caller after session bindings overlay project defaults. */
   model?: string;
+  /** Effective value for this caller after session bindings overlay project defaults. */
   thinking?: FabricThinking;
+  binding?: FabricActorBindingView;
+  projectDefaults?: FabricActorProjectDefaults;
   tools?: string[];
+  timeoutMs?: number;
   extensions?: boolean;
   requirements?: FabricCapabilityRequirement[];
   capabilityDigest?: string;

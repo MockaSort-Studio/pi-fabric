@@ -110,8 +110,10 @@ describe("FabricUiController dashboard wiring", () => {
       expect(detail).toContain("advisor");
       // Each hint is gated on its callback being wired by the controller;
       // this guards against regressions like the thinking picker being omitted.
-      expect(detail).toContain("m model");
-      expect(detail).toContain("e thinking");
+      expect(detail).toContain("m session model");
+      expect(detail).toContain("M pin model");
+      expect(detail).toContain("e session thinking");
+      expect(detail).toContain("E pin thinking");
       expect(detail).toContain("v events");
       expect(detail).toContain("c clear");
     } finally {

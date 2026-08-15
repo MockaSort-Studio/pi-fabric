@@ -165,7 +165,7 @@ The ordinary ARC-sensitive execution path skips component target checks, footpri
 
 ## Implementation boundary
 
-The current calculus stays inside one shared provider realm. Isolation realms, interception metadata, structural service versioning, output commit, compensation, module-cache HMR, and guest component sandboxing form separate architectural layers. The implemented single-realm lifecycle calculus does not depend on any of them as premises.
+The current calculus stays inside one shared provider realm. Isolation realms, interception metadata, structural service versioning, output commit, compensation, module-cache HMR, and guest component sandboxing form separate architectural layers. The implemented single-realm lifecycle calculus does not depend on any of them as premises. Actor session bindings do not create another provider realm. They select model and thinking for one queued activation while the actor keeps one owner and mailbox.
 
 Introduce a layer only when its use case supplies the needed equivalence and policy semantics. Apply these rules to each candidate layer:
 

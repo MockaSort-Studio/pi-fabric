@@ -129,7 +129,7 @@ interface FabricPeerInfo {
 }
 type FabricParticipantKind = "root" | "agent" | "actor";
 type FabricParticipantScope = "local" | "lineage" | "project";
-type FabricParticipantCapability = "steer" | "followUp" | "stop" | "attach" | "fabric";
+type FabricParticipantCapability = "steer" | "followUp" | "stop" | "ask" | "actor-bindings" | "attach" | "fabric";
 interface FabricParticipantInfo {
   format: 1;
   id: string;
@@ -535,6 +535,8 @@ interface FabricActorValidityFacts {
   readonly current: Readonly<{ latestActivationSequence: number; mainRevision: number; taskRevision: number; idle: boolean; now: number }>;
 }
 type FabricActorValidityDecision = boolean | { valid: boolean; reason?: string };
+type FabricActorBindingScope = "session" | "project";
+interface FabricActorRunBinding { model?: string; thinking?: FabricThinking }
 type FabricActorValidWhile = (facts: Readonly<FabricActorValidityFacts>) => FabricActorValidityDecision;
 interface FabricActorRequestBase {
   name: string;
@@ -572,7 +574,10 @@ interface FabricActorInfo {
   coalesce: boolean;
   model?: string;
   thinking?: FabricThinking;
+  binding?: FabricActorRunBinding & { scope: "session"; sessionId: string; updatedAt?: number };
+  projectDefaults?: FabricActorRunBinding & { scope: "project" };
   tools?: string[];
+  timeoutMs?: number;
   extensions?: boolean;
   requirements?: Array<{ ref: string; optional?: boolean }>;
   capabilityDigest?: string;
@@ -629,8 +634,8 @@ interface FabricAgentsApi {
   stop(args: FabricAgentTargetArgs): Promise<FabricAgentResult | FabricActorInfo | FabricRemoteControlResult>;
   cleanup(args: FabricAgentTargetArgs & { deleteBranch?: boolean; delete_branch?: boolean }): Promise<{ cleaned: boolean }>;
   create(args: FabricActorRequest): Promise<FabricActorInfo>;
-  setModel(args: { id: string; model?: string }): Promise<FabricActorInfo>;
-  setThinking(args: { id: string; thinking?: FabricThinking }): Promise<FabricActorInfo>;
+  setModel(args: { id: string; model?: string; scope?: FabricActorBindingScope }): Promise<FabricActorInfo>;
+  setThinking(args: { id: string; thinking?: FabricThinking; scope?: FabricActorBindingScope }): Promise<FabricActorInfo>;
   setTools(args: { id: string; tools: string[]; scope?: "project" | "global" }): Promise<FabricActorInfo>;
   setEvents(args: { id: string; events: FabricActorHostEvent[] }): Promise<FabricActorInfo>;
   setDeliveryPolicy(args: {
@@ -644,8 +649,8 @@ interface FabricAgentsApi {
     instructions: string;
     scope?: "project" | "global";
   }): Promise<FabricActorInfo>;
-  ask(args: { id: string; message: string; data?: unknown }): Promise<FabricActorMessage>;
-  tell(args: { id: string; message: string; data?: unknown }): Promise<{ queued: true; messageId: string }>;
+  ask(args: { id: string; message: string; data?: unknown; model?: string; thinking?: FabricThinking }): Promise<FabricActorMessage>;
+  tell(args: { id: string; message: string; data?: unknown; model?: string; thinking?: FabricThinking }): Promise<{ queued: true; messageId: string }>;
   steer(args: { id: string; message: string; data?: unknown }): Promise<{ queued: true; messageId: string; routed?: "local" | "main" | "mesh"; acknowledged?: boolean }>;
   followUp(args: { id: string; message: string; data?: unknown }): Promise<{ queued: true; messageId: string; routed?: "local" | "main" | "mesh"; acknowledged?: boolean }>;
   setSteeringMode(args: { id: string; mode: "all" | "one-at-a-time" }): Promise<{ queued: true; messageId: string }>;

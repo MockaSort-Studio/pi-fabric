@@ -24,11 +24,18 @@ const plane = (
   meshRoot: string,
   id: string,
   storeOptions: MeshStoreOptions = {},
+  controlOptions: { pollMs?: number; acknowledgementTimeoutMs?: number } = {},
 ): FabricControlPlane => {
   const value = new FabricControlPlane(
     new MeshStore(meshRoot, 64 * 1024, 1_000, storeOptions),
     identity(id),
-    { enabled: true, hostId: id, pollMs: 20, acknowledgementTimeoutMs: 1_000 },
+    {
+      enabled: true,
+      hostId: id,
+      pollMs: 20,
+      acknowledgementTimeoutMs: 1_000,
+      ...controlOptions,
+    },
   );
   planes.push(value);
   return value;
@@ -76,10 +83,48 @@ describe("FabricControlPlane", () => {
         replyTo: "host:sender",
       }),
       expect.objectContaining({ id: "host:sender" }),
+      expect.any(AbortSignal),
     );
     expect(observe).not.toHaveBeenCalled();
   });
 
+  it("returns an authenticated result with the caller's actor binding", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-control-"));
+    roots.push(root);
+    const meshRoot = path.join(root, "mesh");
+    const sender = plane(meshRoot, "host:sender");
+    const receiver = plane(meshRoot, "host:receiver");
+    const response = { id: "message:1", text: "done" };
+    const receive = vi.fn((command: { binding?: unknown }) => ({
+      accepted: true,
+      messageId: "message:1",
+      result: response,
+    }));
+    sender.start(() => ({ accepted: false }));
+    receiver.start(receive);
+
+    await expect(
+      sender.requestResult(
+        "host:receiver",
+        "actor:target",
+        "ask",
+        {
+          message: "inspect",
+          binding: { model: "provider/session-b", thinking: "high" },
+        },
+      ),
+    ).resolves.toEqual(response);
+    expect(receive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetId: "actor:target",
+        operation: "ask",
+        binding: { model: "provider/session-b", thinking: "high" },
+        deadlineAt: expect.any(Number),
+      }),
+      expect.objectContaining({ id: "host:sender" }),
+      expect.any(AbortSignal),
+    );
+  });
   it("ignores an acknowledgement forged by a different mesh identity", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-control-"));
     roots.push(root);
@@ -354,6 +399,136 @@ describe("FabricControlPlane", () => {
       });
     }
     await new Promise((resolve) => setTimeout(resolve, 160));
+
+    expect(receive).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps control traffic responsive while an ask is running and cancels the owner", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-control-"));
+    roots.push(root);
+    const meshRoot = path.join(root, "mesh");
+    const sender = plane(meshRoot, "host:sender");
+    const receiver = plane(meshRoot, "host:receiver");
+    const controller = new AbortController();
+    let askStarted = false;
+    let askAborted = false;
+    receiver.start((command, _from, signal) => {
+      if (command.operation !== "ask") {
+        return { accepted: true, messageId: `accepted:${command.operation}` };
+      }
+      askStarted = true;
+      return new Promise((resolve) => {
+        signal.addEventListener("abort", () => {
+          askAborted = true;
+          resolve({ accepted: false, error: "actor request cancelled" });
+        }, { once: true });
+      });
+    });
+    sender.start(() => ({ accepted: false }));
+
+    const ask = sender.requestResult(
+      "host:receiver",
+      "actor:target",
+      "ask",
+      { message: "inspect" },
+      "host:receiver",
+      { timeoutMs: 2_000, signal: controller.signal },
+    );
+    await vi.waitFor(() => expect(askStarted).toBe(true));
+    await expect(
+      sender.request("host:receiver", "actor:target", "stop"),
+    ).resolves.toMatchObject({ acknowledged: true });
+
+    controller.abort();
+    await expect(ask).rejects.toThrow("Remote Fabric request cancelled");
+    await vi.waitFor(() => expect(askAborted).toBe(true));
+  });
+
+  it("publishes an immediately cancelled command before its cancellation", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-control-"));
+    roots.push(root);
+    const meshRoot = path.join(root, "mesh");
+    const sender = plane(meshRoot, "host:sender");
+    const receiver = plane(meshRoot, "host:receiver");
+    const publish = sender.mesh.publish.bind(sender.mesh);
+    vi.spyOn(sender.mesh, "publish").mockImplementation(async (input) => {
+      if (input.topic === "fabric.control.command" && input.kind === "ask") {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      }
+      return publish(input);
+    });
+    let ownerAborted = false;
+    receiver.start((command, _from, signal) => {
+      if (command.operation !== "ask") return { accepted: true };
+      return new Promise((resolve) => {
+        signal.addEventListener("abort", () => {
+          ownerAborted = true;
+          resolve({ accepted: false, error: "cancelled" });
+        }, { once: true });
+      });
+    });
+    sender.start(() => ({ accepted: false }));
+    const controller = new AbortController();
+
+    const request = sender.requestResult(
+      "host:receiver",
+      "actor:target",
+      "ask",
+      { message: "inspect" },
+      "host:receiver",
+      { timeoutMs: 1_000, signal: controller.signal },
+    );
+    controller.abort();
+
+    await expect(request).rejects.toThrow("Remote Fabric request cancelled");
+    await vi.waitFor(() => expect(ownerAborted).toBe(true));
+    const kinds = new MeshStore(meshRoot, 64 * 1024, 1_000)
+      .tail(0, 10)
+      .events.filter((event) => event.topic === "fabric.control.command")
+      .map((event) => event.kind);
+    expect(kinds.indexOf("ask")).toBeLessThan(kinds.indexOf("cancel"));
+  });
+
+  it("retains a completed ask outcome through its request deadline", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-control-"));
+    roots.push(root);
+    const meshRoot = path.join(root, "mesh");
+    const sender = plane(meshRoot, "host:sender");
+    const receiver = plane(
+      meshRoot,
+      "host:receiver",
+      {},
+      { pollMs: 20, acknowledgementTimeoutMs: 80 },
+    );
+    const receive = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      return { accepted: true, result: { id: "message:1", text: "done" } };
+    });
+    receiver.start(receive);
+    sender.start(() => ({ accepted: false }));
+
+    await expect(
+      sender.requestResult(
+        "host:receiver",
+        "actor:target",
+        "ask",
+        { message: "inspect" },
+        "host:receiver",
+        { timeoutMs: 500 },
+      ),
+    ).resolves.toMatchObject({ text: "done" });
+    const store = new MeshStore(meshRoot, 64 * 1024, 1_000);
+    const original = store.read({ topic: "fabric.control.command", limit: 10 })
+      .find((event) => event.kind === "ask");
+    expect(original).toBeDefined();
+    await store.publish({
+      topic: "fabric.control.command",
+      kind: original!.kind,
+      from: original!.from,
+      ...(original!.to ? { to: original!.to } : {}),
+      ...(original!.data === undefined ? {} : { data: original!.data }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 180));
 
     expect(receive).toHaveBeenCalledTimes(1);
   });

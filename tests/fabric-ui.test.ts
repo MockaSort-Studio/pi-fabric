@@ -191,6 +191,12 @@ const snapshot = (): FabricDashboardSnapshot => {
         triggerTurn: false,
         coalesce: true,
         model: "anthropic/claude-sonnet-4-6",
+        binding: {
+          scope: "session",
+          sessionId: "session-test",
+          model: "anthropic/claude-sonnet-4-6",
+        },
+        projectDefaults: { scope: "project" },
         queued: 0,
         messages: 2,
         createdAt: now - 120_000,
@@ -1149,7 +1155,7 @@ describe("Fabric dynamic UI", () => {
       openActorDetail(dashboard);
       const detail = dashboard.render(120);
       expect(detail.join("\n")).toContain("advisor");
-      expect(detail.join("\n")).toContain("m model");
+      expect(detail.join("\n")).toContain("m session model");
 
       // Open the picker.
       dashboard.handleInput("m");
@@ -1163,7 +1169,11 @@ describe("Fabric dynamic UI", () => {
       // Select the first real model (Inherit is index 0; one down lands on it).
       dashboard.handleInput("\x1b[B");
       dashboard.handleInput("\r");
-      expect(onActorModel).toHaveBeenCalledWith("actor-1", "anthropic/claude-sonnet-4-5");
+      expect(onActorModel).toHaveBeenCalledWith(
+        "actor-1",
+        "anthropic/claude-sonnet-4-5",
+        "session",
+      );
 
       // Selecting closes the picker and returns to the actor detail.
       const after = dashboard.render(120);
@@ -1178,6 +1188,11 @@ describe("Fabric dynamic UI", () => {
     const current = snapshot();
     current.actors[0]!.runner = "claude";
     current.actors[0]!.model = "claude/haiku";
+    current.actors[0]!.binding = {
+      scope: "session",
+      sessionId: "session-test",
+      model: "claude/haiku",
+    };
     const onActorModel = vi.fn();
     const dashboard = new FabricDashboard(
       { requestRender: vi.fn() } as unknown as TUI,
@@ -1200,7 +1215,7 @@ describe("Fabric dynamic UI", () => {
       expect(picker).toContain('Model for Claude actor "advisor"');
       expect(picker).toContain("Haiku (runtime)");
       dashboard.handleInput("\r");
-      expect(onActorModel).toHaveBeenCalledWith("actor-1", "claude/haiku");
+      expect(onActorModel).toHaveBeenCalledWith("actor-1", "claude/haiku", "session");
     } finally {
       dashboard.dispose();
     }
@@ -1218,9 +1233,92 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput("m");
       // Inherit is the default selection (index 0).
       dashboard.handleInput("\r");
-      expect(onActorModel).toHaveBeenCalledWith("actor-1", undefined);
+      expect(onActorModel).toHaveBeenCalledWith("actor-1", undefined, "session");
       const after = dashboard.render(120);
       expect(after.join("\n")).toContain("advisor");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("uses uppercase model and thinking controls for explicit project pins", () => {
+    const onActorModel = vi.fn();
+    const onActorThinking = vi.fn();
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn() } as unknown as TUI,
+      theme,
+      snapshot,
+      vi.fn(),
+      { modelSource: actorModelSource, onActorModel, onActorThinking },
+    );
+    try {
+      openActorDetail(dashboard);
+      dashboard.handleInput("M");
+      expect(dashboard.render(120).join("\n")).toContain(
+        'Project model default for actor "advisor"',
+      );
+      dashboard.handleInput("\x1b[B");
+      dashboard.handleInput("\r");
+      expect(onActorModel).toHaveBeenCalledWith(
+        "actor-1",
+        "anthropic/claude-sonnet-4-5",
+        "project",
+      );
+
+      dashboard.handleInput("E");
+      expect(dashboard.render(120).join("\n")).toContain(
+        'Project thinking default for actor "advisor"',
+      );
+      dashboard.handleInput("\x1b[B");
+      dashboard.handleInput("\r");
+      expect(onActorThinking).toHaveBeenCalledWith("actor-1", "off", "project");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+  it("keeps session bindings available while hiding owner-only passive actor controls", () => {
+    const current = snapshot();
+    current.actors[0]!.local = false;
+    const onActorModel = vi.fn();
+    const onActorThinking = vi.fn();
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn() } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+      {
+        modelSource: actorModelSource,
+        onActorModel,
+        onActorThinking,
+        onActorDeliveryPolicy: vi.fn(),
+        onActorEvents: vi.fn(),
+        onActorTools: vi.fn(),
+        onActorInstructions: vi.fn(),
+        onClearMessages: vi.fn(),
+      },
+    );
+    try {
+      openActorDetail(dashboard);
+      const detail = dashboard.render(120).join("\n");
+      expect(detail).toContain("m session model");
+      expect(detail).toContain("e session thinking");
+      expect(detail).not.toContain("pin model");
+      expect(detail).not.toContain("pin thinking");
+      expect(detail).not.toContain("delivery policy");
+      expect(detail).not.toContain("clear mailbox");
+
+      dashboard.handleInput("M");
+      expect(dashboard.render(120).join("\n")).not.toContain("Project model default");
+      dashboard.handleInput("y");
+      expect(dashboard.render(120).join("\n")).not.toContain("Mailbox only");
+
+      dashboard.handleInput("m");
+      expect(dashboard.render(120).join("\n")).toContain('Model for actor "advisor"');
+      dashboard.handleInput("\x1b");
+      dashboard.handleInput("e");
+      expect(dashboard.render(120).join("\n")).toContain('Thinking level for actor "advisor"');
+      expect(onActorModel).not.toHaveBeenCalled();
+      expect(onActorThinking).not.toHaveBeenCalled();
     } finally {
       dashboard.dispose();
     }
@@ -1248,7 +1346,11 @@ describe("Fabric dynamic UI", () => {
 
   it("offers a per-actor thinking picker from the actor detail view", () => {
     const tui = { requestRender: vi.fn() } as unknown as TUI;
-    const onActorThinking = vi.fn<(id: string, thinking: FabricThinking | undefined) => void>();
+    const onActorThinking = vi.fn<(
+      id: string,
+      thinking: FabricThinking | undefined,
+      scope: "session" | "project",
+    ) => void>();
     const dashboard = new FabricDashboard(tui, theme, snapshot, vi.fn(), {
       modelSource: actorModelSource,
       onActorThinking,
@@ -1257,7 +1359,7 @@ describe("Fabric dynamic UI", () => {
       openActorDetail(dashboard);
       const detail = dashboard.render(120);
       expect(detail.join("\n")).toContain("advisor");
-      expect(detail.join("\n")).toContain("e thinking");
+      expect(detail.join("\n")).toContain("e session thinking");
 
       // Open the thinking picker.
       dashboard.handleInput("e");
@@ -1274,7 +1376,7 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput("\x1b[B");
       dashboard.handleInput("\x1b[B");
       dashboard.handleInput("\r");
-      expect(onActorThinking).toHaveBeenCalledWith("actor-1", "medium");
+      expect(onActorThinking).toHaveBeenCalledWith("actor-1", "medium", "session");
 
       // Selecting closes the picker and returns to the actor detail.
       const after = dashboard.render(120);
@@ -1297,7 +1399,7 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput("e");
       // Inherit is the default selection (index 0) for an actor with no thinking set.
       dashboard.handleInput("\r");
-      expect(onActorThinking).toHaveBeenCalledWith("actor-1", undefined);
+      expect(onActorThinking).toHaveBeenCalledWith("actor-1", undefined, "session");
       const after = dashboard.render(120);
       expect(after.join("\n")).toContain("advisor");
     } finally {
@@ -1331,7 +1433,7 @@ describe("Fabric dynamic UI", () => {
     try {
       openActorDetail(dashboard);
       const detail = dashboard.render(120);
-      expect(detail.join("\n")).not.toContain("e thinking");
+      expect(detail.join("\n")).not.toContain("e session thinking");
       // Pressing e is a no-op: still in the actor detail.
       dashboard.handleInput("e");
       const after = dashboard.render(120);
@@ -1927,7 +2029,9 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput("j");
       dashboard.handleInput("l");
       const overview = dashboard.render(120).join("\n");
-      expect(overview).toContain("actor actions: m model · e thinking");
+      expect(overview).toContain(
+        "actor actions: m session model · M pin model · e session thinking · E pin thinking",
+      );
 
       dashboard.handleInput("m");
       expect(dashboard.render(120).join("\n")).toContain('Model for actor "advisor"');

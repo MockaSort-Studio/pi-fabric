@@ -163,14 +163,10 @@ export const createDashboardSnapshot = (
       ? state.participantInfos({ scope: "project" })
       : [];
   const participantById = new Map(participants.map((participant) => [participant.id, participant]));
-  const canonicalDirectoryActive = participants.length > 0;
   const actors = state.actors
     .list()
-    .filter(
-      (actor) =>
-        !canonicalDirectoryActive || participantById.get(actor.id)?.local === true,
-    )
     .map((actor) => {
+      const participant = participantById.get(actor.id);
       const worker = allAgents
         .filter((agent) => agent.actorId === actor.id)
         .sort((left, right) => {
@@ -186,6 +182,9 @@ export const createDashboardSnapshot = (
         ...actor,
         instructions: state.actors.instructions(actor.id),
         recentMessages: state.actors.messages(actor.id, 12),
+        ...(participant
+          ? { ownerHostId: participant.ownerHostId, local: participant.local }
+          : {}),
         ...(worker ? { worker } : {}),
       };
     });

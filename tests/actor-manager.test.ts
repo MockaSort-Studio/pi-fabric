@@ -88,7 +88,7 @@ describe("ActorManager", () => {
     }
   });
 
-  it("executes and mutates actors only while this host owns them", async () => {
+  it("owner-gates execution and project defaults while allowing session bindings", async () => {
     let owns = true;
     const { actors, mesh } = setup(false, () => owns);
     const actor = await actors.create({ name: "leased", instructions: "Observe." });
@@ -97,14 +97,146 @@ describe("ActorManager", () => {
     owns = false;
     expect(() => actors.tell(actor.id, "do not run")).toThrow("owned by another host");
     expect(actors.dispatchHostEvent("input", { text: "ignored" })).toBe(0);
-    await expect(actors.setModel(actor.id, "provider/model")).rejects.toThrow(
-      "owned by another host",
-    );
+    await expect(actors.setModel(actor.id, "provider/session-model")).resolves.toMatchObject({
+      model: "provider/session-model",
+      binding: { model: "provider/session-model", scope: "session" },
+      projectDefaults: { scope: "project" },
+    });
+    await expect(
+      actors.setModel(actor.id, "provider/project-model", "project"),
+    ).rejects.toThrow("owned by another host");
 
     owns = true;
     expect(actors.tell(actor.id, "run after takeover")).toMatchObject({ queued: true });
   });
 
+  it("isolates two live sessions over one shared actor definition", async () => {
+    const owner = setup(true);
+    const actor = await owner.actors.create({
+      name: "shared reviewer",
+      instructions: "Review from the caller's bound model.",
+      model: "provider/project-default",
+      thinking: "medium",
+    });
+    const peerIdentity: MeshIdentity = {
+      id: "session:peer",
+      name: "main",
+      kind: "main",
+      sessionId: "peer",
+    };
+    const peer = new ActorManager(
+      "peer",
+      peerIdentity,
+      owner.mesh,
+      owner.meshConfig,
+      owner.agents,
+      () => {},
+      {
+        actorRoot: path.join(owner.root, "actors"),
+        persistent: true,
+        canManageActor: () => false,
+      },
+    );
+    actorManagers.push(peer);
+    const registryPath = path.join(owner.root, "actors", "actors.json");
+    const registryBeforeBindings = fs.readFileSync(registryPath, "utf8");
+
+    await owner.actors.setModel(actor.id, "provider/session-a");
+    await owner.actors.setThinking(actor.id, "high");
+    await peer.setModel(actor.id, "provider/session-b");
+    await peer.setThinking(actor.id, "low");
+
+    expect(owner.actors.status(actor.id)).toMatchObject({
+      model: "provider/session-a",
+      thinking: "high",
+      binding: {
+        scope: "session",
+        sessionId: "test",
+        model: "provider/session-a",
+        thinking: "high",
+      },
+      projectDefaults: {
+        scope: "project",
+        model: "provider/project-default",
+        thinking: "medium",
+      },
+    });
+    expect(peer.status(actor.id)).toMatchObject({
+      model: "provider/session-b",
+      thinking: "low",
+      binding: {
+        scope: "session",
+        sessionId: "peer",
+        model: "provider/session-b",
+        thinking: "low",
+      },
+      projectDefaults: {
+        scope: "project",
+        model: "provider/project-default",
+        thinking: "medium",
+      },
+    });
+    expect(() => peer.tell(actor.id, "must route through the owner")).toThrow(
+      "owned by another host",
+    );
+
+    expect(fs.readFileSync(registryPath, "utf8")).toBe(registryBeforeBindings);
+    const bindingDirectory = path.join(owner.root, "actors", "bindings");
+    const bindingFiles = fs.readdirSync(bindingDirectory);
+    expect(bindingFiles).toHaveLength(2);
+    for (const file of bindingFiles) {
+      expect(fs.statSync(path.join(bindingDirectory, file)).mode & 0o777).toBe(0o600);
+    }
+    const registry = JSON.parse(
+      fs.readFileSync(registryPath, "utf8"),
+    ) as { actors: Array<{ id: string; model?: string; thinking?: string }> };
+    expect(registry.actors.find((record) => record.id === actor.id)).toMatchObject({
+      model: "provider/project-default",
+      thinking: "medium",
+    });
+  });
+
+  it("pins a queued activation before later session binding changes", async () => {
+    const { actors, agents } = setup();
+    const runSpy = vi.spyOn(agents, "run");
+    const actor = await actors.create({
+      name: "binding witness",
+      instructions: "Report the pinned model.",
+      model: "provider/project-default",
+      thinking: "medium",
+    });
+    await actors.setModel(actor.id, "provider/session-old");
+    await actors.setThinking(actor.id, "low");
+
+    const first = actors.ask(actor.id, "first");
+    await actors.setModel(actor.id, "provider/session-new");
+    await actors.setThinking(actor.id, "high");
+    await first;
+
+    expect(runSpy.mock.calls[0]?.[0]).toMatchObject({
+      model: "provider/session-old",
+      thinking: "low",
+    });
+    await actors.ask(
+      actor.id,
+      "one-off",
+      undefined,
+      undefined,
+      { overrides: { model: "provider/one-off", thinking: "xhigh" } },
+    );
+    expect(runSpy.mock.calls[1]?.[0]).toMatchObject({
+      model: "provider/one-off",
+      thinking: "xhigh",
+    });
+    expect(actors.status(actor.id)).toMatchObject({
+      model: "provider/session-new",
+      thinking: "high",
+      projectDefaults: {
+        model: "provider/project-default",
+        thinking: "medium",
+      },
+    });
+  });
   it("commits and records an exact capability view for every actor run", async () => {
     const release = vi.fn(async () => {});
     const acquire = vi.fn(async (
@@ -210,6 +342,31 @@ describe("ActorManager", () => {
     expect(release).toHaveBeenCalledTimes(2);
   });
 
+  it("returns a cancelled capability-blocked ask to idle", async () => {
+    const release = vi.fn(async () => {});
+    const acquire = vi.fn(async (): Promise<FabricCapabilityViewLease> => ({
+      satisfied: false,
+      missing: ["demo.echo"],
+      optionalMissing: [],
+      release,
+    }));
+    const { actors } = setup(false, undefined, acquire);
+    const actor = await actors.create({
+      name: "cancelled waiter",
+      instructions: "Wait for the exact capability.",
+      requires: ["demo.echo"],
+    });
+    const controller = new AbortController();
+    const pending = actors.ask(actor.id, "Inspect later", undefined, controller.signal);
+    await waitFor(() => actors.status(actor.id).missingCapabilities?.[0] === "demo.echo");
+
+    controller.abort();
+
+    await expect(pending).rejects.toThrow("request cancelled");
+    expect(actors.status(actor.id)).toMatchObject({ status: "idle", queued: 0 });
+    expect(actors.status(actor.id).missingCapabilities).toBeUndefined();
+  });
+
   it("does not claim a durable actor from another root", async () => {
     const state = setup(true);
     const actor = await state.actors.create({
@@ -294,7 +451,7 @@ describe("ActorManager", () => {
     expect(successor.tell(actor.id, "run after orphan takeover")).toMatchObject({
       queued: true,
     });
-    await successor.setModel(actor.id, "provider/after-takeover");
+    await successor.setModel(actor.id, "provider/after-takeover", "project");
     expect(successor.status(actor.id).model).toBe("provider/after-takeover");
 
     // create/import must not be bricked by the orphaned row
@@ -589,10 +746,22 @@ describe("ActorManager", () => {
     };
     const remote = registry.actors.find((actor) => actor.id !== local.id);
     expect(remote).toBeDefined();
+    const remoteId = String(remote!.id);
     remote!.instructions = "Updated by remote owner.";
+    remote!.messages = [
+      {
+        id: "message:remote",
+        actorId: remoteId,
+        actorName: "remote actor",
+        direction: "out",
+        source: "direct",
+        createdAt: Date.now(),
+        text: "Fresh remote reply.",
+      },
+    ];
     fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2));
 
-    await state.actors.setModel(local.id, "provider/local");
+    await state.actors.setModel(local.id, "provider/local", "project");
 
     const saved = JSON.parse(fs.readFileSync(registryPath, "utf8")) as {
       actors: Array<Record<string, unknown>>;
@@ -600,6 +769,10 @@ describe("ActorManager", () => {
     expect(saved.actors.find((actor) => actor.id !== local.id)?.instructions).toBe(
       "Updated by remote owner.",
     );
+    expect(state.actors.instructions(remoteId)).toBe("Updated by remote owner.");
+    expect(state.actors.messages(remoteId)).toMatchObject([
+      { id: "message:remote", text: "Fresh remote reply." },
+    ]);
   });
 
   it("discovers the first actor created after an empty standby starts", async () => {
@@ -676,6 +849,24 @@ describe("ActorManager", () => {
       { direction: "in", source: "direct" },
       { direction: "out", source: "direct", text: "fake worker complete" },
     ]);
+  });
+
+  it("bounds combined actor text and structured data to one mesh envelope", async () => {
+    const { actors, mesh } = setup();
+    const actor = await actors.create({
+      name: "large reporter",
+      instructions: "Return LARGE_RESULT when asked.",
+      responseMode: "text",
+    });
+
+    const reply = await actors.ask(actor.id, "LARGE_RESULT");
+
+    expect(Buffer.byteLength(JSON.stringify(reply), "utf8")).toBeLessThanOrEqual(
+      mesh.maxEventBytes - 4_096,
+    );
+    expect(reply.text).toContain("[actor message truncated]");
+    expect(reply.data).toMatchObject({ fabricTruncated: true, originalBytes: 100_013 });
+    expect(mesh.read({ topic: "fabric.actor.output", limit: 10 })).toHaveLength(1);
   });
 
   it("delivers schema-validated actor directives through the fixed policy", async () => {
@@ -1056,7 +1247,7 @@ describe("ActorManager", () => {
     );
   });
 
-  it("persists a setModel change across actor manager restarts", async () => {
+  it("persists a session model binding without changing the project default", async () => {
     const setupState = setup(true);
     const actor = await setupState.actors.create({
       name: "reviewer",
@@ -1064,6 +1255,10 @@ describe("ActorManager", () => {
       responseMode: "text",
     });
     await setupState.actors.setModel(actor.id, "anthropic/claude-sonnet-4-5");
+    const registry = JSON.parse(
+      fs.readFileSync(path.join(setupState.root, "actors", "actors.json"), "utf8"),
+    ) as { actors: Array<{ id: string; model?: string }> };
+    expect(registry.actors.find((record) => record.id === actor.id)?.model).toBeUndefined();
     await setupState.actors.close();
     actorManagers.splice(actorManagers.indexOf(setupState.actors), 1);
 
@@ -1159,7 +1354,7 @@ describe("ActorManager", () => {
     await expect(actors.setThinking("nope", "high")).rejects.toThrow("Unknown Fabric actor");
   });
 
-  it("persists a setThinking change across actor manager restarts", async () => {
+  it("persists a session thinking binding across actor manager restarts", async () => {
     const setupState = setup(true);
     const actor = await setupState.actors.create({
       name: "reviewer",

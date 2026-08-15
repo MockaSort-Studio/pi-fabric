@@ -689,7 +689,8 @@ export class FabricRuntimeState {
       false,
     );
     this.#agentsProvider = agentsProvider;
-    this.#control.start((command, from) => agentsProvider.acceptControl(command, from));
+    this.#control.start((command, from, signal) =>
+      agentsProvider.acceptControl(command, from, signal));
     try {
       await this.#participants.start();
     } catch (error) {

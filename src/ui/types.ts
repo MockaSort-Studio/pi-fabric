@@ -58,6 +58,8 @@ export interface FabricUiActor extends FabricActorInfo {
   /** The actor's default instruction (persona text); shown and edited in the dashboard. */
   instructions: string;
   recentMessages: FabricActorMessage[];
+  ownerHostId?: string;
+  local?: boolean;
   worker?: FabricUiAgent;
 }
 

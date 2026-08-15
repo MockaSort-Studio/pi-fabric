@@ -9,6 +9,8 @@ export type FabricParticipantCapability =
   | "steer"
   | "followUp"
   | "stop"
+  | "ask"
+  | "actor-bindings"
   | "attach"
   | "fabric";
 

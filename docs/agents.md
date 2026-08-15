@@ -70,11 +70,11 @@ await agents.tell({ id: supervisor.id, message: "Own the remaining migration." }
 return { audit, supervisor };
 ```
 
-The first durable request starts one hidden resident host for the current root when needed. Fabric transfers actor ownership to this host or starts the one-shot run there. It publishes the owner in the standard participant directory. Fabric routes `steer`, `followUp`, `tell`, and `stop` through the acknowledged mesh control plane. The process uses the captured agent, mesh, timeout, recursion, and cost-ceiling configuration. It also uses the runner, model, and tool capabilities that the originating call explicitly authorized. Users do not configure a daemon profile or workflow policy.
+The first durable request starts one hidden resident host for the current root when needed. Fabric transfers actor ownership to this host or starts the one-shot run there. It publishes the owner in the standard participant directory. Fabric routes `steer`, `followUp`, `tell`, blocking `ask`, and `stop` through the acknowledged mesh control plane. The process uses the captured agent, mesh, timeout, recursion, and cost-ceiling configuration. It also uses the runner, model, and tool capabilities that the originating call explicitly authorized. Users do not configure a daemon profile or workflow policy.
 
 The original TUI can shut down after the transfer. Durable agents continue until they reach a terminal status. A resumed copy of the same root can call `agents.status`, `agents.wait`, `agents.log`, and `agents.cleanup`. The mesh stores terminal notifications and active actor deliveries until Main resumes. Durable actors keep their registry definition, mailbox history, runner session, mesh subscriptions, and replay cursor. Main relays session-bound host events while it is available. The cross-process relay can omit oversized raw image blocks. The relay keeps their redacted media descriptors.
 
-Actor operations that are private to the owner stay private. Call `agents.members({ kinds: ["actor"] })` or `agents.status()` to get bounded status for a durable actor. Use `tell`, `steer`, `followUp`, or `stop` across the mesh. Blocking `agents.ask`, mailbox or history reads, logs, definition export, and live setting changes need a session-owned actor. The hidden host exits after a short idle grace when it owns no live durable actor or running durable agent. Durable residency requires a trusted project and `mesh.enabled`. Schema enforce mode does not support it.
+A durable actor has one resident execution owner. Other trusted sessions in the project can call `ask`, `tell`, `steer`, `followUp`, and `stop`; Fabric routes each call to that owner. Direct messages carry the caller's model and thinking binding. Actor status, mailbox history, logs, and definition export are shared project views. Only the owner can clear the mailbox or change tools, events, instructions, delivery policy, and project defaults. Fabric sends durable actor removal to the resident owner. The hidden host exits after a short idle grace when it owns no live durable actor or running durable agent. Durable residency requires a trusted project and `mesh.enabled`. Schema enforce mode does not support it.
 
 ### Trajectory-preserving handoff
 
@@ -295,6 +295,51 @@ return agents.create({
 
 Claude actors can keep context and use mapped Claude Code tools to inspect or edit. They consume host events and mesh messages that Fabric delivers, then return text or directives. They cannot directly call `fabric_exec`, `agents.*`, or `mesh.*`. Use a Pi actor when the actor must coordinate recursively through Fabric.
 
+### Shared actors and session bindings
+
+`mesh.actorScope: "project"` stores one actor definition for the project. Fabric keeps three pieces of state:
+
+- **Project definition.** The shared registry stores the actor ID, instructions, runner, subscriptions, tools, and project model and thinking defaults.
+- **Session binding.** A mode-`0600` file stores only `model` and `thinking` for one Pi session ID. It survives a resume of that session and does not rewrite `actors.json`.
+- **Runtime.** One owner keeps the stable actor identity, serial mailbox, and runner session. Other sessions send direct work to that owner.
+
+Fabric resolves each activation in this order:
+
+```text
+call override → session binding → project default → Fabric or runner default
+```
+
+```ts
+// Change only this Pi session.
+await agents.setModel({ id: actor.id, model: "anthropic/claude-sonnet-4-6" });
+await agents.setThinking({ id: actor.id, thinking: "low" });
+
+// Override one call without changing the session binding.
+await agents.ask({
+  id: actor.id,
+  message: "Review the release diff.",
+  model: "anthropic/claude-opus-4-6",
+  thinking: "high",
+});
+
+// Change the shared project default. This requires the runtime owner.
+await agents.setModel({
+  id: actor.id,
+  model: "anthropic/claude-sonnet-4-6",
+  scope: "project",
+});
+```
+
+Omit `model` or `thinking` to clear the selected layer. A cleared session binding inherits the project default. A cleared project default inherits Fabric or runner configuration.
+
+`FabricActorInfo.model` and `thinking` show the effective values for the caller. `binding` shows the session layer. `projectDefaults` shows the shared definition layer.
+
+Fabric stores the resolved binding on each mailbox item before it queues. Later binding changes cannot alter a running activation or an older queued item. `ask` waits for the owner to return a result. `tell`, `steer`, and `followUp` enqueue through the same owner. Pi and Claude actors both support these direct-call bindings.
+
+The mailbox, history, and runner session remain shared. Host events and mesh subscriptions run once on the owner and use the owner's session binding. Opening another Pi session does not start another copy of the actor.
+
+Use `mesh.actorScope: "session"` when each Pi session needs its own definitions, mailbox, history, and runtime. Under project scope, every trusted session can read shared actor definitions, mailbox history, and logs. Do not store secrets in them.
+
 Use `requires` to declare exact `provider.action` capabilities for every activation. An entry can use `{ ref, optional: true }`. Before launch, the host resolves and keeps one view identified by its descriptor hash. Pi children separately resolve the portable semantic digest. They run with a closed-world Fabric surface, so a live provider addition cannot expand the actor during a run. When required refs are missing, mailbox work stays queued. `missingCapabilities` reports which capabilities are available, separately from `idle | queued | running | stopped`. Changes to providers or catalogs retry dispatch. Actor status and run metadata include the normalized requirements and last committed digest. Claude actors receive the host availability commitment. They have no child Fabric surface to limit. If the private Claude session was removed, the next activation reports a clear failure and preserves actor context. Recreate the actor when you need a new Claude session.
 
 This primitive supports emergent supervisors and advisors without another extension. Actors can observe all session-bound public Pi extension events. These include resource discovery; session start, info, switch, fork, compaction, tree, and shutdown events; input and before-agent-start; agent, turn, and message lifecycle; context and provider request or response lifecycle; tool call, result, and execution lifecycle; model and thinking changes; and user bash. Event names match the Pi extension names, such as `input`, `before_agent_start`, `tool_call`, and `tool_result`. Fabric also adds the synthetic `tool_error`. The only exception is `project_trust`, which fires before Fabric can read the trusted project actor registry. Actors only observe intercepting Pi hooks. An actor runs asynchronously and cannot block a tool, rewrite context, change provider headers, or return another extension hook result. Shutdown observations and observations during immediate session replacement are best effort because the owner runtime is shutting down.
@@ -355,7 +400,7 @@ return agents.create({
 });
 ```
 
-Pi actors keep model context in a Pi session file that Fabric owns. Claude actors store the session ID from the official CLI. On each activation, they apply the tools, permissions, schema, and system-prompt flags again. After the first message, they use `--resume <id>`. Fabric also stores a runner-neutral stream transcript. The actor's `thinking` level controls reasoning effort and accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. It defaults to `agents.thinking`, whose default is `medium`. Set this value when you create the actor, or change it with `e` in the dashboard. The persisted `tools` array is an allowlist. Set it during creation, replace it with `agents.setTools({ id, tools })`, or press `o` in the dashboard. An empty array disables optional tools. Pi actors keep the host-required `fabric_exec` capability for mailbox and mesh coordination unless you create them with `extensions: false`. This setting removes Fabric from a Pi actor. Its activation then runs without `fabric_exec`, `agents.*`, or `mesh.*`. The host continues to manage its mailbox and delivery. The setting alone does not make the actor read-only because `tools` still defaults to `agents.defaultTools`. Also set `tools: ["read", "grep", "find", "ls"]` for a read-only persistent actor. Use `tools: []` for an actor without tools.
+Pi actors keep model context in a Fabric-owned Pi session file. Claude actors keep the session ID returned by the official CLI and use `--resume <id>` after the first message. Every activation reapplies tools, permissions, schema, and system-prompt flags. Fabric also stores a runner-neutral stream transcript. `thinking` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` and uses the precedence described above. In the dashboard, `e` changes this session and `E` changes the project default. The persisted `tools` array is an allowlist. Set it during creation, replace it with `agents.setTools({ id, tools })`, or press `o` in the dashboard. An empty array disables optional tools. Pi actors keep the host-required `fabric_exec` capability for mailbox and mesh coordination unless you create them with `extensions: false`. This setting removes Fabric from a Pi actor. Its activation then runs without `fabric_exec`, `agents.*`, or `mesh.*`. The host continues to manage its mailbox and delivery. The setting alone does not make the actor read-only because `tools` still defaults to `agents.defaultTools`. Also set `tools: ["read", "grep", "find", "ls"]` for a read-only persistent actor. Use `tools: []` for an actor without tools.
 
 ### Response modes and delivery
 
@@ -376,7 +421,7 @@ await agents.setDeliveryPolicy({
 });
 ```
 
-Set `scope: "global"` to update a reusable template. In the dashboard, press `y` on an actor or template. Then select mailbox, passive or active steer, passive or active follow-up, or next-turn delivery. Call `agents.setModel({ id, model? })` or `agents.setThinking({ id, thinking? })` to move a persistent actor to new settings for its next activation. This keeps its Pi or Claude runner session. Omit the override to restore configured defaults. Use `agents.ask()` for a blocking exchange and `agents.tell()` for fire-and-forget mail. Read history with `agents.messages()`, and clean up with `agents.remove()`.
+Set `scope: "global"` to update a reusable template. In the dashboard, press `y` on an actor or template, then choose mailbox, steer, follow-up, or next-turn delivery. Lowercase `m` and `e` change this Pi session. Uppercase `M` and `E` change the owner-gated project defaults. These changes keep the Pi or Claude runner session. Use `agents.ask()` for a blocking exchange and `agents.tell()` for fire-and-forget mail. Both accept one-activation `model` and `thinking` overrides. Read shared history with `agents.messages()`. `agents.remove()` is local-owner-only for session actors and routes durable actors to the resident owner.
 
 ## Paged agent logs
 

@@ -22,6 +22,7 @@ import { readJsonlPage } from "../log-tail.js";
 import { pruneActorRunArchives } from "../storage/retention.js";
 import { FABRIC_ACTOR_HOST_EVENTS } from "./types.js";
 import type {
+  FabricActorBindingScope,
   FabricActorDelivery,
   FabricActorActivation,
   FabricActorDeliveryRequest,
@@ -32,12 +33,21 @@ import type {
   FabricActorMessage,
   FabricActorRequest,
   FabricActorResponseMode,
+  FabricActorRunBinding,
   FabricActorStatus,
   FabricActorValidWhileSource,
 } from "./types.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
 import { resolveActorDeliveryPolicy } from "./delivery-policy.js";
 import { evaluateActorValidWhile, validateActorValidWhile } from "./predicate.js";
+import { ActorBindingStore } from "./binding-store.js";
+
+export interface ActorMessageBindingOptions {
+  /** Per-call values layered over this session binding. */
+  overrides?: FabricActorRunBinding;
+  /** Already-resolved caller view received through the owner control plane. */
+  binding?: FabricActorRunBinding;
+}
 
 interface ActorQueueItem {
   id: string;
@@ -47,6 +57,7 @@ interface ActorQueueItem {
   createdAt: number;
   coalesceKey?: string;
   activation: FabricActorActivation;
+  binding: FabricActorRunBinding;
   resolve?: (message: FabricActorMessage) => void;
   reject?: (error: Error) => void;
 }
@@ -110,6 +121,66 @@ const ORPHAN_ADOPTION_RETRY_MS = 30_000;
 const ACTOR_REGISTRY_STALE_LOCK_MS = 30_000;
 const RETENTION_SWEEP_INTERVAL_MS = 15 * 60 * 1_000;
 const RESIDENT_HOST_EVENT_TOPIC = "fabric.actor.host-event";
+const ACTOR_MESSAGE_ENVELOPE_BYTES = 4_096;
+const ACTOR_TRUNCATION_SUFFIX = "\n[actor message truncated]";
+
+const serializedBytes = (value: unknown): number =>
+  Buffer.byteLength(JSON.stringify(value), "utf8");
+
+const truncateUtf8 = (value: string, maxBytes: number, suffix = ""): string => {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  const boundedSuffix = Buffer.byteLength(suffix, "utf8") <= maxBytes
+    ? suffix
+    : truncateUtf8(suffix, maxBytes);
+  const available = Math.max(0, maxBytes - Buffer.byteLength(boundedSuffix, "utf8"));
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(value.slice(0, middle), "utf8") <= available) low = middle;
+    else high = middle - 1;
+  }
+  return `${value.slice(0, low)}${boundedSuffix}`;
+};
+
+const boundedActorText = (value: string, maxBytes: number): string => {
+  if (serializedBytes({ text: value }) <= maxBytes) return value;
+  const suffix = serializedBytes({ text: ACTOR_TRUNCATION_SUFFIX }) <= maxBytes
+    ? ACTOR_TRUNCATION_SUFFIX
+    : "";
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (serializedBytes({ text: `${value.slice(0, middle)}${suffix}` }) <= maxBytes) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return `${value.slice(0, low)}${suffix}`;
+};
+
+const boundedActorData = (data: unknown, maxBytes: number): unknown => {
+  let serialized: string;
+  try {
+    const encoded = JSON.stringify(data);
+    serialized = typeof encoded === "string" ? encoded : String(data);
+    if (serializedBytes({ data }) <= maxBytes) return data;
+  } catch {
+    serialized = String(data);
+  }
+  const originalBytes = Buffer.byteLength(serialized, "utf8");
+  let preview = truncateUtf8(serialized, Math.max(0, maxBytes - 256));
+  let bounded = { fabricTruncated: true, originalBytes, preview };
+  while (preview && serializedBytes({ data: bounded }) > maxBytes) {
+    preview = truncateUtf8(preview, Math.floor(Buffer.byteLength(preview, "utf8") / 2));
+    bounded = { fabricTruncated: true, originalBytes, preview };
+  }
+  return serializedBytes({ data: bounded }) <= maxBytes
+    ? bounded
+    : { fabricTruncated: true, originalBytes };
+};
 
 const normalizeCapabilityRequirements = (
   requirements: readonly (string | FabricCapabilityRequirement)[] = [],
@@ -192,6 +263,7 @@ export class ActorManager {
   readonly #actorRoot: string;
   readonly #registryPath: string;
   readonly #persistent: boolean;
+  readonly #bindings: ActorBindingStore;
   readonly #mainAgent: FabricMainAgentTarget | undefined;
   readonly #canManageActor: ((id: string) => boolean | undefined) | undefined;
   readonly #lineageAlive: ((rootId: string) => boolean) | undefined;
@@ -269,6 +341,10 @@ export class ActorManager {
     this.#rootId = options.rootId ?? identity.id;
     this.#meshCursorPath = options.meshCursorPath;
     this.#registryPath = path.join(this.#actorRoot, "actors.json");
+    this.#bindings = new ActorBindingStore(
+      sessionId,
+      this.#persistent && meshConfig.enabled ? this.#actorRoot : undefined,
+    );
     if (this.#persistent && meshConfig.enabled) this.#loadActors();
     this.#registryFingerprint = this.#currentRegistryFingerprint();
     for (const actor of this.#actors.values()) {
@@ -437,39 +513,71 @@ export class ActorManager {
     return this.#canManage(actor.id);
   }
 
+  /** Resolve the immutable model/thinking view that a direct activation will pin. */
+  resolveBinding(
+    id: string,
+    overrides: FabricActorRunBinding = {},
+  ): FabricActorRunBinding {
+    this.#syncActorsFromRegistry();
+    return this.#runBinding(this.#requireActor(id), overrides);
+  }
+
   /**
-   * Change an existing actor's model. Takes effect on the actor's next queued
-   * message: #runRequest reads actor.model at run start, so an in-flight run
-   * keeps the model it was launched with. Pass undefined (or an empty/whitespace
-   * string) to clear the override so the actor uses its runner's Fabric default:
-   * agents.model/host inheritance for Pi, or agents.claude.model/the
-   * Claude Code runtime default for Claude.
+   * Change an actor model binding. Session scope is the default and is writable
+   * by passive project sessions because it never mutates the shared definition.
+   * Project scope changes the shared default and therefore remains owner-gated.
    */
-  async setModel(id: string, model: string | undefined): Promise<FabricActorInfo> {
-    const actor = this.#requireOwnedActor(id);
+  async setModel(
+    id: string,
+    model: string | undefined,
+    scope: FabricActorBindingScope = "session",
+  ): Promise<FabricActorInfo> {
+    if (scope !== "session" && scope !== "project") {
+      throw new Error(`Invalid Fabric actor binding scope: ${String(scope)}`);
+    }
     const next = typeof model === "string" ? model.trim() : "";
+    if (scope === "session") {
+      this.#syncActorsFromRegistry();
+      const actor = this.#requireActor(id);
+      await this.#bindings.setModel(actor.id, next || undefined);
+      await this.#publishBindingView(actor);
+      return this.#publicInfo(actor);
+    }
+    const actor = this.#requireOwnedActor(id);
     if (next) actor.model = next;
     else delete actor.model;
     actor.updatedAt = Date.now();
     await this.#publishPresence(actor);
     return this.#publicInfo(actor);
   }
+
   /**
-   * Change an existing actor's thinking (reasoning effort) level. Takes effect
-   * on the actor's next queued message: #runRequest reads actor.thinking at run
-   * start, so an in-flight run keeps the level it was launched with. Pass
-   * undefined (or an empty/whitespace string) to clear the override so the
-   * actor inherits the Fabric default (agents.thinking, default "medium").
+   * Change an actor reasoning-effort binding. Like model bindings, session
+   * scope overlays the shared project default and project scope is owner-gated.
    */
-  async setThinking(id: string, thinking: string | undefined): Promise<FabricActorInfo> {
-    const actor = this.#requireOwnedActor(id);
-    const trimmed = typeof thinking === "string" ? thinking.trim() : "";
-    if (trimmed) {
-      if (!isFabricThinking(trimmed)) throw new Error(`Invalid Fabric actor thinking level: ${trimmed}`);
-      actor.thinking = trimmed;
-    } else {
-      delete actor.thinking;
+  async setThinking(
+    id: string,
+    thinking: string | undefined,
+    scope: FabricActorBindingScope = "session",
+  ): Promise<FabricActorInfo> {
+    if (scope !== "session" && scope !== "project") {
+      throw new Error(`Invalid Fabric actor binding scope: ${String(scope)}`);
     }
+    const trimmed = typeof thinking === "string" ? thinking.trim() : "";
+    if (trimmed && !isFabricThinking(trimmed)) {
+      throw new Error(`Invalid Fabric actor thinking level: ${trimmed}`);
+    }
+    const next = isFabricThinking(trimmed) ? trimmed : undefined;
+    if (scope === "session") {
+      this.#syncActorsFromRegistry();
+      const actor = this.#requireActor(id);
+      await this.#bindings.setThinking(actor.id, next);
+      await this.#publishBindingView(actor);
+      return this.#publicInfo(actor);
+    }
+    const actor = this.#requireOwnedActor(id);
+    if (next) actor.thinking = next;
+    else delete actor.thinking;
     actor.updatedAt = Date.now();
     await this.#publishPresence(actor);
     return this.#publicInfo(actor);
@@ -558,13 +666,20 @@ export class ActorManager {
     return this.#publicInfo(actor);
   }
 
-  tell(id: string, message: string, data?: unknown): { queued: true; messageId: string } {
-    this.#validateDirectMessage(message, data);
+  tell(
+    id: string,
+    message: string,
+    data?: unknown,
+    bindingOptions: ActorMessageBindingOptions = {},
+  ): { queued: true; messageId: string } {
+    this.validateDirectMessage(message, data);
     const actor = this.#requireOwnedActiveActor(id);
-    const item = this.#enqueue(actor, "direct", {
-      message,
-      ...(data === undefined ? {} : { data }),
-    });
+    const item = this.#enqueue(
+      actor,
+      "direct",
+      { message, ...(data === undefined ? {} : { data }) },
+      bindingOptions,
+    );
     void this.mesh
       .publish({
         topic: "fabric.actor.input",
@@ -608,8 +723,9 @@ export class ActorManager {
     message: string,
     data?: unknown,
     signal?: AbortSignal,
+    bindingOptions: ActorMessageBindingOptions = {},
   ): Promise<FabricActorMessage> {
-    this.#validateDirectMessage(message, data);
+    this.validateDirectMessage(message, data);
     const actor = this.#requireOwnedActiveActor(id);
     if (signal?.aborted) {
       return Promise.reject(
@@ -621,12 +737,18 @@ export class ActorManager {
         actor,
         "direct",
         { message, ...(data === undefined ? {} : { data }) },
-        { resolve, reject },
+        { ...bindingOptions, resolve, reject },
       );
       const onAbort = () => {
         const index = actor.queue.findIndex((queued) => queued.id === item.id);
         if (index >= 0) {
           actor.queue.splice(index, 1);
+          if (actor.queue.length === 0 && actor.status === "queued") {
+            actor.status = "idle";
+            delete actor.missingCapabilities;
+          }
+          actor.updatedAt = Date.now();
+          void this.#publishPresence(actor).catch(() => undefined);
           reject(new Error(`Fabric actor ${actor.name} (${actor.id}) request cancelled`));
           return;
         }
@@ -657,6 +779,7 @@ export class ActorManager {
   }
 
   messages(id: string, limit = 50): FabricActorMessage[] {
+    this.#syncActorsFromRegistry();
     const actor = this.#requireActor(id);
     const bounded = Math.max(1, Math.min(Math.floor(limit), MESSAGE_HISTORY_LIMIT));
     return actor.messages.slice(-bounded).map((message) => structuredClone(message));
@@ -669,6 +792,7 @@ export class ActorManager {
    * shared mesh state.
    */
   instructions(id: string): string {
+    this.#syncActorsFromRegistry();
     return this.#requireActor(id).instructions;
   }
 
@@ -679,6 +803,7 @@ export class ActorManager {
    * can save a project actor to the global registry with a clean slate.
    */
   definition(id: string): FabricActorRequest {
+    this.#syncActorsFromRegistry();
     const actor = this.#requireActor(id);
     return {
       name: actor.name,
@@ -708,6 +833,7 @@ export class ActorManager {
     id: string,
     opts: { type?: "session" | "run" | "all"; lines?: number; runId?: string; before?: number } = {},
   ): FabricActorLog {
+    this.#syncActorsFromRegistry();
     const actor = this.#requireActor(id);
     const type = opts.type ?? "session";
     const lines = Math.max(1, Math.min(opts.lines ?? 200, 5000));
@@ -1017,7 +1143,8 @@ export class ActorManager {
     await this.stop(id);
     await actor.drain?.catch(() => undefined);
     const retainedRunId = actor.lastRunId;
-    this.#actors.delete(id);
+    await this.#bindings.delete(actor.id);
+    this.#actors.delete(actor.id);
     this.#emitChange();
     fs.rmSync(path.dirname(actor.sessionFile), { recursive: true, force: true });
     await this.#saveActors(new Set([actor.id]));
@@ -1070,7 +1197,7 @@ export class ActorManager {
     actor: ManagedActor,
     source: string,
     payload: unknown,
-    options: {
+    options: ActorMessageBindingOptions & {
       resolve?: (message: FabricActorMessage) => void;
       reject?: (error: Error) => void;
       coalesceKey?: string;
@@ -1087,6 +1214,12 @@ export class ActorManager {
     if (actor.status === "stopped") {
       throw new Error(`Fabric actor ${actor.name} (${actor.id}) is stopped`);
     }
+    if (options.binding !== undefined && options.overrides !== undefined) {
+      throw new Error("Actor activation cannot carry both overrides and a resolved binding");
+    }
+    const binding = options.binding !== undefined
+      ? this.#validatedRunBinding(options.binding)
+      : this.#runBinding(actor, options.overrides);
     const createdAt = Date.now();
     const sequence = ++actor.latestActivationSequence;
     if (options.coalesceKey) {
@@ -1100,6 +1233,7 @@ export class ActorManager {
         }
         existing.createdAt = createdAt;
         existing.activation = this.#activation(existing.id, source, payload, sequence, createdAt);
+        existing.binding = binding;
         this.#ensureDrain(actor);
         return existing;
       }
@@ -1119,6 +1253,7 @@ export class ActorManager {
         : {}),
       createdAt,
       activation: this.#activation(itemId, source, payload, sequence, createdAt),
+      binding,
       ...(options.resolve ? { resolve: options.resolve } : {}),
       ...(options.reject ? { reject: options.reject } : {}),
       ...(options.coalesceKey ? { coalesceKey: options.coalesceKey } : {}),
@@ -1378,8 +1513,8 @@ export class ActorManager {
       ...(item.images && item.images.length > 0 ? { images: item.images } : {}),
       ...(actor.responseMode === "directive" ? { schema: directiveSchema } : {}),
       ...(actor.runnerSessionId ? { runnerSessionId: actor.runnerSessionId } : {}),
-      ...(actor.model ? { model: actor.model } : {}),
-      ...(actor.thinking ? { thinking: actor.thinking } : {}),
+      ...(item.binding.model ? { model: item.binding.model } : {}),
+      ...(item.binding.thinking ? { thinking: item.binding.thinking } : {}),
       ...(actor.tools ? { tools: actor.tools } : {}),
       ...(actor.transport ? { transport: actor.transport } : {}),
       ...(actor.timeoutMs ? { timeoutMs: actor.timeoutMs } : {}),
@@ -1703,25 +1838,48 @@ export class ActorManager {
   }
 
   #recordMessage(actor: ManagedActor, message: FabricActorMessage): void {
-    const bounded = structuredClone(message);
-    const maxTextChars = Math.min(this.meshConfig.eventContextChars, this.meshConfig.maxEventBytes);
-    if (bounded.text && bounded.text.length > maxTextChars) {
-      bounded.text = `${bounded.text.slice(0, maxTextChars)}\n[actor message truncated]`;
+    let bounded = structuredClone(message);
+    const maxPayloadBytes = Math.max(1, this.mesh.maxEventBytes - ACTOR_MESSAGE_ENVELOPE_BYTES);
+    const fixed = structuredClone(bounded);
+    delete fixed.text;
+    delete fixed.data;
+    const contentBytes = Math.max(1, maxPayloadBytes - serializedBytes(fixed) - 128);
+    const hasText = Boolean(bounded.text);
+    const hasData = bounded.data !== undefined;
+    const textBytes = hasText && hasData ? Math.floor(contentBytes / 2) : contentBytes;
+    const dataBytes = hasText && hasData ? contentBytes - textBytes : contentBytes;
+    if (bounded.text) {
+      const contextBounded = bounded.text.length > this.meshConfig.eventContextChars
+        ? `${bounded.text.slice(0, this.meshConfig.eventContextChars)}${ACTOR_TRUNCATION_SUFFIX}`
+        : bounded.text;
+      bounded.text = boundedActorText(contextBounded, textBytes);
     }
     if (bounded.data !== undefined) {
-      try {
-        const serialized = JSON.stringify(bounded.data);
-        if (Buffer.byteLength(serialized, "utf8") > this.meshConfig.maxEventBytes) {
-          bounded.data = {
-            fabricTruncated: true,
-            originalBytes: Buffer.byteLength(serialized, "utf8"),
-            preview: serialized.slice(0, Math.max(1, maxTextChars - 200)),
-          };
-        }
-      } catch {
-        bounded.data = { fabricTruncated: true, preview: String(bounded.data) };
+      bounded.data = boundedActorData(bounded.data, dataBytes);
+    }
+    if (serializedBytes(bounded) > maxPayloadBytes) {
+      delete bounded.data;
+      if (bounded.text) {
+        bounded.text = boundedActorText(bounded.text, contentBytes);
       }
     }
+    if (serializedBytes(bounded) > maxPayloadBytes) {
+      bounded = {
+        id: bounded.id,
+        actorId: bounded.actorId,
+        actorName: bounded.actorName,
+        direction: bounded.direction,
+        source: boundedActorText(bounded.source, 1_024),
+        createdAt: bounded.createdAt,
+        ...(bounded.action ? { action: bounded.action } : {}),
+        ...(bounded.runId ? { runId: bounded.runId } : {}),
+        error: "Actor message content exceeded the mesh event limit",
+      };
+    }
+    for (const key of Object.keys(message)) {
+      delete (message as unknown as Record<string, unknown>)[key];
+    }
+    Object.assign(message, bounded);
     actor.messages.push(bounded);
     if (actor.messages.length > MESSAGE_HISTORY_LIMIT) {
       actor.messages.splice(0, actor.messages.length - MESSAGE_HISTORY_LIMIT);
@@ -1732,6 +1890,18 @@ export class ActorManager {
     if (!this.#canManage(actor.id)) return;
     this.#emitChange();
     await this.#saveActors();
+    await this.mesh
+      .put({
+        key: this.#presenceKey(actor.id),
+        value: this.#publicInfo(actor),
+        identity: this.identity,
+      })
+      .catch(() => undefined);
+  }
+
+  async #publishBindingView(actor: ManagedActor): Promise<void> {
+    this.#emitChange();
+    if (!this.#canManage(actor.id)) return;
     await this.mesh
       .put({
         key: this.#presenceKey(actor.id),
@@ -1884,6 +2054,10 @@ export class ActorManager {
         if (typeof record.rootId === "string") this.#persistedRoots.set(record.id, record.rootId);
       }
     });
+    // The locked merge can preserve a remote owner write that raced this host.
+    // Force one reload so passive views reflect the exact records just written.
+    this.#registryFingerprint = undefined;
+    this.#syncActorsFromRegistry();
   }
 
   #currentRegistryFingerprint(): string | undefined {
@@ -1912,19 +2086,21 @@ export class ActorManager {
       }
       return;
     }
-    const known = new Set(this.#actors.keys());
-    this.#loadActors(true);
-    const persisted = new Set(this.#registryRecords().map((record) => record.id));
-    for (const actor of this.#actors.values()) {
-      if (!known.has(actor.id)) {
-        this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
+    const owned = new Set<string>();
+    for (const [id, actor] of this.#actors) {
+      if (this.#ownershipDecision(id)) {
+        owned.add(id);
         continue;
       }
-      if (!persisted.has(actor.id) && !this.#canManageCached(actor.id)) {
-        this.#actors.delete(actor.id);
-        this.#ownership.delete(actor.id);
-        this.#locallyCreated.delete(actor.id);
-        this.#ceded.delete(actor.id);
+      actor.abortController?.abort();
+      this.#actors.delete(id);
+      this.#ownership.delete(id);
+      this.#locallyCreated.delete(id);
+    }
+    this.#loadActors(true);
+    for (const actor of this.#actors.values()) {
+      if (!owned.has(actor.id)) {
+        this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
       }
     }
   }
@@ -2056,7 +2232,34 @@ export class ActorManager {
     if (added > 0) this.#emitChange();
   }
 
+  #validatedRunBinding(binding: FabricActorRunBinding): FabricActorRunBinding {
+    const model = typeof binding.model === "string" ? binding.model.trim() : "";
+    if (binding.thinking !== undefined && !isFabricThinking(binding.thinking)) {
+      throw new Error(`Invalid Fabric actor thinking level: ${String(binding.thinking)}`);
+    }
+    return {
+      ...(model ? { model } : {}),
+      ...(isFabricThinking(binding.thinking) ? { thinking: binding.thinking } : {}),
+    };
+  }
+
+  #runBinding(
+    actor: ManagedActor,
+    overrides: FabricActorRunBinding = {},
+  ): FabricActorRunBinding {
+    const session = this.#bindings.get(actor.id);
+    const call = this.#validatedRunBinding(overrides);
+    const model = call.model ?? session?.model ?? actor.model;
+    const thinking = call.thinking ?? session?.thinking ?? actor.thinking;
+    return {
+      ...(model ? { model } : {}),
+      ...(thinking ? { thinking } : {}),
+    };
+  }
+
   #publicInfo(actor: ManagedActor): FabricActorInfo {
+    const session = this.#bindings.get(actor.id);
+    const effective = this.#runBinding(actor);
     return {
       id: actor.id,
       name: actor.name,
@@ -2070,9 +2273,22 @@ export class ActorManager {
       triggerTurn: actor.triggerTurn,
       coalesce: actor.coalesce,
       residency: actor.residency,
-      ...(actor.model ? { model: actor.model } : {}),
-      ...(actor.thinking ? { thinking: actor.thinking } : {}),
+      ...(effective.model ? { model: effective.model } : {}),
+      ...(effective.thinking ? { thinking: effective.thinking } : {}),
+      binding: {
+        scope: "session",
+        sessionId: this.sessionId,
+        ...(session?.model ? { model: session.model } : {}),
+        ...(session?.thinking ? { thinking: session.thinking } : {}),
+        ...(session ? { updatedAt: session.updatedAt } : {}),
+      },
+      projectDefaults: {
+        scope: "project",
+        ...(actor.model ? { model: actor.model } : {}),
+        ...(actor.thinking ? { thinking: actor.thinking } : {}),
+      },
       ...(actor.tools ? { tools: [...actor.tools] } : {}),
+      timeoutMs: actor.timeoutMs ?? this.agents.config.timeoutMs,
       ...(typeof actor.extensions === "boolean" ? { extensions: actor.extensions } : {}),
       requirements: actor.requirements.map((requirement) => ({ ...requirement })),
       ...(actor.capabilityDigest ? { capabilityDigest: actor.capabilityDigest } : {}),
@@ -2091,11 +2307,14 @@ export class ActorManager {
     };
   }
 
-  #validateDirectMessage(message: string, data: unknown): void {
+  validateDirectMessage(message: string, data: unknown): void {
     if (!message.trim()) throw new Error("Actor message must not be empty");
     const serialized = JSON.stringify({ message, ...(data === undefined ? {} : { data }) });
-    if (Buffer.byteLength(serialized, "utf8") > this.meshConfig.maxEventBytes) {
-      throw new Error(`Actor message exceeds ${this.meshConfig.maxEventBytes} bytes`);
+    const maxPayloadBytes = Math.max(1, this.mesh.maxEventBytes - ACTOR_MESSAGE_ENVELOPE_BYTES);
+    if (Buffer.byteLength(serialized, "utf8") > maxPayloadBytes) {
+      throw new Error(
+        `Actor message exceeds ${maxPayloadBytes} bytes after reserving the Fabric envelope`,
+      );
     }
   }
 

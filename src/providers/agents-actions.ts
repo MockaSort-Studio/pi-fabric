@@ -56,6 +56,23 @@ const residencySchema = {
   description: "session stops with the current Pi host; durable transfers execution to Fabric's hidden resident host.",
 };
 
+const actorBindingScopeSchema = {
+  type: "string",
+  enum: ["session", "project"],
+  description: "session (default) changes only this Pi session; project pins the shared actor default and requires ownership.",
+};
+
+const actorInvocationProperties = {
+  id: { type: "string" },
+  message: { type: "string" },
+  data: {},
+  model: {
+    ...runProperties.model,
+    description: "Optional model pinned only for this actor activation.",
+  },
+  thinking: runProperties.thinking,
+};
+
 const spawnSchema = {
   ...runSchema,
   properties: { ...runProperties, residency: residencySchema },
@@ -356,10 +373,10 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   },
   {
     name: "ask",
-    description: "Send a message to a persistent actor and wait for its next response",
+    description: "Send a message to a persistent actor through its live owner and wait for its next response. Optional model/thinking values apply only to this activation.",
     inputSchema: {
       type: "object",
-      properties: { id: { type: "string" }, message: { type: "string" }, data: {} },
+      properties: actorInvocationProperties,
       required: ["id", "message"],
       additionalProperties: false,
     },
@@ -367,10 +384,10 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   },
   {
     name: "tell",
-    description: "Queue a message for a persistent actor without waiting",
+    description: "Queue a message through a persistent actor's live owner without waiting. Optional model/thinking values apply only to this activation.",
     inputSchema: {
       type: "object",
-      properties: { id: { type: "string" }, message: { type: "string" }, data: {} },
+      properties: actorInvocationProperties,
       required: ["id", "message"],
       additionalProperties: false,
     },
@@ -479,10 +496,14 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   {
     name: "setModel",
     description:
-      "Change or clear a persistent actor's model override for its next activation without discarding its session trajectory",
+      "Change or clear a persistent actor model binding. Session scope is the default; project scope explicitly pins the shared definition default.",
     inputSchema: {
       type: "object",
-      properties: { id: { type: "string" }, model: { type: "string" } },
+      properties: {
+        id: { type: "string" },
+        model: { type: "string" },
+        scope: actorBindingScopeSchema,
+      },
       required: ["id"],
       additionalProperties: false,
     },
@@ -491,10 +512,14 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   {
     name: "setThinking",
     description:
-      "Change or clear a persistent actor's reasoning effort for its next activation",
+      "Change or clear a persistent actor reasoning-effort binding. Session scope is the default; project scope explicitly pins the shared definition default.",
     inputSchema: {
       type: "object",
-      properties: { id: { type: "string" }, thinking: runProperties.thinking },
+      properties: {
+        id: { type: "string" },
+        thinking: runProperties.thinking,
+        scope: actorBindingScopeSchema,
+      },
       required: ["id"],
       additionalProperties: false,
     },
