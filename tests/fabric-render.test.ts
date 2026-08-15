@@ -16,6 +16,7 @@ import {
   captureFabricCoreToolPreviews,
   captureFabricWritePreviews,
   compactProgressPreview,
+  expandHint,
   fabricWriteBindings,
   inheritComponentBackground,
   inheritEnclosingBackground,
@@ -46,6 +47,11 @@ const plainTheme = {
 } as unknown as Theme;
 
 describe("fabric nested rendering", () => {
+  it("renders the whole expand hint dim", () => {
+    expect(expandHint(theme)).toMatch(/^\x1b\[dim\].+ to expand\x1b\[0m$/);
+    expect(expandHint(theme)).not.toContain("\x1b[muted]");
+  });
+
   it("removes nested backgrounds while preserving foreground styling", () => {
     const styled = [
       "\x1b[38;2;9;8;7;48;2;1;2;3mtruecolor",

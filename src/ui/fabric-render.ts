@@ -248,7 +248,7 @@ export function expandHint(theme: Theme): string {
     keys = [];
   }
   const keyText = keys.length > 0 ? keys.join("/") : "ctrl-o";
-  return theme.fg("dim", keyText) + theme.fg("muted", " to expand");
+  return theme.fg("dim", `${keyText} to expand`);
 }
 
 const truncateOneLine = (value: string, max: number): string => {
