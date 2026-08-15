@@ -35,7 +35,15 @@ const transports = new Set([
   "localterm",
   "herdr",
 ]);
-const capabilities = new Set(["steer", "followUp", "stop", "attach", "fabric"]);
+const capabilities = new Set([
+  "steer",
+  "followUp",
+  "stop",
+  "ask",
+  "actor-bindings",
+  "attach",
+  "fabric",
+]);
 
 const participantFromEntry = (entry: MeshStateEntry): FabricParticipantRecord | undefined => {
   if (!isObject(entry.value) || entry.value.format !== 1) return undefined;

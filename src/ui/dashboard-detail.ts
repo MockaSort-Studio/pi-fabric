@@ -687,9 +687,15 @@ export class DashboardDetailRenderer {
       field("ID", actor.id);
       field("Runner", actor.runner);
       field("Residency", actor.residency ?? "session");
-      field("Model override", actor.model ?? "inherit");
+      field("Execution owner", actor.ownerHostId);
+      field("Runtime", actor.local === false ? "remote shared owner" : "local owner");
+      field("Session model", actor.binding?.model ?? "inherit project");
+      field("Project model", actor.projectDefaults?.model ?? "inherit Fabric");
+      field("Effective model", actor.model ?? "Fabric default");
       field("Active worker model", actor.worker?.model);
-      field("Thinking override", actor.thinking ?? "inherit");
+      field("Session thinking", actor.binding?.thinking ?? "inherit project");
+      field("Project thinking", actor.projectDefaults?.thinking ?? "inherit Fabric");
+      field("Effective reasoning", actor.thinking ?? "Fabric default");
       field("Active worker thinking", actor.worker?.thinking);
       field("Delivery", `${actor.delivery} · ${actor.responseMode}`);
       field("Trigger turn", actor.triggerTurn ? "yes" : "no");

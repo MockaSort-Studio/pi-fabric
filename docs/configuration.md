@@ -380,14 +380,26 @@ See the [interface reference](interface.md).
 
 Mesh data lives at `<project>/.pi/fabric/mesh` by default. Set `mesh.root` to a relative or absolute path to relocate durable topics, shared state, and actor sessions. Add `.pi/fabric/mesh/` to the project's ignore file unless you version the coordination log on purpose. Set `mesh.enabled` to `false` to disable both mesh actions and ambient actor restoration.
 
-`mesh.actorScope` controls where persistent actor definitions, mailboxes, and child sessions are stored and restored from:
+`mesh.actorScope` controls where Fabric stores and restores actor definitions, mailboxes, histories, and child sessions:
 
-- `"project"` (default) keeps a shared actor registry at `.pi/fabric/mesh/actors/`, so actors survive `/new`. The participant directory chooses each live execution owner. Other sessions keep passive views and reload on takeover. When the creating host's lease is gone and no live owner is advertised, a later trusted session whose residency claim matches the actor (Main for `session` actors, the resident host for `durable` actors) adopts it through a fenced registry write that rebinds `rootId`. Candidacy requires the lineage root to be provably dead in the participant directory. Concurrent starters converge on one adopter through the registry lock and an `adoptedAt` fencing timestamp. A fresh adoption grants 30 seconds of grace before anyone can re-adopt the lineage, which heals adopters that die before advertising. Until some host's claim matches every shared row, create/import may still refuse with "registry is owned by another host". Durable orphans, for example, wait for a resident host. Registry writes are lock-serialized and merge only locally owned actor records.
-- `"session"` isolates actors per Pi session (under `.pi/fabric/mesh/actors/<sessionId>/`). Use this scope when you run concurrent Pi sessions in one project and want each to own its own actors.
+- `"project"` (default) uses `.pi/fabric/mesh/actors/`. Actors survive `/new` and appear in every trusted Pi session for the project.
+- `"session"` uses `.pi/fabric/mesh/actors/<sessionId>/`. Choose it when each Pi session needs an independent actor set or private history.
 
-`mesh.eventContextChars` bounds the sanitized JSON context attached to each host-event activation. Fabric extracts images before it applies this bound. Redacted descriptors stand in for the images in actor mailboxes and the registry, and the actor runner receives the images out of band automatically. The configured character bound never truncates their base64.
+In project scope, one host owns each actor runtime. Only that host drains host events and mesh subscriptions. Other sessions can read the shared definition, mailbox, and logs; set their own model and thinking binding; and route `ask`, `tell`, `steer`, `followUp`, and `stop` through the owner. They do not start another actor runtime.
 
-With project scope, each actor has one lifecycle owner, and shared registry updates stay ownership-aware and lock-serialized. Mesh topics, shared state, and the participant directory are always project-scoped. Every Fabric runtime publishes one short-lived host lease along with canonical records for the roots, agents, and actors it owns. `agents.members()` and `mesh.members()` read that directory. `agents.main()` and `agents.peers()` are root projections. When a host lease expires, all of its participant records disappear from normal discovery together. `mesh.actorPollMs` sets the fallback interval for actor events and owner-addressed control commands when filesystem notifications are unavailable.
+If the owner lease and lineage root both disappear, a matching trusted host can adopt the actor. Main adopts session-resident actors. The resident host adopts durable actors. Adoption stores a new `rootId` and an `adoptedAt` fence under the registry lock. Concurrent starters converge on one owner. The 30-second fence gives that owner time to publish its participant record. Until every registry row has a matching owner, create or import can fail with `registry is owned by another host`.
+
+Registry writes take a stale-safe lock and merge only actors owned by the writer. A local save preserves newer records from another owner.
+
+`agents.setModel` and `agents.setThinking` change the current Pi session by default. In project scope, their binding files are separate from `actors.json`. Pass `scope: "project"` to change the shared default; only the owner can do so. Values passed to `ask` or `tell` affect one activation. Fabric resolves values in this order:
+
+```text
+call override → session binding → project default → Fabric default
+```
+
+`mesh.eventContextChars` bounds the sanitized JSON context attached to each host-event activation. Fabric extracts images first. It stores redacted image descriptors in the mailbox and registry, then sends the raw images to the actor out of band. The character limit never truncates image base64 because base64 is not part of that JSON context.
+
+Mesh topics, shared state, and the participant directory remain project-scoped. Every runtime publishes one short-lived host lease and records for the roots, agents, and actors it owns. `agents.members()` and `mesh.members()` read those records. `agents.main()` and `agents.peers()` project roots. When a lease expires, its records leave normal discovery together. `mesh.actorPollMs` controls fallback polling for actor events and owner-addressed commands when filesystem notifications are unavailable.
 
 ## Compaction
 

@@ -13,7 +13,11 @@ import {
 import type { FabricActivityRun } from "../activity/types.js";
 import type { MeshEvent } from "../mesh/store.js";
 import type { FabricAgentMessageDelivery } from "../main-agent.js";
-import type { FabricActorDelivery, FabricActorHostEvent } from "../actors/types.js";
+import type {
+  FabricActorBindingScope,
+  FabricActorDelivery,
+  FabricActorHostEvent,
+} from "../actors/types.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
 import {
   entitiesForOverview,
@@ -183,10 +187,18 @@ export class FabricDashboard implements Component, Focusable {
   private readonly loadNewerTranscript: ((target: FabricTranscriptTarget) => boolean) | undefined;
   private readonly loadLatestTranscript: ((target: FabricTranscriptTarget) => boolean) | undefined;
   private readonly onActorModel:
-    | ((actorId: string, model: string | undefined) => void)
+    | ((
+        actorId: string,
+        model: string | undefined,
+        scope: FabricActorBindingScope,
+      ) => void)
     | undefined;
   private readonly onActorThinking:
-    | ((actorId: string, thinking: FabricThinking | undefined) => void)
+    | ((
+        actorId: string,
+        thinking: FabricThinking | undefined,
+        scope: FabricActorBindingScope,
+      ) => void)
     | undefined;
   private readonly onActorEvents:
     | ((actorId: string, events: FabricActorHostEvent[]) => void)
@@ -242,8 +254,16 @@ export class FabricDashboard implements Component, Focusable {
       loadOlderTranscript?: (target: FabricTranscriptTarget) => boolean;
       loadNewerTranscript?: (target: FabricTranscriptTarget) => boolean;
       loadLatestTranscript?: (target: FabricTranscriptTarget) => boolean;
-      onActorModel?: (actorId: string, model: string | undefined) => void;
-      onActorThinking?: (actorId: string, thinking: FabricThinking | undefined) => void;
+      onActorModel?: (
+        actorId: string,
+        model: string | undefined,
+        scope: FabricActorBindingScope,
+      ) => void;
+      onActorThinking?: (
+        actorId: string,
+        thinking: FabricThinking | undefined,
+        scope: FabricActorBindingScope,
+      ) => void;
       onActorEvents?: (actorId: string, events: FabricActorHostEvent[]) => void;
       onActorDeliveryPolicy?: (
         actorId: string,
@@ -431,29 +451,53 @@ export class FabricDashboard implements Component, Focusable {
         if (detail && this.canMessage(detail, delivery)) {
           this.openAgentMessageEditor(detail, delivery);
         }
-      } else if (data === "m") {
+      } else if (data === "m" || data === "M") {
         const detail = allEntities.find((entity) => entity.id === this.detailId);
-        if (detail && detail.kind === "actor" && detail.status !== "stopped") {
-          this.openModelPicker(detail);
+        if (
+          detail &&
+          detail.kind === "actor" &&
+          detail.status !== "stopped" &&
+          (data === "m" || detail.value.local !== false)
+        ) {
+          this.openModelPicker(detail, data === "M" ? "project" : "session");
         }
-      } else if (data === "e") {
+      } else if (data === "e" || data === "E") {
         const detail = allEntities.find((entity) => entity.id === this.detailId);
-        if (detail && detail.kind === "actor" && detail.status !== "stopped") {
-          this.openThinkingPicker(detail);
+        if (
+          detail &&
+          detail.kind === "actor" &&
+          detail.status !== "stopped" &&
+          (data === "e" || detail.value.local !== false)
+        ) {
+          this.openThinkingPicker(detail, data === "E" ? "project" : "session");
         }
       } else if (data === "y") {
         const detail = allEntities.find((entity) => entity.id === this.detailId);
-        if (detail && (detail.kind === "actor" || detail.kind === "globalActor")) {
+        if (
+          detail &&
+          (detail.kind === "globalActor" ||
+            (detail.kind === "actor" && detail.value.local !== false))
+        ) {
           this.openDeliveryPicker(detail);
         }
       } else if (data === "v") {
         const detail = allEntities.find((entity) => entity.id === this.detailId);
-        if (detail && detail.kind === "actor" && detail.status !== "stopped") {
+        if (
+          detail &&
+          detail.kind === "actor" &&
+          detail.status !== "stopped" &&
+          detail.value.local !== false
+        ) {
           this.openEventsPicker(detail);
         }
       } else if (data === "o") {
         const detail = allEntities.find((entity) => entity.id === this.detailId);
-        if (detail && detail.kind === "actor" && detail.status !== "stopped") {
+        if (
+          detail &&
+          detail.kind === "actor" &&
+          detail.status !== "stopped" &&
+          detail.value.local !== false
+        ) {
           this.openToolsPicker(detail);
         }
       } else if (data === "c") {
@@ -462,13 +506,18 @@ export class FabricDashboard implements Component, Focusable {
           detail &&
           detail.kind === "actor" &&
           detail.status !== "stopped" &&
+          detail.value.local !== false &&
           this.onClearMessages
         ) {
           this.onClearMessages(detail.value.id);
         }
       } else if (data === "i") {
         const detail = allEntities.find((entity) => entity.id === this.detailId);
-        if (detail && (detail.kind === "actor" || detail.kind === "globalActor")) {
+        if (
+          detail &&
+          (detail.kind === "globalActor" ||
+            (detail.kind === "actor" && detail.value.local !== false))
+        ) {
           this.openInstructionsEditor(detail);
         }
       } else if (data === "x") {
@@ -558,7 +607,19 @@ export class FabricDashboard implements Component, Focusable {
       this.tui.requestRender();
       return;
     } else if (this.overviewView === "topology" && data === "M") {
-      this.graphReducedMotion = !this.graphReducedMotion;
+      const selected = this.pane === "entities" ? entities[this.entityIndex] : undefined;
+      if (
+        selected?.kind === "actor" &&
+        selected.status !== "stopped" &&
+        selected.value.local !== false &&
+        this.modelSourceForActor(selected.value) &&
+        this.onActorModel
+      ) {
+        this.detailId = selected.id;
+        this.openModelPicker(selected, "project");
+      } else {
+        this.graphReducedMotion = !this.graphReducedMotion;
+      }
       this.tui.requestRender();
       return;
     } else if (
@@ -620,7 +681,7 @@ export class FabricDashboard implements Component, Focusable {
         this.entityIndex = Math.min(Math.max(0, entities.length - 1), this.entityIndex + 1);
       }
     } else if (
-      ["m", "e", "y", "v", "o", "i", "c", "s", "u", "x", "p", "d"].includes(data) &&
+      ["m", "M", "e", "E", "y", "v", "o", "i", "c", "s", "u", "x", "p", "d"].includes(data) &&
       this.pane === "entities"
     ) {
       const selected = entities[this.entityIndex];
@@ -640,33 +701,60 @@ export class FabricDashboard implements Component, Focusable {
           this.onExportActor
         ) {
           this.onExportActor(selected.value.id);
-        } else if (data === "m" && selected.kind === "actor" && selected.status !== "stopped") {
+        } else if (
+          (data === "m" || data === "M") &&
+          selected.kind === "actor" &&
+          selected.status !== "stopped" &&
+          (data === "m" || selected.value.local !== false)
+        ) {
           this.detailId = selected.id;
-          this.openModelPicker(selected);
-        } else if (data === "e" && selected.kind === "actor" && selected.status !== "stopped") {
+          this.openModelPicker(selected, data === "M" ? "project" : "session");
+        } else if (
+          (data === "e" || data === "E") &&
+          selected.kind === "actor" &&
+          selected.status !== "stopped" &&
+          (data === "e" || selected.value.local !== false)
+        ) {
           this.detailId = selected.id;
-          this.openThinkingPicker(selected);
+          this.openThinkingPicker(selected, data === "E" ? "project" : "session");
         } else if (
           data === "y" &&
           (selected.kind === "globalActor" ||
-            (selected.kind === "actor" && selected.status !== "stopped"))
+            (selected.kind === "actor" &&
+              selected.status !== "stopped" &&
+              selected.value.local !== false))
         ) {
           this.detailId = selected.id;
           this.openDeliveryPicker(selected);
-        } else if (data === "v" && selected.kind === "actor" && selected.status !== "stopped") {
+        } else if (
+          data === "v" &&
+          selected.kind === "actor" &&
+          selected.status !== "stopped" &&
+          selected.value.local !== false
+        ) {
           this.detailId = selected.id;
           this.openEventsPicker(selected);
-        } else if (data === "o" && selected.kind === "actor" && selected.status !== "stopped") {
+        } else if (
+          data === "o" &&
+          selected.kind === "actor" &&
+          selected.status !== "stopped" &&
+          selected.value.local !== false
+        ) {
           this.detailId = selected.id;
           this.openToolsPicker(selected);
         } else if (
           data === "c" &&
           selected.kind === "actor" &&
           selected.status !== "stopped" &&
+          selected.value.local !== false &&
           this.onClearMessages
         ) {
           this.onClearMessages(selected.value.id);
-        } else if (data === "i" && (selected.kind === "actor" || selected.kind === "globalActor")) {
+        } else if (
+          data === "i" &&
+          (selected.kind === "globalActor" ||
+            (selected.kind === "actor" && selected.value.local !== false))
+        ) {
           this.detailId = selected.id;
           this.openInstructionsEditor(selected);
         } else if (data === "p" && selected.kind === "globalActor" && this.onImportActor) {
@@ -995,8 +1083,8 @@ export class FabricDashboard implements Component, Focusable {
     const actorActions = [
       this.actorTranscript ? "space transcript peek" : undefined,
       this.onTargetMessage ? "s queue message" : undefined,
-      (this.modelSource || this.claudeModelSource) && this.onActorModel ? "m model" : undefined,
-      this.onActorThinking ? "e thinking" : undefined,
+      (this.modelSource || this.claudeModelSource) && this.onActorModel ? "m session model · M pin model" : undefined,
+      this.onActorThinking ? "e session thinking · E pin thinking" : undefined,
       this.onActorDeliveryPolicy ? "y delivery policy" : undefined,
       this.onActorEvents ? "v events" : undefined,
       this.onActorTools ? "o tools" : undefined,
@@ -1043,27 +1131,36 @@ export class FabricDashboard implements Component, Focusable {
     return actor.runner === "claude" ? this.claudeModelSource : this.modelSource;
   }
 
-  private openModelPicker(entity: Entity): void {
+  private openModelPicker(
+    entity: Entity,
+    scope: FabricActorBindingScope = "session",
+  ): void {
     if (entity.kind !== "actor" || !this.onActorModel) return;
     const actor = entity.value;
+    if (scope === "project" && actor.local === false) return;
     const source = this.modelSourceForActor(actor);
     if (!source) return;
+    const projectModel = actor.projectDefaults?.model ?? (actor.binding ? undefined : actor.model);
+    const currentValue = scope === "session" ? actor.binding?.model : projectModel;
+    const runtimeDefault = actor.runner === "claude"
+      ? "Fabric Claude model (or Claude Code runtime default)"
+      : "Fabric Pi model (or host default)";
     this.pickerActorName = actor.name;
     this.picker = new FabricModelSelector({
       theme: this.theme,
       source,
-      currentValue: actor.model ?? INHERIT_VALUE,
-      headerText:
-        actor.runner === "claude"
-          ? `Model for Claude actor "${actor.name}". Pick Inherit to use the Claude default.`
-          : `Model for actor "${actor.name}". Pick Inherit to use the Fabric Pi default.`,
-      inheritName:
-        actor.runner === "claude"
-          ? "Use the Fabric Claude model (or Claude Code runtime default)"
-          : "Use the Fabric Pi model (or host default)",
+      currentValue: currentValue ?? INHERIT_VALUE,
+      headerText: scope === "session"
+        ? actor.runner === "claude"
+          ? `Model for Claude actor "${actor.name}" · session binding. Inherit uses the project default.`
+          : `Model for actor "${actor.name}" · session binding. Inherit uses the project default.`
+        : `Project model default for actor "${actor.name}". This pin is shared by every session.`,
+      inheritName: scope === "session"
+        ? `Use project default (${projectModel ?? runtimeDefault})`
+        : `Clear project pin; use ${runtimeDefault}`,
       onSelect: (value) => {
         const model = value === INHERIT_VALUE ? undefined : value;
-        this.onActorModel!(actor.id, model);
+        this.onActorModel!(actor.id, model, scope);
         this.closeModelPicker();
       },
       onCancel: () => this.closeModelPicker(),
@@ -1072,18 +1169,33 @@ export class FabricDashboard implements Component, Focusable {
     this.mode = "modelPicker";
   }
 
-  private openThinkingPicker(entity: Entity): void {
+  private openThinkingPicker(
+    entity: Entity,
+    scope: FabricActorBindingScope = "session",
+  ): void {
     if (entity.kind !== "actor" || !this.onActorThinking) return;
     const actor = entity.value;
+    if (scope === "project" && actor.local === false) return;
+    const projectThinking =
+      actor.projectDefaults?.thinking ?? (actor.binding ? undefined : actor.thinking);
+    const currentValue = scope === "session" ? actor.binding?.thinking : projectThinking;
     this.pickerActorName = actor.name;
     this.picker = new FabricThinkingSelector({
       theme: this.theme,
-      currentValue: actor.thinking ?? INHERIT_VALUE,
-      headerText: `Thinking level for actor "${actor.name}". Pick Inherit to use the Fabric default.`,
-      inheritName: "Use the Fabric default thinking level",
+      currentValue: currentValue ?? INHERIT_VALUE,
+      headerText: scope === "session"
+        ? `Thinking level for actor "${actor.name}" · session binding. Inherit uses the project default.`
+        : `Project thinking default for actor "${actor.name}". This pin is shared by every session.`,
+      inheritName: scope === "session"
+        ? `Use project default (${projectThinking ?? "Fabric default"})`
+        : "Clear project pin; use the Fabric default thinking level",
       onSelect: (value) => {
         const thinking = value === INHERIT_VALUE ? undefined : value;
-        this.onActorThinking!(actor.id, isFabricThinking(thinking) ? thinking : undefined);
+        this.onActorThinking!(
+          actor.id,
+          isFabricThinking(thinking) ? thinking : undefined,
+          scope,
+        );
         this.closeModelPicker();
       },
       onCancel: () => this.closeModelPicker(),
@@ -1097,7 +1209,11 @@ export class FabricDashboard implements Component, Focusable {
     const target = entity.value;
     const callback =
       entity.kind === "actor" ? this.onActorDeliveryPolicy : this.onGlobalDeliveryPolicy;
-    if (!callback || (entity.kind === "actor" && entity.status === "stopped")) return;
+    if (
+      !callback ||
+      (entity.kind === "actor" &&
+        (entity.status === "stopped" || entity.value.local === false))
+    ) return;
     this.pickerActorName = target.name;
     this.picker = new FabricActorDeliverySelector({
       theme: this.theme,
@@ -1114,7 +1230,7 @@ export class FabricDashboard implements Component, Focusable {
   }
 
   private openEventsPicker(entity: Entity): void {
-    if (entity.kind !== "actor" || !this.onActorEvents) return;
+    if (entity.kind !== "actor" || entity.value.local === false || !this.onActorEvents) return;
     const actor = entity.value;
     this.pickerActorName = actor.name;
     this.picker = new FabricHostEventSelector({
@@ -1132,7 +1248,7 @@ export class FabricDashboard implements Component, Focusable {
   }
 
   private openToolsPicker(entity: Entity): void {
-    if (entity.kind !== "actor" || !this.onActorTools) return;
+    if (entity.kind !== "actor" || entity.value.local === false || !this.onActorTools) return;
     const actor = entity.value;
     this.pickerActorName = actor.name;
     this.picker = new FabricActorToolSelector({
@@ -1168,7 +1284,11 @@ export class FabricDashboard implements Component, Focusable {
     let name: string;
     let instructions: string;
     if (entity.kind === "actor") {
-      if (entity.status === "stopped" || !this.onActorInstructions) return;
+      if (
+        entity.status === "stopped" ||
+        entity.value.local === false ||
+        !this.onActorInstructions
+      ) return;
       kind = "actor";
       id = entity.value.id;
       name = entity.value.name;
@@ -1663,18 +1783,23 @@ export class FabricDashboard implements Component, Focusable {
       return `peer actions: ${actions.join(" · ")}`;
     }
     if (entity.kind === "actor" && entity.status !== "stopped") {
+      const owned = entity.value.local !== false;
       const actions = [
         this.actorTranscript
           ? `space ${isActiveStatus(entity.status) ? "live " : ""}transcript peek`
           : undefined,
         this.canMessage(entity, "steer") ? "s queue message" : undefined,
-        this.modelSourceForActor(entity.value) && this.onActorModel ? "m model" : undefined,
-        this.onActorThinking ? "e thinking" : undefined,
-        this.onActorDeliveryPolicy ? "y delivery policy" : undefined,
-        this.onActorEvents ? "v events" : undefined,
-        this.onActorTools ? "o tools" : undefined,
-        this.onActorInstructions ? "i instructions" : undefined,
-        this.onClearMessages ? "c clear mailbox" : undefined,
+        this.modelSourceForActor(entity.value) && this.onActorModel
+          ? `m session model${owned ? " · M pin model" : ""}`
+          : undefined,
+        this.onActorThinking
+          ? `e session thinking${owned ? " · E pin thinking" : ""}`
+          : undefined,
+        owned && this.onActorDeliveryPolicy ? "y delivery policy" : undefined,
+        owned && this.onActorEvents ? "v events" : undefined,
+        owned && this.onActorTools ? "o tools" : undefined,
+        owned && this.onActorInstructions ? "i instructions" : undefined,
+        owned && this.onClearMessages ? "c clear mailbox" : undefined,
         this.onExportActor ? "x export" : undefined,
         "enter details",
       ].filter((value): value is string => Boolean(value));
@@ -1897,15 +2022,20 @@ export class FabricDashboard implements Component, Focusable {
       return `${controls}Model and thinking are fixed at spawn; use a persistent actor for editable runtime settings.`;
     }
     if (entity.kind === "actor" && entity.status !== "stopped") {
+      const owned = entity.value.local !== false;
       const actions = [
         this.canMessage(entity, "steer") ? "s queue message" : undefined,
-        this.modelSourceForActor(entity.value) && this.onActorModel ? "m model" : undefined,
-        this.onActorThinking ? "e thinking" : undefined,
-        this.onActorDeliveryPolicy ? "y delivery policy" : undefined,
-        this.onActorEvents ? "v events" : undefined,
-        this.onActorTools ? "o tools" : undefined,
-        this.onClearMessages ? "c clear mailbox" : undefined,
-        this.onActorInstructions ? "i instructions" : undefined,
+        this.modelSourceForActor(entity.value) && this.onActorModel
+          ? `m session model${owned ? " · M pin model" : ""}`
+          : undefined,
+        this.onActorThinking
+          ? `e session thinking${owned ? " · E pin thinking" : ""}`
+          : undefined,
+        owned && this.onActorDeliveryPolicy ? "y delivery policy" : undefined,
+        owned && this.onActorEvents ? "v events" : undefined,
+        owned && this.onActorTools ? "o tools" : undefined,
+        owned && this.onClearMessages ? "c clear mailbox" : undefined,
+        owned && this.onActorInstructions ? "i instructions" : undefined,
         this.onExportActor ? "x export→global" : undefined,
       ].filter((value): value is string => Boolean(value));
       return actions.length > 0

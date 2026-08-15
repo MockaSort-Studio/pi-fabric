@@ -312,7 +312,15 @@ describe("dashboard snapshot agent ownership", () => {
       fakeState([], [], [actor], [], [participant]),
       [],
     );
-    expect(snapshot.actors).toEqual([]);
+    expect(snapshot.actors).toEqual([
+      expect.objectContaining({
+        id: actor.id,
+        instructions: "",
+        recentMessages: [],
+        ownerHostId: "session:peer",
+        local: false,
+      }),
+    ]);
     expect(snapshot.participants).toEqual([participant]);
   });
 

@@ -68,6 +68,27 @@ return agents.handoff({
     expect(result.errors).toEqual([]);
   });
 
+  it("accepts scoped actor bindings and per-activation overrides", () => {
+    const result = typeCheckFabricCode(
+      `
+const session = await agents.setModel({
+  id: "reviewer",
+  model: "anthropic/session-model",
+});
+await agents.setThinking({ id: session.id, thinking: "low", scope: "session" });
+const answer = await agents.ask({
+  id: session.id,
+  message: "Review once",
+  model: "anthropic/one-off",
+  thinking: "high",
+});
+await agents.setModel({ id: session.id, model: "anthropic/project", scope: "project" });
+return { answer, binding: session.binding, defaults: session.projectDefaults };
+`,
+      GUEST_TYPE_DECLARATIONS,
+    );
+    expect(result.errors).toEqual([]);
+  });
   it("accepts typed first-class Fabric provider calls", () => {
     const result = typeCheckFabricCode(
       `

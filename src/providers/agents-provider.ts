@@ -7,6 +7,7 @@ import type {
   FabricActorInfo,
   FabricActorMessage,
   FabricActorRequest,
+  FabricActorRunBinding,
 } from "../actors/types.js";
 import type {
   FabricAgentMessageResult,
@@ -53,6 +54,8 @@ import { AGENTS_ACTION_DESCRIPTORS } from "./agents-actions.js";
 import { actionArgNormalizer } from "./arg-normalization.js";
 import { isFabricThinking } from "../thinking.js";
 import { ResidencyClient } from "../residency/client.js";
+
+const REMOTE_ASK_ACK_GRACE_MS = 30_000;
 import {
   AgentTranscriptReader,
   recentTranscriptTools,
@@ -118,6 +121,13 @@ const stringArray = (value: unknown): string[] | undefined =>
   Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === "string")
     : undefined;
+
+const actorRunBinding = (args: Record<string, unknown>): FabricActorRunBinding => ({
+  ...(typeof args.model === "string" && args.model.trim()
+    ? { model: args.model.trim() }
+    : {}),
+  ...(isFabricThinking(args.thinking) ? { thinking: args.thinking } : {}),
+});
 
 const longerTimeoutOverride = (
   value: unknown,
@@ -879,18 +889,54 @@ export class AgentsProvider implements FabricProvider {
       }
       case "ask": {
         const actor = this.actorManager.status(String(args.id));
-        if (!this.actorManager.owns(actor.id)) {
-          throw new Error("agents.ask requires a session-owned actor; use agents.tell or agents.followUp for a durable actor");
-        }
+        this.actorManager.validateDirectMessage(String(args.message), args.data);
+        const overrides = actorRunBinding(args);
         context.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
-        return waitWithActorProgress(
-          this.manager,
-          this.#transcripts,
+        if (this.actorManager.owns(actor.id)) {
+          return waitWithActorProgress(
+            this.manager,
+            this.#transcripts,
+            actor.id,
+            actor.name,
+            this.actorManager.ask(
+              actor.id,
+              String(args.message),
+              args.data,
+              context.signal,
+              { overrides },
+            ),
+            context,
+            this.agentToolPreviewEnabled,
+          );
+        }
+        const participant = this.participants.get(actor.id);
+        if (!participant || participant.kind !== "actor") {
+          throw new Error(`Fabric actor ${actor.id} has no live execution owner`);
+        }
+        if (!participant.capabilities.includes("ask")) {
+          throw new Error(`Fabric actor owner ${participant.ownerHostId} does not support remote ask`);
+        }
+        if (!participant.capabilities.includes("actor-bindings")) {
+          throw new Error(`Fabric actor owner ${participant.ownerHostId} does not support session bindings`);
+        }
+        if (!this.control || participant.controlProtocol === "legacy") {
+          throw new Error(`Fabric actor owner ${participant.ownerHostId} has no result control channel`);
+        }
+        return this.control.requestResult<FabricActorMessage>(
+          participant.ownerHostId,
           actor.id,
-          actor.name,
-          this.actorManager.ask(actor.id, String(args.message), args.data, context.signal),
-          context,
-          this.agentToolPreviewEnabled,
+          "ask",
+          {
+            message: String(args.message),
+            ...(args.data === undefined ? {} : { data: args.data }),
+            binding: this.actorManager.resolveBinding(actor.id, overrides),
+          },
+          participant.ownerIdentityId,
+          {
+            timeoutMs: (actor.timeoutMs ?? this.manager.config.timeoutMs) +
+              REMOTE_ASK_ACK_GRACE_MS,
+            ...(context.signal ? { signal: context.signal } : {}),
+          },
         );
       }
       case "tell":
@@ -900,6 +946,7 @@ export class AgentsProvider implements FabricProvider {
           args.data,
           "followUp",
           context,
+          { binding: actorRunBinding(args) },
         );
       case "steer":
         return this.routeMessage(
@@ -934,15 +981,11 @@ export class AgentsProvider implements FabricProvider {
         return result;
       }
       case "actorStatus":
-        return this.#localActor(String(args.id));
+        return this.actorManager.status(String(args.id));
       case "actors":
-        return args.scope === "global"
-          ? this.globalActors.list()
-          : this.actorManager
-              .list()
-              .filter((actor) => this.#actorIsLocal(actor.id));
+        return args.scope === "global" ? this.globalActors.list() : this.actorManager.list();
       case "messages": {
-        const actor = this.#localActor(String(args.id));
+        const actor = this.actorManager.status(String(args.id));
         return this.actorManager.messages(
           actor.id,
           typeof args.limit === "number" ? args.limit : 50,
@@ -952,11 +995,13 @@ export class AgentsProvider implements FabricProvider {
         return this.actorManager.setModel(
           String(args.id),
           typeof args.model === "string" ? args.model : undefined,
+          args.scope === "project" ? "project" : "session",
         );
       case "setThinking":
         return this.actorManager.setThinking(
           String(args.id),
           typeof args.thinking === "string" ? args.thinking : undefined,
+          args.scope === "project" ? "project" : "session",
         );
       case "setTools": {
         const tools = stringArray(args.tools) ?? [];
@@ -1022,7 +1067,7 @@ export class AgentsProvider implements FabricProvider {
         return actor;
       }
       case "export": {
-        const actor = this.#localActor(String(args.id));
+        const actor = this.actorManager.status(String(args.id));
         const overwrite = args.overwrite === true;
         const def = this.actorManager.definition(actor.id);
         return this.globalActors.create(def, overwrite);
@@ -1034,7 +1079,7 @@ export class AgentsProvider implements FabricProvider {
         const runId = typeof args.runId === "string" ? args.runId : undefined;
         const before = typeof args.before === "number" ? args.before : undefined;
         try {
-          const actor = this.#localActor(id);
+          const actor = this.actorManager.status(id);
           return this.actorManager.readLog(actor.id, {
             type,
             lines,
@@ -1064,7 +1109,11 @@ export class AgentsProvider implements FabricProvider {
     data: unknown,
     kind: "steer" | "followUp",
     context?: FabricInvocationContext,
-    options: { from?: MeshIdentity; triggerTurn?: boolean } = {},
+    options: {
+      from?: MeshIdentity;
+      triggerTurn?: boolean;
+      binding?: FabricActorRunBinding;
+    } = {},
   ): Promise<FabricAgentMessageResult> {
     if (this.mainAgent.matches(id)) {
       if (this.mainAgent.local) {
@@ -1122,26 +1171,48 @@ export class AgentsProvider implements FabricProvider {
     }
 
     // Persistent actors consume both delivery modes through their serial mailbox.
+    let actorTarget: FabricActorInfo | undefined;
     try {
       const actor = this.actorManager.status(id);
+      actorTarget = actor;
+      this.actorManager.validateDirectMessage(message, data);
       const ownership = this.participants.get(actor.id);
       if (!ownership || ownership.local) {
         context?.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
-        const result = this.actorManager.tell(actor.id, message, data);
+        const result = this.actorManager.tell(actor.id, message, data, {
+          ...(options.binding ? { overrides: options.binding } : {}),
+        });
         return { queued: true, messageId: result.messageId, routed: "local" };
       }
     } catch (error) {
       if (!(error instanceof Error && /Unknown Fabric actor/.test(error.message))) throw error;
     }
 
-    const participant = this.participants.get(id);
+    const participantId = actorTarget?.id ?? id;
+    const participant = this.participants.get(participantId);
     if (!participant) throw new Error(`Unknown Fabric participant: ${id}`);
     if (!participant.capabilities.includes(kind)) {
-      throw new Error(`Fabric participant ${id} does not support ${kind}`);
+      throw new Error(`Fabric participant ${participant.id} does not support ${kind}`);
+    }
+    const sessionBinding = actorTarget?.binding;
+    const needsBinding = Boolean(
+      options.binding?.model ||
+        options.binding?.thinking ||
+        sessionBinding?.model ||
+        sessionBinding?.thinking,
+    );
+    if (needsBinding && !participant.capabilities.includes("actor-bindings")) {
+      throw new Error(`Fabric actor owner ${participant.ownerHostId} does not support session bindings`);
     }
     if (!this.control || participant.controlProtocol === "legacy") {
-      return this.actorManager.steerRemote(id, message, kind, data);
+      if (needsBinding) {
+        throw new Error(`Fabric actor owner ${participant.ownerHostId} has no binding control channel`);
+      }
+      return this.actorManager.steerRemote(participant.id, message, kind, data);
     }
+    const binding = actorTarget && participant.capabilities.includes("actor-bindings")
+      ? this.actorManager.resolveBinding(actorTarget.id, options.binding)
+      : undefined;
     return this.control.request(
       participant.ownerHostId,
       participant.id,
@@ -1152,6 +1223,7 @@ export class AgentsProvider implements FabricProvider {
         ...(typeof options.triggerTurn === "boolean"
           ? { triggerTurn: options.triggerTurn }
           : {}),
+        ...(binding ? { binding } : {}),
       },
       participant.ownerIdentityId,
     );
@@ -1181,7 +1253,11 @@ export class AgentsProvider implements FabricProvider {
   async acceptControl(
     command: FabricControlCommand,
     from: MeshIdentity,
+    signal?: AbortSignal,
   ): Promise<FabricControlAcceptance> {
+    if (command.operation === "cancel") {
+      return { accepted: false, error: "Cancel commands are handled by the control plane" };
+    }
     if (command.operation === "stop") {
       try {
         await this.manager.stop(command.targetId);
@@ -1211,6 +1287,31 @@ export class AgentsProvider implements FabricProvider {
 
     const message = command.message?.trim();
     if (!message) return { accepted: false, error: "Fabric control message must not be empty" };
+    if (command.operation === "ask") {
+      try {
+        const actor = this.actorManager.status(command.targetId);
+        const ownership = this.participants.get(actor.id);
+        if (ownership && !ownership.local) {
+          return {
+            accepted: false,
+            error: `Participant ${actor.id} is owned by ${ownership.ownerHostId}`,
+          };
+        }
+        const result = await this.actorManager.ask(
+          actor.id,
+          message,
+          command.data,
+          signal,
+          command.binding !== undefined ? { binding: command.binding } : {},
+        );
+        return { accepted: true, messageId: result.id, result };
+      } catch (error) {
+        return {
+          accepted: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
     if (this.mainAgent.local && this.mainAgent.matches(command.targetId)) {
       const result = this.mainAgent.deliverAgent({
         from,
@@ -1241,7 +1342,12 @@ export class AgentsProvider implements FabricProvider {
       if (ownership && !ownership.local) {
         return { accepted: false, error: `Participant ${actor.id} is owned by ${ownership.ownerHostId}` };
       }
-      const result = this.actorManager.tell(actor.id, message, command.data);
+      const result = this.actorManager.tell(
+        actor.id,
+        message,
+        command.data,
+        command.binding !== undefined ? { binding: command.binding } : {},
+      );
       return { accepted: true, messageId: result.messageId };
     } catch (error) {
       if (!(error instanceof Error && /Unknown Fabric actor/.test(error.message))) {
@@ -1275,20 +1381,6 @@ export class AgentsProvider implements FabricProvider {
       await this.participants.refresh().catch(() => undefined);
       throw error;
     }
-  }
-
-  #actorIsLocal(id: string): boolean {
-    const participant = this.participants.get(id);
-    return this.actorManager.owns(id) && participant?.local !== false;
-  }
-
-  #localActor(id: string): FabricActorInfo {
-    const actor = this.actorManager.status(id);
-    const participant = this.participants.get(actor.id);
-    if (!this.actorManager.owns(actor.id) || participant?.local === false) {
-      throw new Error(`Fabric actor private data is available only from its owner: ${actor.id}`);
-    }
-    return actor;
   }
 
   #listAgents(scopeValue: unknown): Array<AgentRunRecord | AgentHandleInfo | ReturnType<FabricParticipantSource["self"]>> {

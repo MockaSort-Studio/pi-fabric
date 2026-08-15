@@ -4,7 +4,11 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { CodePreviewSettings } from "./code-preview.js";
 import type { FabricActivityRun } from "../activity/types.js";
-import type { FabricActorDelivery, FabricActorHostEvent } from "../actors/types.js";
+import type {
+  FabricActorBindingScope,
+  FabricActorDelivery,
+  FabricActorHostEvent,
+} from "../actors/types.js";
 import type { FabricState } from "../fabric-state.js";
 import type { FabricThinking } from "../thinking.js";
 import type { MeshEvent } from "../mesh/store.js";
@@ -181,11 +185,27 @@ export class FabricUiController {
     const onAgentStop = (agentId: string): void => {
       reportUpdate("Agent stopped", this.state.stopParticipant(agentId));
     };
-    const onActorModel = (actorId: string, model: string | undefined): void => {
-      reportUpdate("Actor model updated", this.state.actors.setModel(actorId, model));
+    const onActorModel = (
+      actorId: string,
+      model: string | undefined,
+      scope: FabricActorBindingScope,
+    ): void => {
+      reportUpdate(
+        scope === "project" ? "Actor project model pinned" : "Actor session model updated",
+        this.state.actors.setModel(actorId, model, scope),
+      );
     };
-    const onActorThinking = (actorId: string, thinking: FabricThinking | undefined): void => {
-      reportUpdate("Actor thinking level updated", this.state.actors.setThinking(actorId, thinking));
+    const onActorThinking = (
+      actorId: string,
+      thinking: FabricThinking | undefined,
+      scope: FabricActorBindingScope,
+    ): void => {
+      reportUpdate(
+        scope === "project"
+          ? "Actor project thinking pinned"
+          : "Actor session thinking updated",
+        this.state.actors.setThinking(actorId, thinking, scope),
+      );
     };
     const onActorEvents = (actorId: string, events: FabricActorHostEvent[]): void => {
       reportUpdate("Actor event subscriptions updated", this.state.actors.setEvents(actorId, events));

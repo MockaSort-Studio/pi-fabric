@@ -272,7 +272,8 @@ export class ResidentHost {
     );
     this.agents.subscribeUi(() => this.participants.scheduleRefresh());
     this.actors.subscribe(() => this.participants.scheduleRefresh());
-    this.control.start((command, from) => this.#acceptControl(command, from));
+    this.control.start((command, from, signal) =>
+      this.#acceptControl(command, from, signal));
     await this.participants.start().catch(() => undefined);
     this.lifecycle.start();
     this.#requestTimer = setInterval(
@@ -314,7 +315,11 @@ export class ResidentHost {
   async #acceptControl(
     command: FabricControlCommand,
     _from: MeshIdentity,
+    signal?: AbortSignal,
   ): Promise<FabricControlAcceptance> {
+    if (command.operation === "cancel") {
+      return { accepted: false, error: "Cancel commands are handled by the control plane" };
+    }
     if (command.operation === "stop") {
       try {
         await this.agents.stop(command.targetId);
@@ -338,6 +343,23 @@ export class ResidentHost {
     }
     const message = command.message?.trim();
     if (!message) return { accepted: false, error: "Fabric control message must not be empty" };
+    if (command.operation === "ask") {
+      try {
+        if (!this.actors.owns(command.targetId)) {
+          return { accepted: false, error: `Resident host does not own ${command.targetId}` };
+        }
+        const result = await this.actors.ask(
+          command.targetId,
+          message,
+          command.data,
+          signal,
+          command.binding !== undefined ? { binding: command.binding } : {},
+        );
+        return { accepted: true, messageId: result.id, result };
+      } catch (error) {
+        return { accepted: false, error: errorMessage(error) };
+      }
+    }
     try {
       this.agents.status(command.targetId);
       const result = command.operation === "steer"
@@ -353,7 +375,12 @@ export class ResidentHost {
       if (!this.actors.owns(command.targetId)) {
         return { accepted: false, error: `Resident host does not own ${command.targetId}` };
       }
-      const result = this.actors.tell(command.targetId, message, command.data);
+      const result = this.actors.tell(
+        command.targetId,
+        message,
+        command.data,
+        command.binding !== undefined ? { binding: command.binding } : {},
+      );
       return { accepted: true, messageId: result.messageId };
     } catch (error) {
       return { accepted: false, error: errorMessage(error) };

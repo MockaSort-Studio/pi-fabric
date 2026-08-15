@@ -57,7 +57,8 @@ Fabric ships a general-purpose, theme-aware activity surface that works with any
 - Press `1` for Activity and `2` for the unified Topology. In Topology, arrow keys move spatially between graph nodes, `h`/`l` mirror left and right, `j`/`k` follow deterministic entity order, and Tab advances to the next node. In Activity, arrows or Tab switch panes and select rows. `g` and `G` jump to the first and last selectable entity, Enter inspects, `f` cycles status filters, `[`/`]` change the retained-run lens, and `?` opens contextual help.
 - On Main, `s` sends a user-authored message or steer, and `u` queues a user-authored follow-up through Pi's host queue.
 - On agents and actors, Space peeks at the transcript and `t` toggles transcript/summary detail. Inside a transcript, `g` loads and jumps to the true top, and `G` jumps to the bottom and follows new output. On active one-shot agents, `s` opens a steer editor, `u` queues a follow-up, and pressing `x` twice stops the run. Remote participants expose capability-aware, owner-acknowledged `s`, `u`, and `x` controls.
-- On actors, `s` queues a serial mailbox message, `m` changes the model, `e` changes thinking, `v` changes host events, and `i` changes instructions. `x` exports to global, `p` imports a global template, `d` deletes one, and Esc backs out or closes.
+- On actors, `s` queues a serial mailbox message. Lowercase `m` and `e` change this Pi session's model and thinking. Uppercase `M` and `E` change the shared project defaults and appear only on the owner. Actor detail shows both layers, the effective values, and the live owner.
+- Owner views also expose `v` for host events, `i` for instructions, and other shared actor settings. Passive views hide those controls but keep session bindings, messaging, reads, and `x` export. `p` imports a global template, `d` deletes one, and Esc backs out or closes.
 
 ## Data-driven activity
 

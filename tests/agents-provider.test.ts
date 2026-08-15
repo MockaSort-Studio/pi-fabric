@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SessionManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActorManager } from "../src/actors/manager.js";
 import type { FabricActorRequest } from "../src/actors/types.js";
 import { GlobalActorRegistry } from "../src/actors/global-registry.js";
@@ -12,7 +12,10 @@ import type {
   FabricLifecycleSubscription,
 } from "../src/lifecycle/types.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
-import type { FabricMainAgentDeliveryRequest } from "../src/main-agent.js";
+import type {
+  FabricMainAgentDeliveryRequest,
+  FabricMainAgentTarget,
+} from "../src/main-agent.js";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
 import type {
   FabricParticipantInfo,
@@ -20,6 +23,7 @@ import type {
   FabricPeerInfo,
 } from "../src/topology/types.js";
 import type { FabricInvocationContext } from "../src/protocol.js";
+import { FabricControlPlane } from "../src/topology/control-plane.js";
 import { AgentsProvider, collectAgentToolPreviewNodes } from "../src/providers/agents-provider.js";
 import { snapshotHandoffSession } from "../src/agents/handoff.js";
 import { AgentManager } from "../src/agents/manager.js";
@@ -28,6 +32,7 @@ import type { AgentRunRecord } from "../src/agents/types.js";
 const roots: string[] = [];
 const actorManagers: ActorManager[] = [];
 const agentManagers: AgentManager[] = [];
+const controlPlanes: FabricControlPlane[] = [];
 
 const usage = {
   input: 0,
@@ -51,6 +56,7 @@ const context: FabricInvocationContext = {
 const setup = (
   peers: FabricPeerInfo[] = [],
   members: FabricParticipantInfo[] = [],
+  control?: FabricControlPlane,
 ) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-agents-provider-"));
   roots.push(root);
@@ -151,13 +157,14 @@ const setup = (
     globalActors,
     mainAgent,
     participants,
-    undefined,
+    control,
     lifecycle,
   );
   return { root, actors, globalActors, provider, mainDeliveries };
 };
 
 afterEach(async () => {
+  await Promise.all(controlPlanes.splice(0).map((control) => control.close()));
   await Promise.all(actorManagers.splice(0).map((manager) => manager.close()));
   await Promise.all(agentManagers.splice(0).map((manager) => manager.close()));
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
@@ -195,6 +202,23 @@ describe("AgentsProvider runner support", () => {
     expect(runProperties).not.toHaveProperty("residency");
   });
 
+  it("exposes actor activation overrides and scoped binding setters", async () => {
+    const { provider } = setup();
+    const ask = await provider.describe("ask", context);
+    const tell = await provider.describe("tell", context);
+    const setModel = await provider.describe("setModel", context);
+    const setThinking = await provider.describe("setThinking", context);
+    const properties = (descriptor: typeof ask) =>
+      (descriptor?.inputSchema as {
+        properties: Record<string, { enum?: string[] }>;
+      }).properties;
+
+    expect(properties(ask)).toHaveProperty("model");
+    expect(properties(ask).thinking?.enum).toContain("xhigh");
+    expect(properties(tell)).toHaveProperty("model");
+    expect(properties(setModel).scope?.enum).toEqual(["session", "project"]);
+    expect(properties(setThinking).scope?.enum).toEqual(["session", "project"]);
+  });
   it("exposes the Veda runner and per-run persona on run and spawn", async () => {
     const { provider } = setup();
     const run = await provider.describe("run", context);
@@ -880,8 +904,8 @@ describe("AgentsProvider runner support", () => {
   });
 });
 
-describe("AgentsProvider actor ownership privacy", () => {
-  it("does not expose passive actor mailboxes, definitions, or logs", async () => {
+describe("AgentsProvider shared actor definitions", () => {
+  it("exposes the shared definition, mailbox, and logs while keeping mutation owner-gated", async () => {
     const members: FabricParticipantInfo[] = [];
     const { provider, actors } = setup([], members);
     const actor = await actors.create(createRequest as FabricActorRequest);
@@ -897,7 +921,7 @@ describe("AgentsProvider actor ownership privacy", () => {
       status: "idle",
       runner: "pi",
       transport: "host",
-      capabilities: ["steer", "followUp", "stop", "fabric"],
+      capabilities: ["steer", "followUp", "stop", "ask", "actor-bindings", "fabric"],
       startedAt: actor.createdAt,
       updatedAt: actor.updatedAt,
       controlProtocol: "v1",
@@ -905,13 +929,336 @@ describe("AgentsProvider actor ownership privacy", () => {
       stale: false,
     });
 
-    await expect(provider.invoke("actors", {}, context)).resolves.toEqual([]);
-    for (const action of ["actorStatus", "messages", "export", "log"] as const) {
-      await expect(provider.invoke(action, { id: actor.id }, context)).rejects.toThrow(
-        "private data is available only from its owner",
-      );
-    }
+    await expect(provider.invoke("actors", {}, context)).resolves.toHaveLength(1);
+    await expect(provider.invoke("actorStatus", { id: actor.id }, context)).resolves.toMatchObject({
+      id: actor.id,
+      name: actor.name,
+    });
+    await expect(provider.invoke("messages", { id: actor.id }, context)).resolves.toEqual([]);
+    await expect(provider.invoke("log", { id: actor.id }, context)).resolves.toMatchObject({
+      actorId: actor.id,
+    });
+    await expect(provider.invoke("export", { id: actor.id }, context)).resolves.toMatchObject({
+      name: actor.name,
+    });
   });
+
+  it("routes passive-session ask and tell with the caller's pinned binding", async () => {
+    const members: FabricParticipantInfo[] = [];
+    const response = {
+      id: "remote-response",
+      actorId: "pending",
+      actorName: "reviewer",
+      direction: "out" as const,
+      source: "direct",
+      createdAt: Date.now(),
+      text: "remote answer",
+    };
+    const requestResult = vi.fn().mockResolvedValue(response);
+    const request = vi.fn().mockResolvedValue({
+      queued: true,
+      messageId: "remote-message",
+      routed: "mesh",
+      acknowledged: true,
+    });
+    const control = { requestResult, request } as unknown as FabricControlPlane;
+    const { provider, actors } = setup([], members, control);
+    const actor = await actors.create({
+      ...createRequest,
+      model: "provider/project",
+      thinking: "medium",
+      timeoutMs: 2 * 60 * 60 * 1_000,
+    } as FabricActorRequest);
+    response.actorId = actor.id;
+    await actors.cede(actor.id);
+    await actors.setModel(actor.id, "provider/session");
+    await actors.setThinking(actor.id, "low");
+    members.push({
+      format: 1,
+      id: actor.id,
+      kind: "actor",
+      rootId: "session:owner",
+      ownerHostId: "host:owner",
+      ownerIdentityId: "identity:owner",
+      parentId: "session:owner",
+      name: actor.name,
+      status: "idle",
+      runner: "pi",
+      transport: "host",
+      capabilities: ["steer", "followUp", "stop", "ask", "actor-bindings", "fabric"],
+      startedAt: actor.createdAt,
+      updatedAt: actor.updatedAt,
+      controlProtocol: "v1",
+      local: false,
+      stale: false,
+    });
+
+    await expect(provider.invoke("ask", {
+      id: actor.name,
+      message: "review",
+      model: "provider/one-off",
+      thinking: "xhigh",
+    }, context)).resolves.toEqual(response);
+    expect(requestResult).toHaveBeenCalledWith(
+      "host:owner",
+      actor.id,
+      "ask",
+      expect.objectContaining({
+        message: "review",
+        binding: { model: "provider/one-off", thinking: "xhigh" },
+      }),
+      "identity:owner",
+      { timeoutMs: 2 * 60 * 60 * 1_000 + 30_000 },
+    );
+
+    await expect(
+      provider.invoke(
+        "ask",
+        { id: actor.name, message: "x".repeat(62 * 1_024) },
+        context,
+      ),
+    ).rejects.toThrow("after reserving the Fabric envelope");
+    expect(requestResult).toHaveBeenCalledTimes(1);
+
+    await provider.invoke("tell", { id: actor.name, message: "queue" }, context);
+    expect(request).toHaveBeenCalledWith(
+      "host:owner",
+      actor.id,
+      "followUp",
+      expect.objectContaining({
+        message: "queue",
+        binding: { model: "provider/session", thinking: "low" },
+      }),
+      "identity:owner",
+    );
+  });
+
+  it("executes one shared actor with each caller's session binding", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-two-sessions-"));
+    roots.push(root);
+    const meshRoot = path.join(root, "mesh");
+    const actorRoot = path.join(root, "actors");
+    const meshConfig = { ...DEFAULT_FABRIC_CONFIG.mesh, actorPollMs: 20 };
+    const ownerIdentity: MeshIdentity = {
+      id: "session:a",
+      name: "Main A",
+      kind: "main",
+      sessionId: "a",
+    };
+    const peerIdentity: MeshIdentity = {
+      id: "session:b",
+      name: "Main B",
+      kind: "main",
+      sessionId: "b",
+    };
+    const ownerMesh = new MeshStore(meshRoot, 64 * 1_024, 1_000);
+    const peerMesh = new MeshStore(meshRoot, 64 * 1_024, 1_000);
+    const workerPath = path.resolve("tests/fixtures/fake-worker.mjs");
+    const ownerAgents = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath,
+      runRoot: path.join(root, "owner-runs"),
+    });
+    const peerAgents = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath,
+      runRoot: path.join(root, "peer-runs"),
+    });
+    agentManagers.push(ownerAgents, peerAgents);
+    const makeMain = (identity: MeshIdentity): FabricMainAgentTarget => ({
+      id: identity.id,
+      local: true,
+      matches: (id) => id === "main" || id === identity.id,
+      info: () => ({
+        id: identity.id,
+        name: "Main",
+        kind: "main",
+        status: "idle",
+        runner: "pi",
+        transport: "host",
+        cwd: process.cwd(),
+        sessionId: identity.sessionId ?? identity.id,
+        startedAt: 1,
+        updatedAt: 1,
+        pendingMessages: false,
+        local: true,
+      }),
+      deliverAgent: () => ({ queued: true, messageId: "main-message", routed: "main" }),
+    });
+    const ownerActors = new ActorManager(
+      "a",
+      ownerIdentity,
+      ownerMesh,
+      meshConfig,
+      ownerAgents,
+      () => {},
+      {
+        actorRoot,
+        persistent: true,
+        canManageActor: () => true,
+        mainAgent: makeMain(ownerIdentity),
+      },
+    );
+    actorManagers.push(ownerActors);
+    const actor = await ownerActors.create({
+      name: "shared reviewer",
+      instructions: "Review each direct request.",
+      model: "provider/project-default",
+      thinking: "medium",
+    });
+    const peerActors = new ActorManager(
+      "b",
+      peerIdentity,
+      peerMesh,
+      meshConfig,
+      peerAgents,
+      () => {},
+      {
+        actorRoot,
+        persistent: true,
+        canManageActor: () => false,
+        mainAgent: makeMain(peerIdentity),
+      },
+    );
+    actorManagers.push(peerActors);
+
+    const participantFor = (local: boolean): FabricParticipantInfo => ({
+      format: 1,
+      id: actor.id,
+      kind: "actor",
+      rootId: ownerIdentity.id,
+      ownerHostId: "host:a",
+      ownerIdentityId: ownerIdentity.id,
+      parentId: ownerIdentity.id,
+      name: actor.name,
+      status: "idle",
+      runner: "pi",
+      transport: "host",
+      capabilities: ["steer", "followUp", "stop", "ask", "actor-bindings", "fabric"],
+      startedAt: actor.createdAt,
+      updatedAt: actor.updatedAt,
+      controlProtocol: "v1",
+      local,
+      stale: false,
+    });
+    const sourceFor = (
+      identity: MeshIdentity,
+      hostId: string,
+      local: boolean,
+    ): FabricParticipantSource => ({
+      list: () => [participantFor(local)],
+      get: (id) => id === actor.id ? participantFor(local) : undefined,
+      self: () => ({
+        format: 1,
+        id: identity.id,
+        kind: "root",
+        rootId: identity.id,
+        ownerHostId: hostId,
+        ownerIdentityId: identity.id,
+        name: identity.name,
+        status: "idle",
+        runner: "pi",
+        transport: "host",
+        capabilities: ["steer", "followUp", "fabric"],
+        sessionId: identity.sessionId ?? identity.id,
+        startedAt: 1,
+        updatedAt: 1,
+        pendingMessages: false,
+        controlProtocol: "v1",
+        local: true,
+        stale: false,
+      }),
+      peers: () => [],
+      async refresh() {},
+      scheduleRefresh() {},
+    });
+    const ownerSource = sourceFor(ownerIdentity, "host:a", true);
+    const peerSource = sourceFor(peerIdentity, "host:b", false);
+    const ownerControl = new FabricControlPlane(ownerMesh, ownerIdentity, {
+      enabled: true,
+      hostId: "host:a",
+      pollMs: 20,
+      acknowledgementTimeoutMs: 1_000,
+    });
+    const peerControl = new FabricControlPlane(peerMesh, peerIdentity, {
+      enabled: true,
+      hostId: "host:b",
+      pollMs: 20,
+      acknowledgementTimeoutMs: 1_000,
+    });
+    controlPlanes.push(ownerControl, peerControl);
+    const ownerLifecycle = new LifecycleBroker(
+      ownerMesh,
+      ownerIdentity,
+      ownerSource,
+      { enabled: true, pollMs: 20, maxReadEvents: 100 },
+      async () => {},
+    );
+    const peerLifecycle = new LifecycleBroker(
+      peerMesh,
+      peerIdentity,
+      peerSource,
+      { enabled: true, pollMs: 20, maxReadEvents: 100 },
+      async () => {},
+    );
+    const globals = new GlobalActorRegistry(root, 64 * 1_024);
+    const ownerProvider = new AgentsProvider(
+      ownerAgents,
+      ownerActors,
+      globals,
+      makeMain(ownerIdentity),
+      ownerSource,
+      ownerControl,
+      ownerLifecycle,
+      () => false,
+      undefined,
+      false,
+    );
+    const peerProvider = new AgentsProvider(
+      peerAgents,
+      peerActors,
+      globals,
+      makeMain(peerIdentity),
+      peerSource,
+      peerControl,
+      peerLifecycle,
+      () => false,
+      undefined,
+      false,
+    );
+    ownerControl.start((command, from, signal) =>
+      ownerProvider.acceptControl(command, from, signal));
+    peerControl.start((command, from, signal) =>
+      peerProvider.acceptControl(command, from, signal));
+    const run = vi.spyOn(ownerAgents, "run");
+
+    await ownerProvider.invoke("setModel", { id: actor.id, model: "provider/model-a" }, context);
+    await peerProvider.invoke("setModel", { id: actor.id, model: "provider/model-b" }, context);
+    await ownerProvider.invoke("ask", { id: actor.id, message: "Review from A" }, context);
+    await peerProvider.invoke("ask", { id: actor.id, message: "Review from B" }, context);
+
+    expect(run.mock.calls.map(([request]) => request.model)).toEqual([
+      "provider/model-a",
+      "provider/model-b",
+    ]);
+    expect(ownerActors.status(actor.id)).toMatchObject({
+      id: actor.id,
+      model: "provider/model-a",
+      binding: { model: "provider/model-a", sessionId: "a" },
+      projectDefaults: { model: "provider/project-default" },
+    });
+    expect(peerActors.status(actor.id)).toMatchObject({
+      id: actor.id,
+      model: "provider/model-b",
+      binding: { model: "provider/model-b", sessionId: "b" },
+      projectDefaults: { model: "provider/project-default" },
+    });
+    const registry = JSON.parse(
+      fs.readFileSync(path.join(actorRoot, "actors.json"), "utf8"),
+    ) as { actors: Array<{ id: string; model?: string }> };
+    expect(registry.actors).toContainEqual(
+      expect.objectContaining({ id: actor.id, model: "provider/project-default" }),
+    );
+  });
+
 });
 
 describe("AgentsProvider global actors", () => {
