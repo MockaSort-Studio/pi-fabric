@@ -217,7 +217,13 @@ export const createFabricExecTool = (
         rendererState.fabricWriteBindingsCode = code;
         rendererState.fabricWriteBindings = fabricWriteBindings(code);
       }
-      const writePreview = context.executionStarted
+      // The write argument preview is a streaming affordance: it previews
+      // pending writes while args are still arriving. Pi only flips
+      // executionStarted for live calls; resumed cards stay at its false
+      // default and are always complete (isPartial false), so their previews
+      // belong to the result side alone. Without the isPartial gate, a
+      // collapsed resumed card shows the same write twice.
+      const writePreview = context.executionStarted || !context.isPartial
         ? null
         : renderFabricWriteArgumentPreview(
             {

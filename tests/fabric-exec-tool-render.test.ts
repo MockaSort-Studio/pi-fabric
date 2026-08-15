@@ -378,13 +378,44 @@ describe("registered fabric_exec compact transcript rendering", () => {
     const preview = tool.renderCall!(
       args as never,
       plainTheme,
-      renderContext(args, { executionStarted: false }) as never,
+      renderContext(args, { executionStarted: false, isPartial: true }) as never,
     ).render(120).join("\n");
 
     expect(preview).toContain("Update README");
     expect(preview).toContain("README.md");
     expect(preview).toContain("Visible write preview");
     expect(preview).not.toContain("await pi.write");
+  });
+
+  it("omits the call-side write preview on resumed cards so collapsed renders show it once", () => {
+    const args = {
+      code: 'await pi.write({ path: "README.md", content: π.content });',
+      strings: { content: "# Visible write preview" },
+      display: { name: "Update README" },
+    };
+    // Pi only marks live calls as executionStarted; resumed cards stay at its
+    // false default but are always complete (isPartial false).
+    const resumedCompact = toolFor(stateFor("compact")).renderCall!(
+      args as never,
+      plainTheme,
+      renderContext(args, { executionStarted: false, isPartial: false }) as never,
+    ).render(120).join("\n");
+    const resumedFull = toolFor(stateFor("full")).renderCall!(
+      args as never,
+      plainTheme,
+      renderContext(args, { executionStarted: false, isPartial: false }) as never,
+    ).render(120).join("\n");
+    const streaming = toolFor(stateFor("compact")).renderCall!(
+      args as never,
+      plainTheme,
+      renderContext(args, { executionStarted: false, isPartial: true }) as never,
+    ).render(120).join("\n");
+
+    expect(resumedCompact).toContain("Update README");
+    expect(resumedCompact).not.toContain("Visible write preview");
+    expect(resumedFull).toContain("await pi.write");
+    expect(resumedFull).not.toContain("Visible write preview");
+    expect(streaming).toContain("Visible write preview");
   });
 
   it("keeps specialized collapsed and expanded core detail plus hidden-call bounds unchanged", () => {
