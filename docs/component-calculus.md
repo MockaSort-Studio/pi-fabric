@@ -6,22 +6,22 @@ DeepSeek's dynamic-composition paper supplies the effect and coeffect calculus u
 
 ## Runtime correspondence
 
-For a runtime context Γ, this operational tuple represents a component instance:
+For a runtime context $\Gamma$, this operational tuple represents a component instance:
 
-```text
-⟨d, p, e, π, σ, τ, θ, ω⟩
-```
+$$
+\langle d,\ p,\ e,\ \pi,\ \sigma,\ \tau,\ \theta,\ \omega \rangle
+$$
 
 | Symbol | Pi Fabric realization |
 |---|---|
-| `d` | the exact refs from `requires` |
-| `p` | the disjoint provider names declared in `provides` |
-| `e` | `activate()` with its yielded and returned inverses |
-| `π` | the optional `parentId` that `context.use()` creates |
-| `σ` | the staged provider bindings that the instance owns |
-| `τ` | monotone retirement plus a transition epoch |
-| `θ` | one of `waiting`, `loading`, `active`, `unloading`, `failed`, `quarantined`, or `disposed` |
-| `ω` | the retained committed capability view |
+| $d$ | the exact refs from `requires` |
+| $p$ | the disjoint provider names declared in `provides` |
+| $e$ | `activate()` with its yielded and returned inverses |
+| $\pi$ | the optional `parentId` that `context.use()` creates |
+| $\sigma$ | the staged provider bindings that the instance owns |
+| $\tau$ | monotone retirement plus a transition epoch |
+| $\theta$ | one of `waiting`, `loading`, `active`, `unloading`, `failed`, `quarantined`, or `disposed` |
+| $\omega$ | the retained committed capability view |
 
 Provider binding IDs are fresh atoms. A committed view pins the binding generation and the descriptor hash. Two bindings that share one provider name still count as distinct atoms, so an ABA replacement always produces a new pin.
 
@@ -37,16 +37,16 @@ component definition ── activate under ω ──▶ owned effects
 live provider state ─── target(d, Γ) ─────▶ active fiber
 ```
 
-The two paths commute only when the target at the final iteration boundary is still `ω`. When the target differs, activation diverts, applies the accumulated inverse, and retries against the new target. `tests/component-laws.test.ts` checks both insertion orders. The two orders place the provider before its consumer exists, or after the consumer reaches `waiting`. Both orders produce the same terminal observation.
+The two paths commute only when the target at the final iteration boundary is still $\omega$. When the target differs, activation diverts, applies the accumulated inverse, and retries against the new target. `tests/component-laws.test.ts` checks both insertion orders. The two orders place the provider before its consumer exists, or after the consumer reaches `waiting`. Both orders produce the same terminal observation.
 
 ## Witnessed effects
 
-A tracked effect contributes a forward transformation `f` and an inverse `g` that the author supplies:
+A tracked effect contributes a forward transformation $f$ and an inverse $g$ that the author supplies:
 
 ```text
 Γ ──f──▶ Γ′
 │        │
-└──id◀──g
+└──id◀───g
 ```
 
 The runtime enforces the structural part of this triangle:
@@ -57,19 +57,21 @@ The runtime enforces the structural part of this triangle:
 - on diversion the iterator's `return()` runs, so generator `finally` blocks can settle.
 - a cleanup failure produces the `quarantined` state, never a false claim of recovery.
 
-The runtime cannot prove that `g(f(Γ)) ≃ Γ`. The author must guarantee that the inverse is correct, and the author chooses the observational equivalence `≃`. Mutations performed outside `context.effect`, `context.defer`, `context.acquire`, `context.call`, `context.provide`, or `context.use` are ambient and sit outside the witnessed system.
+The runtime cannot prove that $g(f(\Gamma)) \simeq \Gamma$. The author must guarantee that the inverse is correct, and the author chooses the observational equivalence $\simeq$. Mutations performed outside `context.effect`, `context.defer`, `context.acquire`, `context.call`, `context.provide`, or `context.use` are ambient and sit outside the witnessed system.
 
 ## Iteration, diversion, and inertia
 
 An effect generator exposes a delimited continuation at every yield:
 
-```text
-loading(ω, g₀)
-  ├─ step lands with inverse h, target = ω  → loading(ω, g₀ ∘ h)
-  ├─ step lands with inverse h, target ≠ ω  → unloading(ω, g₀ ∘ h)
-  ├─ iterator finishes, target = ω          → active(ω, g)
-  └─ iterator raises                         → unloading(ω, g, error)
-```
+$$
+\mathrm{loading}(\omega, g_0)
+\begin{cases}
+\to \mathrm{loading}(\omega, g_0 \circ h) & \text{a step lands with inverse } h,\ \text{target} = \omega \\
+\to \mathrm{unloading}(\omega, g_0 \circ h) & \text{a step lands with inverse } h,\ \text{target} \neq \omega \\
+\to \mathrm{active}(\omega, g) & \text{the iterator finishes},\ \text{target} = \omega \\
+\to \mathrm{unloading}(\omega, g, \mathrm{error}) & \text{the iterator raises}
+\end{cases}
+$$
 
 A launched asynchronous step is inertial. Fabric lets the step land and records its inverse before it inspects the target again. The stale continuation never resumes. A diversion is retryable and lands in `waiting`. An author error lands in `failed`, and Fabric does not retry it against the same target.
 
@@ -79,15 +81,11 @@ Retirement and replacement each increment a transition epoch. A stale transition
 
 A provider leaves the live target before its inverse runs:
 
-```text
-active provider
-  → retire bindings
-  → unload consumers whose ω names those binding IDs
-  → run provider owner's inverses
-  → release owner bindings
-```
+$$
+\text{active provider} \;\to\; \text{retire bindings} \;\to\; \text{unload consumers whose } \omega \text{ names those binding IDs} \;\to\; \text{run provider owner's inverses} \;\to\; \text{release owner bindings}
+$$
 
-Consumer teardown retains the old `ω`, so the consumer can still call the retiring provider. The binding closes only after the owner retention, the committed views, the scoped acquisitions, and the in-flight calls all release it.
+Consumer teardown retains the old $\omega$, so the consumer can still call the retiring provider. The binding closes only after the owner retention, the committed views, the scoped acquisitions, and the in-flight calls all release it.
 
 The owner component must keep its ambient supporting state valid until the provider's `close()` runs. The registry can retain a provider object across external actor views. It cannot infer hidden closure dependencies.
 
@@ -111,7 +109,7 @@ Parent ownership implies no dependency injection. Requirement edges still determ
 
 ## Independence
 
-Take two effects `a` and `b`. Safe reordering needs more than non-overlapping concurrent calls. The forwards of both effects, their inverses, and every mixed forward/inverse composition must commute under `≃`.
+Take two effects $a$ and $b$. Safe reordering needs more than non-overlapping concurrent calls. The forwards of both effects, their inverses, and every mixed forward/inverse composition must commute under $\simeq$.
 
 Pi Fabric uses a conservative, declared approximation:
 

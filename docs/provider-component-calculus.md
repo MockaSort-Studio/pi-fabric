@@ -6,57 +6,61 @@ This calculus extends the [component calculus](component-calculus.md). It applie
 
 ## 1. Objects
 
-Let `N` be the finite set of provider names. Let `A_n` be the action names under `n ∈ N`. A public ref is the pair `n.a`, where `a ∈ A_n`.
+Let $N$ be the finite set of provider names. Let $A_n$ be the action names under $n \in N$. A public ref is the pair $n.a$, where $a \in A_n$.
 
 ### Definition 1. Provider
 
 A provider is the tuple
 
-```text
-P = ⟨n, δ, D, I, Q⟩
-```
+$$
+P = \langle n, \delta, D, I, Q \rangle
+$$
 
 with these fields:
 
-- `n ∈ N` is the public namespace.
-- `δ` is the public provider description.
-- `D : A_n ⇀ Descriptor` maps each action to its public descriptor.
-- `I : A_n × Args × Invocation → Result` invokes an action.
-- `Q` closes provider-owned resources.
+- $n \in N$ is the public namespace.
+- $\delta$ is the public provider description.
+- $D : A_n \rightharpoonup \mathrm{Descriptor}$ maps each action to its public descriptor.
+- $I : A_n \times \mathrm{Args} \times \mathrm{Invocation} \to \mathrm{Result}$ invokes an action.
+- $Q$ closes provider-owned resources.
 
-A descriptor contains its description, input schema, output schema, risk, namespace metadata, and effect metadata. Write `H(D(a))` for its stable descriptor hash.
+A descriptor contains its description, input schema, output schema, risk, namespace metadata, and effect metadata. Write $H(D(a))$ for its stable descriptor hash.
 
 ### Definition 2. Provider equivalence
 
-Two provider instances are semantically equivalent, written `P ≃p P′`, when they satisfy these conditions:
+Two provider instances are semantically equivalent, written $P \simeq_p P'$, when they satisfy these conditions:
 
-```text
-name(P) = name(P′)
-description(P) = description(P′)
-A_name(P) = A_name(P′)
-∀a. H(D_P(a)) = H(D_P′(a))
-∀a,x,c. I_P(a,x,c) ≃obs I_P′(a,x,c)
-```
+$$
+\begin{aligned}
+&\mathrm{name}(P) = \mathrm{name}(P') \\
+&\mathrm{description}(P) = \mathrm{description}(P') \\
+&A_{\mathrm{name}}(P) = A_{\mathrm{name}}(P') \\
+&\forall a.\ H(D_P(a)) = H(D_{P'}(a)) \\
+&\forall a, x, c.\ I_P(a, x, c) \simeq_{\mathrm{obs}} I_{P'}(a, x, c)
+\end{aligned}
+$$
 
-The provider author chooses the relation `≃obs`. It covers every value and event produced by the action call.
+The provider author chooses the relation $\simeq_{\mathrm{obs}}$. It covers every value and event produced by the action call.
 
 ### Definition 3. Provider componentization
 
-The componentization map `C` sends a provider factory `F` to
+The componentization map $C$ sends a provider factory $F$ to
 
-```text
-C(F) = ⟨d, p, e⟩
-```
+$$
+C(F) = \langle d, p, e \rangle
+$$
 
 where
 
-```text
-d = declared action requirements
-p = { name(F()) }
-e = create → stage → commit
-```
+$$
+\begin{aligned}
+d &= \text{declared action requirements} \\
+p &= \{ \mathrm{name}(F()) \} \\
+e &= \text{create} \to \text{stage} \to \text{commit}
+\end{aligned}
+$$
 
-The inverse of `e` retires the staged or active binding and releases its owner lease. `Q` runs after owner release when the binding has zero retainers and zero in-flight calls.
+The inverse of $e$ retires the staged or active binding and releases its owner lease. $Q$ runs after owner release when the binding has zero retainers and zero in-flight calls.
 
 The direct and component-owned mount paths form this square:
 
@@ -68,43 +72,43 @@ provider factory F ──create──▶ provider P
 component C(F) ──activate──▶ ActionRegistry
 ```
 
-The square commutes when `C(F)` publishes the same `P` that direct registration would publish.
+The square commutes when $C(F)$ publishes the same $P$ that direct registration would publish.
 
 ### Definition 4. Binding
 
 A binding is
 
-```text
-b = ⟨id, n, generation, P, state, owner, retainers, inFlight⟩
-```
+$$
+b = \langle \mathrm{id}, n, \mathrm{generation}, P, \mathrm{state}, \mathrm{owner}, \mathrm{retainers}, \mathrm{inFlight} \rangle
+$$
 
 The state belongs to
 
-```text
-{ staged, active, retiring, closed }
-```
+$$
+\{ \mathrm{staged},\ \mathrm{active},\ \mathrm{retiring},\ \mathrm{closed} \}
+$$
 
 The binding ID is a fresh atom. Generation increases for each new binding under the same namespace.
 
 ### Definition 5. Live provider projection
 
-For runtime state `γ`, define
+For runtime state $\gamma$, define
 
-```text
-Σγ : N ⇀ Binding
-```
+$$
+\Sigma_\gamma : N \rightharpoonup \mathrm{Binding}
+$$
 
-where `Σγ(n) = b` exactly when `b` is the current active binding for `n`.
+where $\Sigma_\gamma(n) = b$ exactly when $b$ is the current active binding for $n$.
 
-`Σγ` contains current active bindings. A retained committed view can address a retiring binding by its ID.
+$\Sigma_\gamma$ contains current active bindings. A retained committed view can address a retiring binding by its ID.
 
 ### Definition 6. Public action projection
 
 The public projection is
 
-```text
-Π(γ) = { n.a ↦ ⟨D_b(a), H(D_b(a))⟩ | Σγ(n) = b }
-```
+$$
+\Pi(\gamma) = \{ n.a \mapsto \langle D_b(a), H(D_b(a)) \rangle \mid \Sigma_\gamma(n) = b \}
+$$
 
 The public projection omits binding IDs, generations, component IDs, and lifecycle states. The `components.*` surface can expose component state as a control-plane value.
 
@@ -112,27 +116,27 @@ The public projection omits binding IDs, generations, component IDs, and lifecyc
 
 A pinned manifest is a finite map
 
-```text
-B : ComponentId ⇀ ComponentName
-```
+$$
+B : \mathrm{ComponentId} \rightharpoonup \mathrm{ComponentName}
+$$
 
 Pinned manifest entries remain in the loader target across user configuration reconciliation. Built-in entries use names of the form `fabric.provider.<namespace>`. The host reserves this definition prefix at the eager and discovery registration boundaries.
 
 The complete loader target is
 
-```text
-T = B ⊎ U
-```
+$$
+T = B \uplus U
+$$
 
-where `U` is the user component map. The disjoint union requires unique IDs. Both collision checks run inside the loader serialization queue.
+where $U$ is the user component map. The disjoint union requires unique IDs. Both collision checks run inside the loader serialization queue.
 
 ### Definition 8. Catalog revision
 
 The component catalog maps each component name to
 
-```text
-ρ(name) = ⟨definition, revision⟩
-```
+$$
+\rho(\mathrm{name}) = \langle \mathrm{definition}, \mathrm{revision} \rangle
+$$
 
 Registering a replacement increments `revision`. Every enabled pinned or user entry that names the definition becomes a replacement target.
 
@@ -140,23 +144,19 @@ Registering a replacement increments `revision`. Every enabled pinned or user en
 
 ### Rule P-Insert
 
-A pinned entry enters `B` when its ID is fresh and its provision is disjoint from every admitted fiber provision.
+A pinned entry enters $B$ when its ID is fresh and its provision is disjoint from every admitted fiber provision.
 
-```text
-id ∉ dom(T)    p ∩ provisions(T) = ∅
-──────────────────────────────────── P-Insert
-T ↦ T[id ↦ component]
-```
+$$
+\frac{\mathrm{id} \notin \mathrm{dom}(T) \qquad p \cap \mathrm{provisions}(T) = \varnothing}{T \mapsto T[\, \mathrm{id} \mapsto \mathrm{component} \,]} \quad \text{P-Insert}
+$$
 
 ### Rule P-Begin
 
 Activation creates a provider and mounts its binding as `staged`.
 
-```text
-F() = P    name(P) ∈ p    target(id, γ) ≠ ⊥
-────────────────────────────────────────── P-Begin
-γ ↦ γ[b.state ↦ staged]
-```
+$$
+\frac{F() = P \qquad \mathrm{name}(P) \in p \qquad \mathrm{target}(\mathrm{id}, \gamma) \neq \bot}{\gamma \mapsto \gamma[\, b.\mathrm{state} \mapsto \mathrm{staged} \,]} \quad \text{P-Begin}
+$$
 
 A factory that returns another namespace closes that provider and fails the transition.
 
@@ -164,47 +164,37 @@ A factory that returns another namespace closes that provider and fails the tran
 
 The component commits all staged provider bindings together after activation settles and the target remains equal to its committed view.
 
-```text
-allDeclaredMounted    target(id, γ) = ω
-──────────────────────────────────────── P-Commit
-b.state ↦ active    Σγ(name(b)) ↦ b
-```
+$$
+\frac{\mathrm{allDeclaredMounted} \qquad \mathrm{target}(\mathrm{id}, \gamma) = \omega}{b.\mathrm{state} \mapsto \mathrm{active} \qquad \Sigma_\gamma(\mathrm{name}(b)) \mapsto b} \quad \text{P-Commit}
+$$
 
-`Π(γ)` contains active provider actions.
+$\Pi(\gamma)$ contains active provider actions.
 
 ### Rule P-Leave
 
 Retirement removes the provider from the live namespace before its inverse runs. A target change, explicit reload, replacement, or stop request can start this rule.
 
-```text
-current(name(b)) = b    leaveRequested(id, γ)
-──────────────────────────────────────── P-Leave
-Σγ ↦ Σγ ∖ name(b)    b.state ↦ retiring
-```
+$$
+\frac{\mathrm{current}(\mathrm{name}(b)) = b \qquad \mathrm{leaveRequested}(\mathrm{id}, \gamma)}{\Sigma_\gamma \mapsto \Sigma_\gamma \setminus \mathrm{name}(b) \qquad b.\mathrm{state} \mapsto \mathrm{retiring}} \quad \text{P-Leave}
+$$
 
-`leaveRequested` covers target drift, explicit reload, replacement, and stop. Dependent fibers see their target change and unload first.
+$\mathrm{leaveRequested}$ covers target drift, explicit reload, replacement, and stop. Dependent fibers see their target change and unload first.
 
 ### Rule P-Close
 
 A retiring provider closes after all ownership and use counts reach zero.
 
-```text
-state = retiring    owner = released
-retainers = 0       inFlight = 0
-──────────────────────────────────── P-Close
-Q(P)    state ↦ closed
-```
+$$
+\frac{\mathrm{state} = \mathrm{retiring} \qquad \mathrm{owner} = \mathrm{released} \qquad \mathrm{retainers} = 0 \qquad \mathrm{inFlight} = 0}{Q(P) \qquad \mathrm{state} \mapsto \mathrm{closed}} \quad \text{P-Close}
+$$
 
 ### Rule P-Revise
 
 A catalog revision retires the active fiber and starts the new definition under the same component ID.
 
-```text
-ρ(name) = ⟨definition_v, v⟩
-ρ′(name) = ⟨definition_v+1, v+1⟩
-────────────────────────────────────── P-Revise
-fiber_v ↦ unloading ↦ fiber_v+1
-```
+$$
+\frac{\rho(\mathrm{name}) = \langle \mathrm{definition}_v, v \rangle \qquad \rho'(\mathrm{name}) = \langle \mathrm{definition}_{v+1}, v+1 \rangle}{\mathrm{fiber}_v \mapsto \mathrm{unloading} \mapsto \mathrm{fiber}_{v+1}} \quad \text{P-Revise}
+$$
 
 The provider namespace stays equal by the provision declaration.
 
@@ -212,17 +202,15 @@ The provider namespace stays equal by the provision declaration.
 
 A failed candidate with successful cleanup restores the prior definition.
 
-```text
-activate(v+1) = failure    cleanup(v+1) = success
-──────────────────────────────────────────────── P-Restore
-fiber_v+1 ↦ fiber_v+2 using definition_v
-```
+$$
+\frac{\mathrm{activate}(v+1) = \mathrm{failure} \qquad \mathrm{cleanup}(v+1) = \mathrm{success}}{\mathrm{fiber}_{v+1} \mapsto \mathrm{fiber}_{v+2}\ \text{using}\ \mathrm{definition}_v} \quad \text{P-Restore}
+$$
 
 The revision increases again because restoration is a new lifecycle episode. Cleanup failure enters `quarantined` state and reports the inverse failure as its final outcome.
 
 ## 3. Rolling replacement
 
-Let `b_v` be the active provider binding for definition revision `v`. A rolling replacement follows this path:
+Let $b_v$ be the active provider binding for definition revision $v$. A rolling replacement follows this path:
 
 ```text
 catalog revision v+1
@@ -235,7 +223,7 @@ retire b_v ──▶ unload dependents ──▶ run inverse_v
 create b_v+1 ──▶ stage ──▶ commit ──▶ reload dependents
 ```
 
-A committed view `ω_v` keeps `b_v` callable during retirement. Uncommitted resolution follows `Σγ`, which moves to `b_v+1` at commit. `P-Commit` publishes the full binding set in one synchronous operation. A commit observer may request immediate retirement, which yields a short complete episode. The public projection contains complete binding sets.
+A committed view $\omega_v$ keeps $b_v$ callable during retirement. Uncommitted resolution follows $\Sigma_\gamma$, which moves to $b_{v+1}$ at commit. `P-Commit` publishes the full binding set in one synchronous operation. A commit observer may request immediate retirement, which yields a short complete episode. The public projection contains complete binding sets.
 
 These rules govern rolling replacement. During the interval between retirement and candidate commit, an uncommitted concurrent call reports that the provider is unavailable. A `fabric_exec` call that invokes `components.reload` waits for the replacement result.
 
@@ -243,13 +231,15 @@ These rules govern rolling replacement. During the interval between retirement a
 
 ### Theorem 1. Namespace preservation
 
-Let `γd` be a quiet runtime that directly registers provider family `(P_i)`. Let `γc` be a quiet runtime that activates `(C(F_i))`, with `F_i() ≃p P_i`. Then
+Let $\gamma_d$ be a quiet runtime that directly registers provider family $(P_i)$. Let $\gamma_c$ be a quiet runtime that activates $(C(F_i))$, with $F_i() \simeq_p P_i$. Then
 
-```text
-dom(Π(γd)) = dom(Π(γc))
-∀r ∈ dom(Π). descriptor_d(r) = descriptor_c(r)
-∀r ∈ dom(Π). hash_d(r) = hash_c(r)
-```
+$$
+\begin{aligned}
+\mathrm{dom}(\Pi(\gamma_d)) &= \mathrm{dom}(\Pi(\gamma_c)) \\
+\forall r \in \mathrm{dom}(\Pi).\ \mathrm{descriptor}_d(r) &= \mathrm{descriptor}_c(r) \\
+\forall r \in \mathrm{dom}(\Pi).\ \mathrm{hash}_d(r) &= \mathrm{hash}_c(r)
+\end{aligned}
+$$
 
 Proof sketch: `P-Begin` keeps a staged binding in component state until `P-Commit` inserts it under the declared provider name. Provision disjointness leaves one active binding per name, and provider equivalence supplies equal descriptor maps and hashes.
 
@@ -257,31 +247,35 @@ Proof sketch: `P-Begin` keeps a staged binding in component state until `P-Commi
 
 Take equal guest code, strings, invocation context, policy state, and action arguments. Under the premises of Theorem 1, every call outside `components.*` has equal registry observations:
 
-```text
-providers_d = providers_c
-catalog_d = catalog_c
-search_d = search_c
-describe_d = describe_c
-invoke_d ≃obs invoke_c
-```
+$$
+\begin{aligned}
+\mathrm{providers}_d &= \mathrm{providers}_c \\
+\mathrm{catalog}_d &= \mathrm{catalog}_c \\
+\mathrm{search}_d &= \mathrm{search}_c \\
+\mathrm{describe}_d &= \mathrm{describe}_c \\
+\mathrm{invoke}_d &\simeq_{\mathrm{obs}} \mathrm{invoke}_c
+\end{aligned}
+$$
 
-Proof sketch: discovery and invocation read `ActionRegistry` through `Π` and the provider descriptions `δ`. Component fields belong to the control plane. After binding resolution, each call uses the same registry pipeline and host policy.
+Proof sketch: discovery and invocation read `ActionRegistry` through $\Pi$ and the provider descriptions $\delta$. Component fields belong to the control plane. After binding resolution, each call uses the same registry pipeline and host policy.
 
 ### Theorem 3. Committed-view continuity
 
-If `ω_v` retains `b_v`, then `P-Leave` preserves that binding until `ω_v` releases it during normal runtime operation. Calls through `ω_v` resolve to the same binding atom and descriptor hash during a replacement.
+If $\omega_v$ retains $b_v$, then `P-Leave` preserves that binding until $\omega_v$ releases it during normal runtime operation. Calls through $\omega_v$ resolve to the same binding atom and descriptor hash during a replacement.
 
-Proof sketch: committed view acquisition increments `retainers`, which keeps `P-Close` blocked. Invocation increments `inFlight`, and descriptor drift fails before the provider call. Final registry shutdown releases view retainers and owner retention. The in-flight gate remains active until the last settling call closes its binding. Host shutdown quiescence lies outside the rolling lifecycle relation.
+Proof sketch: committed view acquisition increments $\mathrm{retainers}$, which keeps `P-Close` blocked. Invocation increments $\mathrm{inFlight}$, and descriptor drift fails before the provider call. Final registry shutdown releases view retainers and owner retention. The in-flight gate remains active until the last settling call closes its binding. Host shutdown quiescence lies outside the rolling lifecycle relation.
 
 ### Theorem 4. Rolling replacement safety
 
 Assume the old and candidate factories satisfy the declared namespace and every transition settles. `P-Revise` reaches one of these explicit outcomes:
 
-```text
-candidate active under the same namespace
-prior definition restored under the same namespace after clean candidate recovery
-failed or quarantined status with an explicit replacement and rollback error
-```
+$$
+\begin{cases}
+\text{candidate active under the same namespace} \\
+\text{prior definition restored under the same namespace after clean candidate recovery} \\
+\text{failed or quarantined status with an explicit replacement and rollback error}
+\end{cases}
+$$
 
 The public projection contains a complete candidate binding set.
 
@@ -289,9 +283,9 @@ Proof sketch: candidate bindings stay staged through activation, then `P-Commit`
 
 ### Theorem 5. Dependency withdrawal order
 
-If component `m` commits a view that maps requirement `n.a` to provider component `k`, then `m` unloads before `k` runs its provider inverse.
+If component $m$ commits a view that maps requirement $n.a$ to provider component $k$, then $m$ unloads before $k$ runs its provider inverse.
 
-Proof sketch: retiring `k` removes its provision from the live target, so the supervisor finds committed views that name `k`'s binding and awaits their unload. `P-Close` then applies the residual lease and invocation guard.
+Proof sketch: retiring $k$ removes its provision from the live target, so the supervisor finds committed views that name $k$'s binding and awaits their unload. `P-Close` then applies the residual lease and invocation guard.
 
 ### Theorem 6. Startup quiescence
 
@@ -309,18 +303,18 @@ Proof sketch: independent activation steps commute under the stated premise, and
 
 | Calculus object | Runtime object |
 | --- | --- |
-| `P` | `FabricProvider` |
-| `C(F)` | `createProviderComponent(spec)` |
-| `B` | `FabricComponentLoader.#pinned` |
-| `U` | configured `components` entries |
-| `ρ` | `FabricComponentCatalog` revision |
-| `b` | `FabricProviderBinding` |
-| `Σγ` | `FabricProviderBindings.#current` |
-| `Π(γ)` | ActionRegistry providers, descriptors, and hashes |
-| `ω` | `FabricCommittedCapabilityView` |
-| `P-Commit` | `activateProviderBindings()` |
-| `P-Revise` | catalog event followed by `supervisor.replace()` |
-| `P-Restore` | loader and supervisor transactional rollback |
+| $P$ | `FabricProvider` |
+| $C(F)$ | `createProviderComponent(spec)` |
+| $B$ | `FabricComponentLoader.#pinned` |
+| $U$ | configured `components` entries |
+| $\rho$ | `FabricComponentCatalog` revision |
+| $b$ | `FabricProviderBinding` |
+| $\Sigma_\gamma$ | `FabricProviderBindings.#current` |
+| $\Pi(\gamma)$ | ActionRegistry providers, descriptors, and hashes |
+| $\omega$ | `FabricCommittedCapabilityView` |
+| P-Commit | `activateProviderBindings()` |
+| P-Revise | catalog event followed by `supervisor.replace()` |
+| P-Restore | loader and supervisor transactional rollback |
 
 ## 6. Kernel boundary
 
@@ -334,17 +328,9 @@ The component system depends on a finite kernel:
 
 The pinned first-party provider set is
 
-```text
-pi
-extensions
-mcp
-mesh
-state
-schema
-compact
-agents
-memory
-```
+$$
+\{ \text{pi},\ \text{extensions},\ \text{mcp},\ \text{mesh},\ \text{state},\ \text{schema},\ \text{compact},\ \text{agents},\ \text{memory} \}
+$$
 
 Configuration gates can omit `pi`, `extensions`, `mesh`, `state`, or `memory`. The registry keeps explicit unavailable-provider messages for gated `mesh`, `state`, and `memory` namespaces. Full-code gating controls the guest visibility of `pi` and `extensions`.
 
@@ -354,10 +340,12 @@ Fabric treats host managers for mesh storage and participant control as trusted 
 
 The model-visible compatibility condition is
 
-```text
-Π_before = Π_after
-δ_before = δ_after
-```
+$$
+\begin{aligned}
+\Pi_{\mathrm{before}} &= \Pi_{\mathrm{after}} \\
+\delta_{\mathrm{before}} &= \delta_{\mathrm{after}}
+\end{aligned}
+$$
 
 Under this condition, provider descriptions and ref names stay stable. Action descriptors, guest globals, discovery results, result shapes, error shapes, and the policy path keep the same values.
 
