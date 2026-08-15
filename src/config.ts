@@ -367,7 +367,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     eventHistory: 80,
     haltOnEscape: true,
     showAgentToolPreview: true,
-    toolDisplay: "full",
+    toolDisplay: "compact",
     updateDebounceMs: 100,
   },
   compaction: {

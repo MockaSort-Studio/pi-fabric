@@ -1036,7 +1036,14 @@ const renderEdit = (
     return { lines: [header, ...rendered.lines], hidden: rendered.hidden };
   }
   const operations = editOperations(audit);
-  if (operations.length === 0) return null;
+  if (operations.length === 0) {
+    if (audit.fromTrace) {
+      // The durable trace keeps only the edited path (edits/diff are not
+      // persisted), so resumed edits have no diff to expand into.
+      return { lines: [theme.fg("dim", "diff not retained across reload")], hidden: 0 };
+    }
+    return null;
+  }
   const maxOperations = Math.min(operations.length, 3);
   const sections: string[] = [];
   let additions = 0;
@@ -1384,6 +1391,11 @@ const renderBash = (
   );
   const output = resultOutput(audit)?.replace(/\r?\n$/, "") ?? "";
   if (!output || output === "(no output)") {
+    if (!output && audit.fromTrace) {
+      // Trace-derived audits never retain results, so an empty output slot
+      // after a session reload means "not persisted", not "no output".
+      return { lines: [...lines, theme.fg("dim", "output not retained across reload")], hidden: 0 };
+    }
     return {
       lines: [...lines, theme.fg("muted", output || "No output")],
       hidden: 0,

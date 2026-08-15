@@ -9,9 +9,32 @@ export const FABRIC_EXECUTION_DETAILS_MAX_BYTES = 512 * 1024;
 export interface FabricPersistedExecutionDetailsV1 {
   success: boolean;
   trace: FabricExecutionTraceV1;
+  /** Rich render audits persisted verbatim (minus in-memory media) so a resumed transcript re-renders — and expands — exactly like the live one. */
+  audits: FabricLegacyRenderAudit[];
+  phases: string[];
+  error?: string;
   outputFormat?: "yaml" | "json";
   outputFormatStartLine?: number;
   outputFormatLines?: number;
+}
+
+/**
+ * The audit fields that cross into the session record; read back by
+ * {@link legacyAudit}. In-memory-only payloads (image blocks, media notes,
+ * correlation ids) never persist.
+ */
+export interface FabricPersistableAuditInput {
+  ref: string;
+  tool?: string;
+  provider?: string;
+  success?: boolean;
+  error?: string;
+  args?: Record<string, unknown>;
+  result?: unknown;
+  resultTruncated?: boolean;
+  preview?: unknown;
+  startedAt?: number;
+  endedAt?: number;
 }
 
 export interface FabricLegacyRenderAudit {
@@ -24,6 +47,8 @@ export interface FabricLegacyRenderAudit {
   result?: unknown;
   resultTruncated?: boolean;
   preview?: unknown;
+  /** Set only when reconstructed from the durable trace: args are privacy-projected and results/previews are not retained. */
+  fromTrace?: boolean;
   startedAt?: number;
   endedAt?: number;
 }
@@ -45,14 +70,36 @@ const serializedBytes = (value: unknown): number =>
 const cloneTrace = (trace: FabricExecutionTraceV1): FabricExecutionTraceV1 =>
   structuredClone(trace);
 
+const persistableAudit = (audit: FabricPersistableAuditInput): FabricLegacyRenderAudit =>
+  structuredClone({
+    ref: audit.ref,
+    ...(audit.tool !== undefined ? { tool: audit.tool } : {}),
+    ...(audit.provider !== undefined ? { provider: audit.provider } : {}),
+    ...(audit.success !== undefined ? { success: audit.success } : {}),
+    ...(audit.error !== undefined ? { error: audit.error } : {}),
+    ...(audit.args !== undefined ? { args: audit.args } : {}),
+    ...(audit.result !== undefined ? { result: audit.result } : {}),
+    ...(audit.resultTruncated !== undefined ? { resultTruncated: audit.resultTruncated } : {}),
+    ...(audit.preview !== undefined ? { preview: audit.preview } : {}),
+    ...(audit.startedAt !== undefined ? { startedAt: audit.startedAt } : {}),
+    ...(audit.endedAt !== undefined ? { endedAt: audit.endedAt } : {}),
+  });
+
 /**
- * Creates the only object stored in final fabric_exec details. Rich call
- * audits remain available to live partial rendering but are deliberately not
- * copied here. The aggregate object, not each member independently, is bound.
+ * Creates the only object stored in final fabric_exec details. The
+ * privacy-projected trace stays the functional record for compaction and tool
+ * ownership; rich call audits persist verbatim (minus in-memory media) so a
+ * resumed transcript re-renders and expands exactly like the live one — the
+ * collapsed display, not the session record, is the visual boundary. The
+ * aggregate object, not each member independently, is bound; display-only
+ * audits trim before the functional trace.
  */
 export const createFabricPersistedExecutionDetails = (input: {
   success: boolean;
   trace: FabricExecutionTraceV1;
+  audits?: readonly FabricPersistableAuditInput[];
+  phases?: readonly string[];
+  error?: string;
   outputFormat?: "yaml" | "json";
   outputFormatStartLine?: number;
   outputFormatLines?: number;
@@ -60,6 +107,9 @@ export const createFabricPersistedExecutionDetails = (input: {
   const details: FabricPersistedExecutionDetailsV1 = {
     success: input.success,
     trace: cloneTrace(input.trace),
+    audits: (input.audits ?? []).map(persistableAudit),
+    phases: (input.phases ?? []).filter((phase): phase is string => typeof phase === "string"),
+    ...(typeof input.error === "string" && input.error ? { error: input.error } : {}),
     ...(input.outputFormat ? { outputFormat: input.outputFormat } : {}),
     ...(input.outputFormatStartLine !== undefined
       ? { outputFormatStartLine: Math.max(0, Math.floor(input.outputFormatStartLine)) }
@@ -70,10 +120,22 @@ export const createFabricPersistedExecutionDetails = (input: {
   };
   while (
     serializedBytes(details) > FABRIC_EXECUTION_DETAILS_MAX_BYTES &&
+    details.audits.length > 0
+  ) {
+    details.audits.pop();
+  }
+  while (
+    serializedBytes(details) > FABRIC_EXECUTION_DETAILS_MAX_BYTES &&
     details.trace.operations.length > 0
   ) {
     details.trace.operations.pop();
     details.trace.counts.droppedOperations++;
+  }
+  while (
+    serializedBytes(details) > FABRIC_EXECUTION_DETAILS_MAX_BYTES &&
+    details.phases.length > 0
+  ) {
+    details.phases.pop();
   }
   while (
     serializedBytes(details) > FABRIC_EXECUTION_DETAILS_MAX_BYTES &&
@@ -115,6 +177,7 @@ const auditFromOperation = (
   operation: FabricExecutionTraceOperationV1,
 ): FabricLegacyRenderAudit => ({
   ref: operation.ref,
+  fromTrace: true,
   ...(operation.action ? { tool: operation.action } : {}),
   ...(operation.provider ? { provider: operation.provider } : {}),
   success: operation.outcome === "succeeded",

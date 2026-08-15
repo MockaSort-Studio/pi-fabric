@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import type { FabricState } from "../src/fabric-state.js";
+import { createFabricPersistedExecutionDetails } from "../src/audit/index.js";
 import { createFabricExecTool } from "../src/fabric-exec-tool.js";
 import { defaultCodePreviewSettings } from "../src/ui/code-preview.js";
 import { FabricToolDisplayController } from "../src/ui/tool-display.js";
@@ -87,13 +88,19 @@ describe("registered fabric_exec compact transcript rendering", () => {
     };
 
     const full = renderCall(toolFor(stateFor("full")), args, true);
-    const compact = renderCall(toolFor(stateFor("compact")), args, true);
+    const compact = renderCall(toolFor(stateFor("compact")), args);
     const fallback = renderCall(toolFor(stateFor("compact")), { code: args.code });
     const blank = renderCall(toolFor(stateFor("compact")), { code: args.code, display: { name: "   " } });
 
     expect(full).toContain("fabric");
     expect(full).toContain("TypeScript · 2 lines");
     expect(full).toContain("implementationSecret");
+    // Full mode shows the declared objective between the title and the code.
+    expect(full).toContain("Persist the verified setting");
+    expect(full.indexOf("Persist the verified setting"))
+      .toBeGreaterThan(full.indexOf("TypeScript · 2 lines"));
+    expect(full.indexOf("implementationSecret"))
+      .toBeGreaterThan(full.indexOf("Persist the verified setting"));
     expect(compact).toContain("Apply migration");
     expect(compact).toContain("Persist the verified setting");
     expect(compact).not.toContain("fabric");
@@ -101,6 +108,35 @@ describe("registered fabric_exec compact transcript rendering", () => {
     expect(compact).not.toContain("implementationSecret");
     expect(fallback).toContain("Tool");
     expect(blank).toContain("Tool");
+  });
+
+  it("promotes a compact card to the full transcript while the expand toggle is on", () => {
+    const args = {
+      code: "const implementationSecret = await discover();\nreturn implementationSecret;",
+      display: { name: "Apply migration", description: "Persist the verified setting" },
+    };
+    const details = {
+      success: true,
+      audits: [
+        { ref: "pi.read", provider: "pi", tool: "read", args: { path: "src/config.ts" }, success: true, result: "export const value = true;" },
+        { ref: "pi.bash", provider: "pi", tool: "bash", args: { command: "pnpm test" }, success: true },
+      ],
+      phases: [],
+    };
+
+    // ctrl+o (app.tools.expand) flips expanded; the expanded compact card must
+    // be byte-identical to the full card in both the call and the result.
+    expect(renderCall(toolFor(stateFor("compact")), args, true))
+      .toBe(renderCall(toolFor(stateFor("full")), args, true));
+
+    const compactCollapsed = renderResult(toolFor(stateFor("compact")), args, details, "outer return");
+    const compactExpanded = renderResult(toolFor(stateFor("compact")), args, details, "outer return", { expanded: true });
+    const fullExpanded = renderResult(toolFor(stateFor("full")), args, details, "outer return", { expanded: true });
+
+    expect(compactCollapsed).toContain("Tools");
+    expect(compactCollapsed).not.toContain("Fabric complete");
+    expect(compactExpanded).toBe(fullExpanded);
+    expect(compactExpanded).toContain("Fabric complete");
   });
 
   it("uses Tools or Done summaries while preserving completed nested detail and bounded returns", () => {
@@ -224,17 +260,84 @@ describe("registered fabric_exec compact transcript rendering", () => {
       phases: [],
     };
     const full = renderResult(toolFor(stateFor("full")), args, details, "", { expanded: true, theme: semanticTheme });
-    const compact = renderResult(toolFor(stateFor("compact")), args, details, "", { expanded: true, theme: semanticTheme });
+    const compact = renderResult(toolFor(stateFor("compact")), args, details, "", { theme: semanticTheme });
+    const fullCollapsed = renderResult(toolFor(stateFor("full")), args, details, "", { theme: semanticTheme });
+    const compactExpanded = renderResult(toolFor(stateFor("compact")), args, details, "", { expanded: true, theme: semanticTheme });
 
     expect(full).toContain("<accent>echo alpha</accent>");
-    expect(compact).toContain("<accent>echo alpha</accent>");
     expect(full).toContain("<accent>echo beta</accent>");
-    expect(compact).toContain("<accent>echo beta</accent>");
     expect(full).toContain("existing-string-headline");
-    expect(compact).toContain("existing-string-headline");
     expect(full).toContain("Fabric complete");
+    expect(compact).toContain("existing-string-headline");
     expect(compact).toContain("Tools");
-    expect(compact.split("\n").slice(1)).toEqual(full.split("\n").slice(1));
+    expect(compact).not.toContain("Fabric complete");
+    // Collapsed compact keeps the collapsed full card's nested rows under its
+    // grouped header; ctrl+o expansion promotes it to the full card verbatim.
+    expect(compact.split("\n").slice(1)).toEqual(fullCollapsed.split("\n").slice(1));
+    expect(compactExpanded).toBe(full);
+  });
+
+  it("re-renders a resumed card identically to the live one from persisted audits", () => {
+    const args = { code: "await pi.bash({ command: 'echo alpha' });\nawait pi.edit({ path: 'f.ts', edits: [{ oldText: 'a', newText: 'b' }] });" };
+    const audits = [
+      { ref: "pi.bash", provider: "pi", tool: "bash", args: { command: "echo alpha" }, success: true, result: { output: "alpha" } },
+      { ref: "pi.edit", provider: "pi", tool: "edit", args: { path: "f.ts", edits: [{ oldText: "a", newText: "b" }] }, success: true, result: { details: { diff: "-a\n+b" } } },
+    ];
+    const trace = {
+      kind: "pi-fabric.execution",
+      version: 1,
+      outcome: "succeeded",
+      phases: [],
+      operations: audits.map((audit, sequence) => ({
+        type: "call",
+        sequence,
+        ref: audit.ref,
+        provider: audit.provider,
+        action: audit.tool,
+        args: audit.tool === "bash" ? { command: audit.args.command } : { path: audit.args.path },
+        outcome: "succeeded",
+      })),
+      counts: { droppedValues: 0, truncatedValues: 0, redactedValues: 0, droppedOperations: 0 },
+    };
+    // Simulate a session reload: only the persisted, JSON-round-tripped details survive.
+    const persisted = JSON.parse(
+      JSON.stringify(createFabricPersistedExecutionDetails({ success: true, trace: trace as never, audits })),
+    );
+    const liveDetails = { success: true, phases: [], audits };
+
+    for (const expanded of [false, true]) {
+      const live = renderResult(toolFor(stateFor("full")), args, liveDetails, "", { expanded });
+      const resumed = renderResult(toolFor(stateFor("full")), args, persisted, "", { expanded });
+      expect(resumed).toBe(live);
+    }
+    const expanded = renderResult(toolFor(stateFor("full")), args, persisted, "", { expanded: true });
+    expect(expanded).toContain("alpha");
+    expect(expanded).toContain("hunk");
+  });
+
+  it("marks trace-only resumed audits instead of fabricating empty content", () => {
+    // Session records written before rich audit persistence: args are
+    // privacy-projected and results were never retained.
+    const details = {
+      success: true,
+      trace: {
+        kind: "pi-fabric.execution",
+        version: 1,
+        outcome: "succeeded",
+        phases: [],
+        operations: [
+          { type: "call", sequence: 0, ref: "pi.bash", provider: "pi", action: "bash", args: { command: "echo alpha" }, outcome: "succeeded" },
+          { type: "call", sequence: 1, ref: "pi.edit", provider: "pi", action: "edit", args: { path: "f.ts" }, outcome: "succeeded" },
+        ],
+        counts: { droppedValues: 0, truncatedValues: 0, redactedValues: 0, droppedOperations: 0 },
+      },
+    };
+    const args = { code: "await pi.bash({ command: 'echo alpha' });" };
+    const expanded = renderResult(toolFor(stateFor("full")), args, details, "", { expanded: true });
+
+    expect(expanded).toContain("output not retained across reload");
+    expect(expanded).toContain("diff not retained across reload");
+    expect(expanded).not.toContain("No output");
   });
 
   it("uses a compact pre-tool live status and Tools for grouped activity without changing its nested calls", () => {
@@ -437,7 +540,7 @@ describe("registered fabric_exec compact transcript rendering", () => {
     };
     const bootstrappedOnly = stateFor("compact", { initialized: false });
 
-    const compact = renderCall(toolFor(bootstrappedOnly), args, true);
+    const compact = renderCall(toolFor(bootstrappedOnly), args);
 
     expect(compact).toContain("Resume history");
     expect(compact).toContain("Render the resumed card");

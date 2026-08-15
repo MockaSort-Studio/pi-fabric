@@ -91,10 +91,12 @@ type FabricToolDisplayMode = "full" | "compact";
 // deferred startup loads configuration into FabricState without creating the
 // heavyweight runtime, so a resumed session must honor the bootstrapped
 // ui.toolDisplay even while state.initialized is still false. The explicit
-// bootstrapped getter also guards the failed-bootstrap window (config loaded
-// unsuccessfully), where full must remain the safe fallback.
+// bootstrapped check also guards the failed-bootstrap window (config loaded
+// unsuccessfully): compact is the configured default, but a broken or absent
+// configuration falls back to full so a degraded startup never hides the
+// underlying transcript.
 const toolDisplayMode = (state: FabricState): FabricToolDisplayMode =>
-  state.bootstrapped ? state.config.ui.toolDisplay : DEFAULT_FABRIC_CONFIG.ui.toolDisplay;
+  state.bootstrapped ? state.config.ui.toolDisplay : "full";
 
 const compactResultHeader = (
   theme: Theme,
@@ -229,7 +231,9 @@ export const createFabricExecTool = (
             theme,
             context.invalidate,
           );
-      if (mode === "compact") {
+      // Pi's app.tools.expand toggle (ctrl+o) flips context.expanded and
+      // promotes a compact card to the full transcript below.
+      if (mode === "compact" && !context.expanded) {
         const display = normalizeRunDisplay(params.display);
         const header = renderBoundedLines(
           [
@@ -255,6 +259,11 @@ export const createFabricExecTool = (
       const title = `${theme.fg("toolTitle", theme.bold("fabric"))}${
         displayName ? ` ${theme.fg("accent", displayName)}` : ""
       } ${theme.fg("dim", `TypeScript · ${countLabel(lines.length, "line")}`)}`;
+      // Match the compact header: the declared objective sits between the
+      // title and the code preview.
+      const description = runDisplay?.description
+        ? theme.fg("dim", safeTerminalText(runDisplay.description))
+        : "";
       const baseLimit = context.expanded ? lines.length : Math.min(lines.length, 8);
       const maxLimit = context.expanded
         ? lines.length
@@ -274,7 +283,7 @@ export const createFabricExecTool = (
             ? `\n${theme.fg("dim", `… ${countLabel(hidden, "line")} hidden · `)}${expandHint(theme)}`
             : "";
         return new Text(
-          `${title}${preview ? `\n${preview}` : ""}${hiddenHint}`,
+          `${title}${description ? `\n${description}` : ""}${preview ? `\n${preview}` : ""}${hiddenHint}`,
           0,
           0,
         ).render(width);
@@ -352,7 +361,9 @@ export const createFabricExecTool = (
       const nl = "\n";
       const allRowIndexes = (lines: string[], enabled: boolean): ReadonlySet<number> | undefined =>
         enabled ? new Set(lines.map((_line, index) => index)) : undefined;
-      const compact = toolDisplayMode(state) === "compact";
+      // Expanded (app.tools.expand / ctrl+o) promotes compact cards to the
+      // full rendering; compact only governs the collapsed presentation.
+      const compact = !expanded && toolDisplayMode(state) === "compact";
       const corePreviewContext = { cwd: context.cwd, settings: codePreviewSettings };
       const showAgentToolPreview = state.initialized
         ? state.config.ui.showAgentToolPreview
@@ -529,7 +540,7 @@ export const createFabricExecTool = (
             ),
           );
         }
-        if (compact && !failed && !expanded) {
+        if (compact && !failed) {
           return trackRows(new Text(theme.fg("success", "✓ Done"), 0, 0));
         }
         if (!output) {
@@ -825,17 +836,20 @@ export const createFabricExecTool = (
       const outputFormatStartLine = result.logs.length > 0
         ? countNewlines(logPrefix) + 2
         : 0;
-      const persistedDetails = createFabricPersistedExecutionDetails({
-        ...result,
-        ...(outputFormat ? { outputFormat, outputFormatStartLine } : {}),
-        ...(outputFormat
-          ? {
-              outputFormatLines:
-                formattedValue.highlightedLineCount
-                ?? countNewlines(formattedValue.text) + 1,
-            }
-          : {}),
-      });
+      // Evaluated lazily at each return so the main path persists audits after
+      // their in-memory image payloads are stripped below.
+      const persistedRenderDetails = () =>
+        createFabricPersistedExecutionDetails({
+          ...result,
+          ...(outputFormat ? { outputFormat, outputFormatStartLine } : {}),
+          ...(outputFormat
+            ? {
+                outputFormatLines:
+                  formattedValue.highlightedLineCount
+                  ?? countNewlines(formattedValue.text) + 1,
+              }
+            : {}),
+        });
 
       if (result.typeErrors) {
         const text = result.typeErrors
@@ -854,7 +868,7 @@ export const createFabricExecTool = (
         );
         return {
           content: [{ type: "text", text: bounded.text }],
-          details: persistedDetails,
+          details: persistedRenderDetails(),
           isError: true,
         };
       }
@@ -919,7 +933,7 @@ export const createFabricExecTool = (
       }
       return {
         content,
-        details: persistedDetails,
+        details: persistedRenderDetails(),
         ...(result.usage ? { usage: result.usage } : {}),
         ...(terminate ? { terminate: true } : {}),
         ...(result.success ? {} : { isError: true }),

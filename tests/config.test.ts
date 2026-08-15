@@ -342,9 +342,9 @@ describe("Fabric configuration", () => {
   });
 
   it("defaults, validates, merges, and persists tool display independently of full code mode", () => {
-    expect(DEFAULT_FABRIC_CONFIG.ui.toolDisplay).toBe("full");
-    expect(normalizeFabricConfig({ ui: { toolDisplay: "compact" } }).ui.toolDisplay).toBe("compact");
-    expect(normalizeFabricConfig({ ui: { toolDisplay: "minimal" } }).ui.toolDisplay).toBe("full");
+    expect(DEFAULT_FABRIC_CONFIG.ui.toolDisplay).toBe("compact");
+    expect(normalizeFabricConfig({ ui: { toolDisplay: "full" } }).ui.toolDisplay).toBe("full");
+    expect(normalizeFabricConfig({ ui: { toolDisplay: "minimal" } }).ui.toolDisplay).toBe("compact");
     expect(normalizeFabricConfig({ fullCodeMode: false, ui: { toolDisplay: "compact" } }))
       .toMatchObject({ fullCodeMode: false, ui: { toolDisplay: "compact" } });
 

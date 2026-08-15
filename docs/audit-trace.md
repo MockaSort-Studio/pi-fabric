@@ -1,6 +1,6 @@
 # Fabric execution trace V1
 
-The final `fabric_exec` result details form a bounded durable envelope that holds only `success` and `trace`. Rich `audits`, logs, values, type errors, elapsed time, media, and raw runtime or provider errors stay in memory. Fabric never copies them into final session JSONL details. Live partial updates can still carry richer audits for the active UI.
+The final `fabric_exec` result details form a bounded durable envelope that holds `success`, `trace`, the rich render `audits`, `phases`, and `error`. The privacy-projected trace stays the functional record for compaction, memory, and tool ownership. The audits persist verbatim with full arguments, results, and previews. A resumed transcript re-renders and expands the same way as the live one. Collapsed cards provide the visual boundary. The record itself keeps the full data. Final session JSONL details never contain logs, return values, type errors, media payloads, or in-memory media notes.
 
 The serialized final details object never exceeds 512 KiB. Consumers use current traces structurally. The chat renderer allows one compatibility exception. It can match a pre-change bash digest against string literals or named strings already visible in the outer `fabric_exec` arguments, so old previews can show the original command.
 
@@ -10,6 +10,9 @@ The serialized final details object never exceeds 512 KiB. Consumers use current
 interface FabricPersistedExecutionDetailsV1 {
   success: boolean;
   trace: FabricExecutionTraceV1;
+  audits: FabricLegacyRenderAudit[];
+  phases: string[];
+  error?: string;
 }
 
 interface FabricExecutionTraceV1 {
@@ -102,7 +105,7 @@ Identifiers (`ref`, `provider`, `action`), outcomes, failure stage, operation se
 
 The package exports `isFabricExecutionTraceV1`, `isFabricExecutionTraceOperationV1`, `readFabricExecutionTraceV1`, `createFabricPersistedExecutionDetails`, and `readFabricExecutionRenderDetails`. Its guards reject malformed envelopes, extra fields, oversized data, and unknown versions.
 
-Current trace-only sessions rebuild compact nested-call rows from operation metadata, including bash command text. Old sessions that contain `details.audits` and `details.phases` still render through the legacy adapter. For old digest-only bash traces, the renderer matches the digest against literal and named strings that the outer `fabric_exec` arguments already expose. When the renderer finds no exact command, it drops the digest and shows no hash. New final details never write `audits`.
+Current sessions render resumed cards from the persisted `details.audits`. These audits win over the trace, and they restore full nested read bodies, edit diffs, bash output, and previews on expand. Sessions written before audit persistence hold the trace alone. Their audits come from operation metadata, which keeps bash command text. Each reconstructed audit carries a trace-derived marker, and its missing payloads show `not retained across reload`. The renderer shows no fabricated content. Old sessions that contain `details.audits` and `details.phases` still render through the legacy adapter. For old digest-only bash traces, the renderer matches the digest against literal and named strings that the outer `fabric_exec` arguments already expose. When the renderer finds no exact command, it drops the digest and shows no hash.
 
 Compaction and memory read only `toolResult.details.trace`, and both pass it through the trace guard. Compaction emits phases and operations in sequence order with stable `entryId/subordinal` addresses. Memory emits one normalized child per operation with address `<outer-entry-id>/<sequence>`. Neither consumer parses `fabric_exec` source, outer output, operation results, or rendered audit prose to recover calls, files, or failures.
 
@@ -110,4 +113,4 @@ An invalid or unknown trace, when present, blocks semantic legacy reinterpretati
 
 ## Limitations
 
-Durable traces store bounded projections. Final rendering cannot show read bodies, edit diffs, write bodies, agent tasks, discovery queries and results, workflow descriptions, labels, messages, and data, external and MCP arguments, or provider results. Bash command text stays in the trace. Combinator traces carry structure and typed outcome. Item values, stage functions, stage results, parent IDs, and timing never persist. When arguments are omitted, generic failure resolution keeps only the ref identity. Rich action audits and workflow activity content stay available only while the live execution result or activity store remains in memory.
+Persisted audits are verbatim. Resumed final rendering shows read bodies, edit diffs, write bodies, bash output, agent tasks, and provider results. Durable traces still store bounded projections. Bash command text stays in the trace, and arbitrary argument or result content never enters it. That exclusion covers discovery queries, workflow descriptions and data, external and MCP arguments, and provider results. When arguments are omitted from the trace, generic failure resolution keeps only the ref identity. The envelope stays bounded. Past 512 KiB, display-only audits trim first. Trace-only cards, old or trimmed, render `not retained across reload` markers for content the session record does not hold. Workflow activity content stays available only while the live execution result or activity store remains in memory.

@@ -386,7 +386,7 @@ describe("FabricSettingsComponent", () => {
     component.handleInput("\r");
     const lines = component.render(80).join("\n");
     expect(lines).toContain("Tool display");
-    expect(lines).toContain("full");
+    expect(lines).toContain("compact");
     expect(lines).toContain("Agent tool preview");
     expect(lines).toContain("Update debounce");
     expect(lines).toContain("100ms");
@@ -819,8 +819,8 @@ describe("FabricSettingsComponent", () => {
       });
 
       expect(JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8")))
-        .toMatchObject({ ui: { toolDisplay: "compact" } });
-      expect(config.ui.toolDisplay).toBe("compact");
+        .toMatchObject({ ui: { toolDisplay: "full" } });
+      expect(config.ui.toolDisplay).toBe("full");
       expect(onConfigApplied).toHaveBeenCalledOnce();
       expect(applyFabricMode).toHaveBeenCalledOnce();
     } finally {

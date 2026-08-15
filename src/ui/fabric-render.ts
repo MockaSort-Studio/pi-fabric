@@ -32,6 +32,8 @@ export interface FabricRenderAudit {
   result?: unknown;
   resultTruncated?: boolean;
   preview?: unknown;
+  /** True for audits reconstructed from the durable trace: args are privacy-projected and results/previews were never persisted. */
+  fromTrace?: boolean;
   startedAt?: number;
   endedAt?: number;
   previewHeadline?: string;

@@ -119,7 +119,7 @@ Fabric includes a live activity surface in Pi:
 - A compact widget above the chat (like `pi-supervisor`) whose header follows the current phase while its rows show active/completed agents, active actors, and their recent nested tool or code-change activity.
 - `/fabric` (or `/fabric dashboard`): opens the **Activity** and **Topology** views. The user-facing Pi session appears as **Main**. You can queue or steer participants and inspect the project topology.
 - `/fabric settings`: mirrors Pi's `/settings` and writes changes to `fabric.json`.
-- `Tool display` (`full` or `compact`) is configured under `/fabric settings` → **UI**; compact elevates the declared display intent, hides the outer TypeScript, and applies to the current transcript immediately.
+- `Tool display` (`compact` by default, or `full`) is configured under `/fabric settings` → **UI**; compact elevates the declared display intent, hides the outer TypeScript, and applies to the current transcript immediately. Pi's tool-expand keybinding (`ctrl+o` by default) expands a compact card to the full transcript.
 
 See the [interface & commands reference](docs/interface.md) for every view, keybinding, and slash command.
 

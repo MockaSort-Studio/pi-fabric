@@ -1467,7 +1467,8 @@ export const buildFabricSettingsItems = (
             values: WIDGET_MODES,
           }),
           setting("ui.toolDisplay", "Tool display", config.ui.toolDisplay, {
-            description: "Show full Fabric TypeScript or a compact intent-and-tools transcript.",
+            description:
+              "Show full Fabric TypeScript or a compact intent-and-tools transcript; the tool-expand key (ctrl+o) expands a compact card to full.",
             values: TOOL_DISPLAY_MODES,
           }),
           setting(

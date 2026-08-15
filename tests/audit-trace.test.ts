@@ -285,14 +285,17 @@ return true;
       failureStage: "resolve",
       args: { ref: "demo.echo" },
     });
-    const serialized = JSON.stringify([
+    // Secrets stay out of the projected trace; the session record retains the
+    // raw outer error verbatim so resumed failure cards render faithfully.
+    const traces = [
       createFabricPersistedExecutionDetails(providersResult),
       createFabricPersistedExecutionDetails(modelsResult),
       createFabricPersistedExecutionDetails(catalogResult),
       createFabricPersistedExecutionDetails(listResult),
       createFabricPersistedExecutionDetails(searchResult),
       createFabricPersistedExecutionDetails(describeResult),
-    ]);
+    ].map((details) => details.trace);
+    const serialized = JSON.stringify(traces);
     expect(serialized).not.toContain("failure-secret");
     expect(serialized).not.toContain("failure-query-secret");
   });
@@ -502,7 +505,8 @@ return true;
       { ref: "fabric.workflow.pipeline", outcome: "failed", failureStage: "invoke" },
       { ref: "fabric.workflow.parallel", outcome: "failed", failureStage: "invoke" },
     ]);
-    expect(JSON.stringify(createFabricPersistedExecutionDetails(result))).not.toContain("stage-error-secret");
+    expect(JSON.stringify(createFabricPersistedExecutionDetails(result).trace)).not.toContain("stage-error-secret");
+    // The session record retains the raw error verbatim for faithful resumed failure cards.
   });
 
   it("seals unclosed workflow spans on timeout and abort", async () => {
@@ -532,8 +536,8 @@ return true;
       { ref: "demo.echo", outcome: "aborted" },
     ]);
     expect(JSON.stringify([
-      createFabricPersistedExecutionDetails(timedResult),
-      createFabricPersistedExecutionDetails(abortedResult),
+      createFabricPersistedExecutionDetails(timedResult).trace,
+      createFabricPersistedExecutionDetails(abortedResult).trace,
     ])).not.toContain("secret");
   });
 
@@ -596,7 +600,7 @@ return true;
       error: expectedError ?? `Call failed during ${stage}`,
       args: {},
     });
-    expect(JSON.stringify(createFabricPersistedExecutionDetails(result))).not.toContain(
+    expect(JSON.stringify(createFabricPersistedExecutionDetails(result).trace)).not.toContain(
       "exploded",
     );
   });
@@ -858,7 +862,7 @@ return true;
       );
       expect(result.trace.outcome).toBe("failed");
       expect(result.trace.error).toBe("Execution failed");
-      expect(JSON.stringify(createFabricPersistedExecutionDetails(result))).not.toContain(message);
+      expect(JSON.stringify(createFabricPersistedExecutionDetails(result).trace)).not.toContain(message);
     }
   });
 
@@ -890,7 +894,7 @@ return true;
     expect(readFabricExecutionRenderDetails(legacy)).toMatchObject(legacy);
   });
 
-  it("retains bash commands while omitting arbitrary argument and result content", () => {
+  it("retains bash commands in the trace while omitting arbitrary argument and result content", () => {
     const recorder = new FabricExecutionTraceRecorder();
     const bash = recorder.issueCall("pi.bash", {
       command: "pnpm vitest run tests/audit-trace.test.ts",
@@ -1005,7 +1009,52 @@ return true;
     ]) {
       expect(serialized).not.toContain(secret);
     }
-    expect(details).not.toHaveProperty("audits");
+    expect(details.audits).toEqual([]);
+  });
+
+  it("persists rich render audits verbatim alongside the projected trace", () => {
+    const recorder = new FabricExecutionTraceRecorder();
+    recorder
+      .issueCall("pi.write", { path: "/tmp/safe.txt", content: "write-content-secret" })
+      .succeed({ created: true, details: { secretValue: "write-result-secret" } });
+    const trace = recorder.seal("succeeded", ["Ship"]);
+    const audits = [
+      {
+        ref: "pi.write",
+        tool: "write",
+        provider: "pi",
+        success: true,
+        args: { path: "/tmp/safe.txt", content: "verbatim-argument" },
+        result: { details: { codePreviewAfterWrite: { kind: "content", content: "verbatim-result" } } },
+        preview: { details: { codePreviewBeforeWrite: { kind: "content", content: "verbatim-preview" } } },
+        startedAt: 1,
+        endedAt: 2,
+        // In-memory image payloads and correlation ids never cross into the record.
+        media: [{ type: "image", data: "image-bytes-not-persisted" }],
+        mediaNote: "Read image file",
+        nestedToolCallId: "nested-correlation-id",
+      } as never,
+    ];
+    const details = createFabricPersistedExecutionDetails({ success: true, trace, audits, phases: ["Ship"] });
+    const serialized = JSON.stringify(details);
+
+    expect(JSON.stringify(details.trace)).not.toContain("write-content-secret");
+    for (const retained of ["verbatim-argument", "verbatim-result", "verbatim-preview"]) {
+      expect(serialized).toContain(retained);
+    }
+    for (const volatile of ["image-bytes-not-persisted", "Read image file", "nested-correlation-id"]) {
+      expect(serialized).not.toContain(volatile);
+    }
+
+    const parsed = readFabricExecutionRenderDetails(JSON.parse(serialized));
+    expect(parsed.phases).toEqual(["Ship"]);
+    expect(parsed.audits).toHaveLength(1);
+    expect(parsed.audits[0]).toMatchObject({
+      ref: "pi.write",
+      tool: "write",
+      result: { details: { codePreviewAfterWrite: { content: "verbatim-result" } } },
+    });
+    expect(parsed.audits[0]).not.toHaveProperty("fromTrace");
     expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(
       FABRIC_EXECUTION_DETAILS_MAX_BYTES,
     );

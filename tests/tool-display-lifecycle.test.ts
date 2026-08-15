@@ -110,6 +110,7 @@ const renderCard = (
   toolCallId: string,
   params: Record<string, unknown>,
   invalidate: () => void,
+  expanded = false,
 ): string =>
   tool.renderCall!(params, plainTheme, {
     args: params,
@@ -121,7 +122,7 @@ const renderCard = (
     executionStarted: true,
     argsComplete: true,
     isPartial: false,
-    expanded: true,
+    expanded,
     showImages: true,
     isError: false,
   } as never).render(120).join("\n");
@@ -294,6 +295,17 @@ describe("Fabric tool display lifecycle", () => {
       expect(resumed).toContain("Resume history");
       expect(resumed).not.toContain("await pi.read('/tmp/leaf');");
       expect(resumed).not.toContain("TypeScript");
+
+      // ctrl+o expansion still promotes the resumed compact card to full.
+      const resumedExpanded = renderCard(
+        fabricTool,
+        "resumed-history-expanded",
+        { code: "await pi.read('/tmp/leaf');", display: { name: "Resume history" } },
+        vi.fn(),
+        true,
+      );
+      expect(resumedExpanded).toContain("await pi.read('/tmp/leaf');");
+      expect(resumedExpanded).toContain("TypeScript");
     } finally {
       if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = inheritedAgentDir;
