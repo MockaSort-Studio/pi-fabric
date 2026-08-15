@@ -82,6 +82,10 @@ All calls return promises. Fields ending in `?` are optional; `unknown` marks pr
 
 `memory.recall` structural filters (`ref`, `provider`, `action`, `outcome`) use exact persisted trace fields. With no `query`, `matchMode` is `"structural"`; with a lexical/regex query it is `"combined"`. Use `tools.catalog()`/`tools.search()` only to choose a current action head—catalog descriptions are navigation metadata and never become session evidence.
 
+`memory.expand(args)` requires `session` (a `SessionInfo.id` or `.file` round-trips) plus a selector: `indices`, `entryIds`, `operationAddresses`, or `entryRange:{first,last}` — get them from `memory.recall` hits; expansion has no before/after window argument. `memory.sessions` accepts an optional `limit`.
+
+Stable-provider arguments normalize near-miss spellings the way `pi.*` does: known aliases and casing/singular variants repair to the canonical key, numeric strings coerce for numeric fields, and scope spellings such as `cwd` repair to `project`. Unknown keys are never silently ignored—they fail validation with the offending property path named (e.g. `/before: must NOT have additional properties`).
+
 `SessionInfo` is `{id,file,cwd,mtime,entryCount,tier:"hot"|"cold",branches,lineageFingerprint}`. Memory failures are returned in `error: {code,message,...}`; ambiguous-session failures may return only `{error}`. Check `error` before relying on optional success fields.
 
 ### Dynamic provider return shapes

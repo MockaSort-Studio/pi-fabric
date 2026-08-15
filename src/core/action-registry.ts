@@ -279,17 +279,43 @@ const conflictBetween = (
   return { resources: overlap, reason: "shared_resource" };
 };
 
+// TypeBox reports additionalProperties failures against the object root
+// without naming the offending keys; name them so a rejected near-miss call
+// is actionable (e.g. a before/after guess on memory.expand surfaces as
+// "/before: must not have additional properties").
+const unexpectedKeys = (
+  schema: Record<string, unknown>,
+  value: Record<string, unknown>,
+): string[] => {
+  if ((schema as { type?: unknown }).type !== "object") return [];
+  if ((schema as { additionalProperties?: unknown }).additionalProperties !== false) return [];
+  const properties = (schema as { properties?: Record<string, unknown> }).properties;
+  if (!properties) return [];
+  return Object.keys(value).filter((key) => !(key in properties));
+};
+
 const validationMessage = (
   schema: Record<string, unknown>,
   value: Record<string, unknown>,
 ): string | undefined => {
   try {
     if (Value.Check(schema, value)) return undefined;
-    const message = [...Value.Errors(schema, value)]
+    const messages = [...Value.Errors(schema, value)]
       .slice(0, 5)
-      .map((error) => error.message)
-      .join("; ");
-    return truncateString(message || "Schema validation failed", MAX_VALIDATION_MESSAGE_CHARS);
+      .map((error) => {
+        // Prefix nested failures with their property path.
+        const at = (error as { path?: unknown }).path;
+        return typeof at === "string" && at !== "" && at !== "/"
+          ? `${at}: ${error.message}`
+          : error.message;
+      });
+    for (const key of unexpectedKeys(schema, value).slice(0, 5)) {
+      messages.push(`/${key}: must not have additional properties`);
+    }
+    return truncateString(
+      messages.join("; ") || "Schema validation failed",
+      MAX_VALIDATION_MESSAGE_CHARS,
+    );
   } catch {
     return "Schema validator failed";
   }

@@ -36,6 +36,9 @@ interface FabricAgentRequest {
   recursive?: boolean;
   worktree?: boolean;
   schema?: Record<string, unknown>;
+  prompt?: string;
+  instructions?: string;
+  timeout_ms?: number;
 }
 interface FabricHandoffCall {
   readonly ref: string;
@@ -57,6 +60,9 @@ interface FabricHandoffRequest {
   extensions?: boolean;
   recursive?: boolean;
   schema?: Record<string, unknown>;
+  prompt?: string;
+  instructions?: string;
+  timeout_ms?: number;
 }
 interface FabricHandoffResult {
   scheduled: true;
@@ -500,6 +506,7 @@ interface FabricActorRequestBase {
   tools?: string[];
   transport?: FabricTransport;
   timeoutMs?: number;
+  timeout_ms?: number;
   extensions?: boolean;
   requires?: Array<string | { ref: string; optional?: boolean }>;
   validWhile?: FabricActorValidWhile;
@@ -552,12 +559,14 @@ interface FabricActorMessage {
   stale?: boolean;
   reason?: string;
 }
+// agentId/agent_id spellings repair to id during agent arg normalization.
+type FabricAgentTargetArgs = { id: string; agentId?: string; agent_id?: string };
 interface FabricAgentsApi {
   run(args: FabricAgentRequest): Promise<FabricAgentResult>;
   handoff(args: FabricHandoffRequest): Promise<FabricHandoffResult>;
   spawn(args: FabricAgentRequest): Promise<FabricAgentHandle>;
-  wait(args: { id: string }): Promise<FabricAgentResult>;
-  status(args: { id: string }): Promise<FabricAgentResult | FabricAgentHandle | FabricMainAgentInfo | FabricActorInfo | FabricParticipantInfo>;
+  wait(args: FabricAgentTargetArgs): Promise<FabricAgentResult>;
+  status(args: FabricAgentTargetArgs): Promise<FabricAgentResult | FabricAgentHandle | FabricMainAgentInfo | FabricActorInfo | FabricParticipantInfo>;
   list(args?: { scope?: FabricParticipantScope }): Promise<Array<FabricAgentResult | FabricAgentHandle | FabricParticipantInfo>>;
   members(args?: { scope?: FabricParticipantScope; kinds?: FabricParticipantKind[]; includeStale?: boolean }): Promise<FabricParticipantInfo[]>;
   self(): Promise<FabricParticipantInfo>;
@@ -572,10 +581,10 @@ interface FabricAgentsApi {
     once?: boolean;
   }): Promise<FabricLifecycleSubscription>;
   subscriptions(args?: { from?: string; to?: string }): Promise<FabricLifecycleSubscription[]>;
-  unsubscribe(args: { id: string }): Promise<{ removed: boolean }>;
+  unsubscribe(args: FabricAgentTargetArgs): Promise<{ removed: boolean }>;
   models(args?: { runner?: FabricAgentRunner; refresh?: boolean }): Promise<FabricModelInfo[]>;
-  stop(args: { id: string }): Promise<FabricAgentResult | FabricActorInfo | FabricRemoteControlResult>;
-  cleanup(args: { id: string; deleteBranch?: boolean }): Promise<{ cleaned: boolean }>;
+  stop(args: FabricAgentTargetArgs): Promise<FabricAgentResult | FabricActorInfo | FabricRemoteControlResult>;
+  cleanup(args: FabricAgentTargetArgs & { deleteBranch?: boolean; delete_branch?: boolean }): Promise<{ cleaned: boolean }>;
   create(args: FabricActorRequest): Promise<FabricActorInfo>;
   setModel(args: { id: string; model?: string }): Promise<FabricActorInfo>;
   setThinking(args: { id: string; thinking?: FabricThinking }): Promise<FabricActorInfo>;
@@ -598,7 +607,7 @@ interface FabricAgentsApi {
   followUp(args: { id: string; message: string; data?: unknown }): Promise<{ queued: true; messageId: string; routed?: "local" | "main" | "mesh"; acknowledged?: boolean }>;
   setSteeringMode(args: { id: string; mode: "all" | "one-at-a-time" }): Promise<{ queued: true; messageId: string }>;
   setFollowUpMode(args: { id: string; mode: "all" | "one-at-a-time" }): Promise<{ queued: true; messageId: string }>;
-  actorStatus(args: { id: string }): Promise<FabricActorInfo>;
+  actorStatus(args: FabricAgentTargetArgs): Promise<FabricActorInfo>;
   actors(): Promise<FabricActorInfo[]>;
   messages(args: { id: string; limit?: number }): Promise<FabricActorMessage[]>;
   remove(args: { id: string }): Promise<{ removed: boolean }>;
@@ -687,14 +696,23 @@ interface FabricMeshStateEntry<T = unknown> {
 }
 interface FabricMeshApi {
   self(): Promise<FabricMeshIdentity>;
-  publish(args: { topic: string; kind?: string; to?: string; text?: string; data?: unknown }): Promise<FabricMeshEvent>;
-  read(args?: { after?: number; topic?: string; to?: string; limit?: number }): Promise<FabricMeshEvent[]>;
-  members(args?: { scope?: FabricParticipantScope; kinds?: FabricParticipantKind[]; includeStale?: boolean; limit?: number }): Promise<FabricParticipantInfo[]>;
+  publish(args: { topic: string; kind?: string; to?: string; text?: string; data?: unknown; message?: string; body?: string }): Promise<FabricMeshEvent>;
+  read(args?: { after?: number; topic?: string; to?: string; limit?: number; max?: number }): Promise<FabricMeshEvent[]>;
+  members(args?: { scope?: FabricParticipantScope; kinds?: FabricParticipantKind[]; includeStale?: boolean; limit?: number; max?: number; include_stale?: boolean }): Promise<FabricParticipantInfo[]>;
   get<T = unknown>(args: { key: string }): Promise<FabricMeshStateEntry<T> | null>;
-  list<T = unknown>(args?: { prefix?: string; limit?: number }): Promise<Array<FabricMeshStateEntry<T>>>;
-  put<T = unknown>(args: { key: string; value: T; ifVersion?: number }): Promise<FabricMeshStateEntry<T>>;
-  delete(args: { key: string; ifVersion?: number }): Promise<{ deleted: boolean; version?: number }>;
+  list<T = unknown>(args?: { prefix?: string; limit?: number; max?: number }): Promise<Array<FabricMeshStateEntry<T>>>;
+  put<T = unknown>(args: { key: string; value: T; ifVersion?: number; if_version?: number; version?: number }): Promise<FabricMeshStateEntry<T>>;
+  delete(args: { key: string; ifVersion?: number; if_version?: number; version?: number }): Promise<{ deleted: boolean; version?: number }>;
 }
+// Stable-provider argument bags declare the canonical keys plus the
+// near-miss spellings repaired during argument normalization
+// (providers/arg-normalization.ts and each provider's per-action table). The
+// registry's prepare stage repairs aliases before schema validation, so a
+// call spelled with an alias typechecks instead of tripping the
+// excess-property check; the canonical key wins on conflict, and anything
+// else fails additionalProperties:false validation with the offending
+// property path named. Keep these spillover fields in sync with the provider
+// normalization tables.
 type FabricMemoryBranches = "active" | "all";
 interface FabricMemoryEntryRange {
   first: number;
@@ -718,6 +736,12 @@ interface FabricMemoryRecallArgs {
   since?: number;
   until?: number;
   entryRange?: FabricMemoryEntryRange;
+  q?: string;
+  limit?: number;
+  max?: number;
+  page_size?: number;
+  query_mode?: "literal" | "regex";
+  entry_range?: FabricMemoryEntryRange;
 }
 interface FabricMemoryRecallResult {
   scope?: string;
@@ -758,6 +782,14 @@ interface FabricMemoryExpandArgs {
   entryIds?: string[];
   operationAddresses?: string[];
   entryRange?: FabricMemoryEntryRange;
+  id?: string;
+  file?: string;
+  path?: string;
+  session_id?: string;
+  index?: number;
+  entry_ids?: string[];
+  operation_addresses?: string[];
+  entry_range?: FabricMemoryEntryRange;
 }
 interface FabricMemoryExpandResult {
   session?: string;
@@ -780,7 +812,12 @@ interface FabricMemorySessionInfo {
 interface FabricMemoryApi {
   recall(args?: FabricMemoryRecallArgs): Promise<FabricMemoryRecallResult>;
   expand(args: FabricMemoryExpandArgs): Promise<FabricMemoryExpandResult>;
-  sessions(args?: { scope?: string; branches?: FabricMemoryBranches }): Promise<{
+  sessions(args?: {
+    scope?: string;
+    branches?: FabricMemoryBranches;
+    limit?: number;
+    max?: number;
+  }): Promise<{
     scope?: string;
     branches?: FabricMemoryBranches;
     sessions?: FabricMemorySessionInfo[];
@@ -797,6 +834,8 @@ interface FabricStateTransitionArgs {
   kind?: "state" | "representation";
   complexity?: { files: string[] };
   force?: boolean;
+  name?: string;
+  description?: string;
 }
 interface FabricStateComplexityFile {
   file: string;
@@ -827,14 +866,14 @@ interface FabricStateApi {
     certification: { current: unknown | null; recent: unknown[] };
     recentLabels: string[];
   }>;
-  history(args?: { label?: string; limit?: number; includeArchived?: boolean }): Promise<{
+  history(args?: { label?: string; limit?: number; includeArchived?: boolean; name?: string; max?: number }): Promise<{
     transitions: unknown[];
     labels: string[];
     certifications: unknown[];
   }>;
-  complexity(args?: { files?: string[] }): Promise<{ files: FabricStateComplexityFile[]; netDelta: number }>;
-  verify(args?: { labels?: string[]; includeArchived?: boolean; timeoutMs?: number }): Promise<FabricStateVerificationResult>;
-  goal(args: { check: string; description?: string }): Promise<FabricMeshStateEntry<{ check: string; description?: string }>>;
+  complexity(args?: { files?: string[]; paths?: string[] }): Promise<{ files: FabricStateComplexityFile[]; netDelta: number }>;
+  verify(args?: { labels?: string[]; includeArchived?: boolean; timeoutMs?: number; label?: string }): Promise<FabricStateVerificationResult>;
+  goal(args: { check: string; description?: string; command?: string; cmd?: string; predicate?: string }): Promise<FabricMeshStateEntry<{ check: string; description?: string }>>;
   checkGoal(args?: { timeoutMs?: number }): Promise<{
     passed: boolean;
     output: string;
@@ -903,6 +942,9 @@ interface FabricSchemaApi {
     summary: string;
     evidence: FabricSchemaEvidence[];
     complexityReduction?: boolean;
+    name?: string;
+    description?: string;
+    complexity_reduction?: boolean;
   }): Promise<{
     hypothesisId: string;
     status: string;
@@ -910,14 +952,16 @@ interface FabricSchemaApi {
     fingerprint: string;
     generation: number;
   }>;
-  verify(args: { hypothesisId: string }): Promise<FabricSchemaVerificationResult>;
+  verify(args: { hypothesisId: string; id?: string; hypothesis_id?: string }): Promise<FabricSchemaVerificationResult>;
   commit(args: {
     hypothesisId: string;
     certificate: string;
     operations: FabricSchemaFileOperation[];
     postconditions: FabricSchemaEvidence[];
+    id?: string;
+    hypothesis_id?: string;
   }): Promise<FabricSchemaCommitResult>;
-  abort(args: { hypothesisId: string; certificate?: string }): Promise<{
+  abort(args: { hypothesisId: string; certificate?: string; id?: string; hypothesis_id?: string }): Promise<{
     aborted: true;
     hypothesisId: string;
   }>;
@@ -989,6 +1033,8 @@ interface FabricCompactApi {
     instructions?: string;
     preserve?: string[];
     requestedBy?: string;
+    instruction?: string;
+    requested_by?: string;
   }): Promise<{ requested: true; intent: FabricCompactPendingIntent }>;
   status(): Promise<{ pending?: FabricCompactPendingIntent; last?: FabricCompactLastCommit }>;
   cancel(): Promise<{ cancelled: true }>;

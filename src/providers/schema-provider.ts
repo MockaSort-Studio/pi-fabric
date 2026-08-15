@@ -6,6 +6,7 @@ import type {
 } from "../protocol.js";
 import { SchemaController } from "../schema/controller.js";
 import type { SchemaEvidence, SchemaFileOperation } from "../schema/types.js";
+import { actionArgNormalizer, type ArgNormalizationSpec } from "./arg-normalization.js";
 
 const pathProperty = { type: "string", minLength: 1 };
 const evidenceSchema = {
@@ -180,6 +181,21 @@ const descriptors: FabricActionDescriptor[] = [
   },
 ];
 
+export const SCHEMA_ARG_NORMALIZATION: Record<string, ArgNormalizationSpec> = {
+  hypothesize: {
+    aliases: {
+      name: "label",
+      description: "summary",
+      complexity_reduction: "complexityReduction",
+    },
+  },
+  verify: { aliases: { id: "hypothesisId", hypothesis_id: "hypothesisId" } },
+  commit: { aliases: { id: "hypothesisId", hypothesis_id: "hypothesisId" } },
+  abort: { aliases: { id: "hypothesisId", hypothesis_id: "hypothesisId" } },
+};
+
+const schemaArgNormalizer = actionArgNormalizer(() => descriptors, SCHEMA_ARG_NORMALIZATION);
+
 export class SchemaProvider implements FabricProvider {
   readonly name = "schema";
   readonly description = "Host-owned, opt-in Schema verification and bounded local-file transaction control plane";
@@ -203,6 +219,13 @@ export class SchemaProvider implements FabricProvider {
     _context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor | undefined> {
     return descriptors.find((descriptor) => descriptor.name === actionName);
+  }
+
+  prepareArguments(
+    actionName: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return schemaArgNormalizer(actionName, args);
   }
 
   async invoke(

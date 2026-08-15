@@ -14,6 +14,7 @@ import type {
   FabricProvider,
   FabricProviderListRequest,
 } from "../protocol.js";
+import { actionArgNormalizer, type ArgNormalizationSpec } from "./arg-normalization.js";
 
 // Fabric provider exposing the host-session compaction controller to
 // `fabric_exec`. Compaction is advisory-then-committed: `request` only records
@@ -79,6 +80,14 @@ const emptySchema = {
   additionalProperties: false,
 };
 
+export const COMPACT_ARG_NORMALIZATION: Record<string, ArgNormalizationSpec> = {
+  request: {
+    aliases: { instruction: "instructions", requested_by: "requestedBy" },
+  },
+};
+
+const compactArgNormalizer = actionArgNormalizer(() => descriptors, COMPACT_ARG_NORMALIZATION);
+
 const descriptors: FabricActionDescriptor[] = [
   {
     name: "request",
@@ -126,6 +135,13 @@ export class CompactProvider implements FabricProvider {
     _context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor | undefined> {
     return descriptors.find((descriptor) => descriptor.name === actionName);
+  }
+
+  prepareArguments(
+    actionName: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return compactArgNormalizer(actionName, args);
   }
 
   async invoke(

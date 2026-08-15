@@ -6,6 +6,7 @@ import type {
 } from "../protocol.js";
 import type { MeshIdentity, MeshStore } from "../mesh/store.js";
 import { StateStore, type StateTransitionKind } from "../state/store.js";
+import { actionArgNormalizer, type ArgNormalizationSpec } from "./arg-normalization.js";
 
 const STATE_ENTITY_ID = "fabric-state";
 
@@ -124,6 +125,44 @@ const checkGoalSchema = {
 
 const emptySchema = { type: "object", properties: {}, additionalProperties: false };
 
+const schemasByAction: Record<string, Record<string, unknown>> = {
+  transition: transitionSchema,
+  get: emptySchema,
+  history: historySchema,
+  complexity: complexitySchema,
+  verify: verifySchema,
+  goal: goalSchema,
+  checkGoal: checkGoalSchema,
+};
+
+export const STATE_ARG_NORMALIZATION: Record<string, ArgNormalizationSpec> = {
+  transition: {
+    aliases: { name: "label", description: "summary" },
+  },
+  history: {
+    aliases: { name: "label", max: "limit" },
+    numerics: ["limit"],
+  },
+  complexity: {
+    aliases: { paths: "files" },
+  },
+  verify: {
+    aliases: { label: "labels" },
+    numerics: ["timeoutMs"],
+  },
+  goal: {
+    aliases: { command: "check", cmd: "check", predicate: "check" },
+  },
+  checkGoal: {
+    numerics: ["timeoutMs"],
+  },
+};
+
+const stateArgNormalizer = actionArgNormalizer(
+  () => Object.entries(schemasByAction).map(([name, inputSchema]) => ({ name, inputSchema })),
+  STATE_ARG_NORMALIZATION,
+);
+
 const descriptors: FabricActionDescriptor[] = [
   {
     name: "transition",
@@ -213,6 +252,13 @@ export class StateProvider implements FabricProvider {
     _context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor | undefined> {
     return descriptors.find((descriptor) => descriptor.name === actionName);
+  }
+
+  prepareArguments(
+    actionName: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return stateArgNormalizer(actionName, args);
   }
 
   async invoke(

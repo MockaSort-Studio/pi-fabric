@@ -50,6 +50,7 @@ import type {
 } from "../agents/types.js";
 import type { ThinkingTransferInput } from "../agents/thinking-transfer.js";
 import { AGENTS_ACTION_DESCRIPTORS } from "./agents-actions.js";
+import { actionArgNormalizer, type ArgNormalizationSpec } from "./arg-normalization.js";
 import { isFabricThinking } from "../thinking.js";
 import { ResidencyClient } from "../residency/client.js";
 import {
@@ -551,6 +552,39 @@ const waitWithActorProgress = async (
   }
 };
 
+export const AGENTS_ARG_NORMALIZATION: Record<string, ArgNormalizationSpec> = {
+  run: {
+    aliases: { prompt: "task", instructions: "task", timeout_ms: "timeoutMs" },
+    numerics: ["timeoutMs"],
+  },
+  spawn: {
+    aliases: { prompt: "task", instructions: "task", timeout_ms: "timeoutMs" },
+    numerics: ["timeoutMs"],
+  },
+  handoff: {
+    aliases: { prompt: "task", instructions: "task", timeout_ms: "timeoutMs" },
+    numerics: ["timeoutMs"],
+  },
+  create: {
+    aliases: { timeout_ms: "timeoutMs" },
+    numerics: ["timeoutMs"],
+  },
+  wait: { aliases: { agentId: "id", agent_id: "id" } },
+  status: { aliases: { agentId: "id", agent_id: "id" } },
+  unsubscribe: { aliases: { agentId: "id", agent_id: "id" } },
+  stop: { aliases: { agentId: "id", agent_id: "id" } },
+  actorStatus: { aliases: { agentId: "id", agent_id: "id" } },
+  clearMessages: { aliases: { agentId: "id", agent_id: "id" } },
+  cleanup: {
+    aliases: { agentId: "id", agent_id: "id", delete_branch: "deleteBranch" },
+  },
+};
+
+const agentsArgNormalizer = actionArgNormalizer(
+  () => AGENTS_ACTION_DESCRIPTORS,
+  AGENTS_ARG_NORMALIZATION,
+);
+
 export class AgentsProvider implements FabricProvider {
   readonly #transcripts = new AgentTranscriptReader();
   readonly name = "agents";
@@ -587,6 +621,13 @@ export class AgentsProvider implements FabricProvider {
     _context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor | undefined> {
     return AGENTS_ACTION_DESCRIPTORS.find((descriptor) => descriptor.name === actionName);
+  }
+
+  prepareArguments(
+    actionName: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return agentsArgNormalizer(actionName, args);
   }
 
   async handoff(
