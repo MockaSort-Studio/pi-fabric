@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActorManager } from "../src/actors/manager.js";
+import type { FabricCapabilityRequirement } from "../src/components/types.js";
+import type { FabricCapabilityViewLease } from "../src/core/action-registry.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import type { FabricMainAgentDeliveryRequest } from "../src/main-agent.js";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
@@ -25,6 +27,10 @@ const waitFor = async (predicate: () => boolean, timeoutMs = DEFAULT_WAIT_MS): P
 const setup = (
   persistent = false,
   canManageActor?: (id: string) => boolean | undefined,
+  acquireCapabilityView?: (
+    requirements: readonly FabricCapabilityRequirement[],
+    signal: AbortSignal,
+  ) => Promise<FabricCapabilityViewLease>,
 ) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-actor-test-"));
   roots.push(root);
@@ -55,6 +61,7 @@ const setup = (
       actorRoot: path.join(root, "actors"),
       persistent,
       ...(canManageActor ? { canManageActor } : {}),
+      ...(acquireCapabilityView ? { acquireCapabilityView } : {}),
     },
   );
   actorManagers.push(actors);
@@ -96,6 +103,111 @@ describe("ActorManager", () => {
 
     owns = true;
     expect(actors.tell(actor.id, "run after takeover")).toMatchObject({ queued: true });
+  });
+
+  it("commits and records an exact capability view for every actor run", async () => {
+    const release = vi.fn(async () => {});
+    const acquire = vi.fn(async (
+      _requirements: readonly FabricCapabilityRequirement[],
+      _signal: AbortSignal,
+    ): Promise<FabricCapabilityViewLease> => ({
+      satisfied: true,
+      missing: [],
+      optionalMissing: ["optional.missing"],
+      view: {
+        id: "view-1",
+        digest: "local-digest",
+        semanticDigest: "semantic-digest",
+        bindings: {
+          "demo.echo": {
+            ref: "demo.echo",
+            provider: "demo",
+            providerBindingId: "binding-1",
+            generation: 1,
+            descriptorHash: "descriptor-1",
+          },
+        },
+      },
+      release,
+    }));
+    const { actors } = setup(false, undefined, acquire);
+    const actor = await actors.create({
+      name: "bounded",
+      instructions: "Use only committed capabilities.",
+      requires: ["demo.echo", { ref: "optional.missing", optional: true }],
+    });
+
+    const reply = await actors.ask(actor.id, "Inspect");
+    expect(reply.text).toBe("fake worker complete");
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(acquire.mock.calls[0]?.[0]).toEqual([
+      { ref: "demo.echo" },
+      { ref: "optional.missing", optional: true },
+    ]);
+    expect(release).toHaveBeenCalledOnce();
+    expect(actors.status(actor.id)).toMatchObject({
+      requirements: [
+        { ref: "demo.echo" },
+        { ref: "optional.missing", optional: true },
+      ],
+      capabilityDigest: "semantic-digest",
+    });
+  });
+
+  it("keeps mailbox work queued until required capabilities become available", async () => {
+    let available = false;
+    const release = vi.fn(async () => {});
+    const acquire = vi.fn(async (): Promise<FabricCapabilityViewLease> => available
+      ? {
+          satisfied: true,
+          missing: [],
+          optionalMissing: [],
+          view: {
+            id: "view-ready",
+            digest: "local-ready",
+            semanticDigest: "semantic-ready",
+            bindings: {
+              "demo.echo": {
+                ref: "demo.echo",
+                provider: "demo",
+                providerBindingId: "binding-ready",
+                generation: 1,
+                descriptorHash: "descriptor-ready",
+              },
+            },
+          },
+          release,
+        }
+      : {
+          satisfied: false,
+          missing: ["demo.echo"],
+          optionalMissing: [],
+          release,
+        });
+    const { actors } = setup(false, undefined, acquire);
+    const actor = await actors.create({
+      name: "waiting",
+      instructions: "Wait for the exact capability.",
+      requires: ["demo.echo"],
+    });
+
+    const pending = actors.ask(actor.id, "Inspect later");
+    await waitFor(() => actors.status(actor.id).missingCapabilities?.[0] === "demo.echo");
+    expect(actors.status(actor.id)).toMatchObject({ status: "queued", queued: 1 });
+    expect(release).toHaveBeenCalledOnce();
+
+    available = true;
+    actors.retryCapabilityWaiters();
+    await expect(pending).resolves.toMatchObject({ text: "fake worker complete" });
+    expect(acquire).toHaveBeenCalledTimes(2);
+    await waitFor(() => actors.status(actor.id).status === "idle");
+    expect(actors.status(actor.id)).toMatchObject({
+      status: "idle",
+      queued: 0,
+      capabilityDigest: "semantic-ready",
+    });
+    expect(actors.status(actor.id).missingCapabilities).toBeUndefined();
+    expect(release).toHaveBeenCalledTimes(2);
   });
 
   it("does not claim a durable actor from another root", async () => {

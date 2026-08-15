@@ -7,7 +7,7 @@ import type {
   FabricActivityRun,
   FabricActivityStatus,
 } from "../activity/types.js";
-import { formatDuration, formatTokens, safeText } from "./format.js";
+import { formatCost, formatDuration, formatTokens, safeText } from "./format.js";
 import {
   isActiveStatus,
   orderAgentsByCreation,
@@ -56,6 +56,14 @@ const totalTokens = (
       (sum, agent) => sum + (agent.usage ? agent.usage.input + agent.usage.output : 0),
       0,
     );
+
+const totalCost = (
+  snapshot: FabricDashboardSnapshot,
+  run: FabricActivityRun | undefined,
+): number =>
+  snapshot.agents
+    .filter((agent) => (run ? agent.runId === run.id : isActiveStatus(agent.status)))
+    .reduce((sum, agent) => sum + (agent.usage?.cost ?? 0), 0);
 
 const agentLines = (
   theme: Theme,
@@ -217,6 +225,8 @@ export class FabricWidget implements Component {
     if (visibleActors.length > 0) parts.push(`${visibleActors.length} actor${visibleActors.length === 1 ? "" : "s"}`);
     const tokens = totalTokens(snapshot, run);
     if (tokens > 0) parts.push(`${formatTokens(tokens)} tok`);
+    const cost = totalCost(snapshot, run);
+    if (cost > 0) parts.push(formatCost(cost));
     if (run) parts.push(formatDuration((run.finishedAt ?? snapshot.now) - run.startedAt));
 
     const glyph = colorStatus(this.theme, headerStatus, statusGlyph(headerStatus));

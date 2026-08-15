@@ -6,6 +6,7 @@ import type {
 } from "../protocol.js";
 import type { MeshIdentity, MeshStore } from "../mesh/store.js";
 import { StateStore, type StateTransitionKind } from "../state/store.js";
+import { actionArgNormalizer } from "./arg-normalization.js";
 
 const STATE_ENTITY_ID = "fabric-state";
 
@@ -124,6 +125,18 @@ const checkGoalSchema = {
 
 const emptySchema = { type: "object", properties: {}, additionalProperties: false };
 
+const schemasByAction: Record<string, Record<string, unknown>> = {
+  transition: transitionSchema,
+  get: emptySchema,
+  history: historySchema,
+  complexity: complexitySchema,
+  verify: verifySchema,
+  goal: goalSchema,
+  checkGoal: checkGoalSchema,
+};
+
+
+
 const descriptors: FabricActionDescriptor[] = [
   {
     name: "transition",
@@ -179,6 +192,10 @@ const descriptors: FabricActionDescriptor[] = [
   },
 ];
 
+// Argument repair derives from the action schemas plus the shared synonym
+// lexicon; no state-specific table remains.
+export const normalizeStateArgs = actionArgNormalizer(() => descriptors);
+
 export class StateProvider implements FabricProvider {
   readonly name = "state";
   readonly description =
@@ -213,6 +230,13 @@ export class StateProvider implements FabricProvider {
     _context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor | undefined> {
     return descriptors.find((descriptor) => descriptor.name === actionName);
+  }
+
+  prepareArguments(
+    actionName: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return normalizeStateArgs(actionName, args);
   }
 
   async invoke(

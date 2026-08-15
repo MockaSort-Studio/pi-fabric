@@ -10,7 +10,7 @@ import {
   McpDescriptorCacheStore,
   statConfigLayers,
 } from "../src/providers/mcp-descriptor-cache.js";
-import type { FabricProvider } from "../src/protocol.js";
+import type { FabricComponentDefinition, FabricProvider } from "../src/protocol.js";
 
 const contextAt = (cwd: string, sessionId = "session-1"): ExtensionContext => ({
   cwd,
@@ -184,6 +184,30 @@ describe("FabricState lazy bootstrap", () => {
     expect(harness.instances[0]?.initialize).toHaveBeenCalledTimes(1);
   });
 
+  it("reserves every first-party provider and provider-component identity before activation", () => {
+    const state = createState(runtimeHarness().loader);
+    for (const name of [
+      "pi",
+      "extensions",
+      "mcp",
+      "mesh",
+      "state",
+      "schema",
+      "compact",
+      "agents",
+      "memory",
+    ]) {
+      expect(() => state.registerExternal({ name } as FabricProvider)).toThrow(
+        `Reserved Fabric provider name: ${name}`,
+      );
+    }
+    expect(() => state.registerExternalComponent({
+      name: "fabric.provider.memory",
+    } as FabricComponentDefinition)).toThrow(
+      "Reserved Fabric component name: fabric.provider.memory",
+    );
+  });
+
   it("replays providers registered before activation", async () => {
     const cwd = project({ prewalk: { alwaysRearm: false }, mesh: { enabled: false } });
     const harness = runtimeHarness();
@@ -238,6 +262,17 @@ describe("FabricState lazy bootstrap", () => {
       }],
     }));
     expect(actorState.shouldEagerlyActivate(actorContext)).toBe(true);
+    vi.unstubAllEnvs();
+  });
+
+  it("eagerly activates child runtimes with inherited capability commitments", async () => {
+    const cwd = project({ prewalk: { alwaysRearm: false }, mesh: { enabled: false } });
+    const state = createState(runtimeHarness().loader);
+    const context = contextAt(cwd);
+    await state.bootstrap(context);
+    vi.stubEnv("PI_FABRIC_CAPABILITY_REQUIREMENTS", JSON.stringify(["memory.recall"]));
+    vi.stubEnv("PI_FABRIC_CAPABILITY_DIGEST", "semantic-digest");
+    expect(state.shouldEagerlyActivate(context)).toBe(true);
     vi.unstubAllEnvs();
   });
 

@@ -33,8 +33,22 @@ export const parseWorkerOptions = (
   const imagesFile = optional(args, "images-file");
   const systemPrompt = optional(args, "system-prompt");
   const sessionFile = optional(args, "session-file");
+  const sessionExportFile = optional(args, "session-export-file");
   const actorId = optional(args, "actor-id");
   const actorName = optional(args, "actor-name");
+  const capabilityRequirementsSource = optional(args, "capability-requirements");
+  const capabilityDigest = optional(args, "capability-digest");
+  const capabilityRequirements = capabilityRequirementsSource
+    ? JSON.parse(capabilityRequirementsSource) as unknown
+    : undefined;
+  if (
+    capabilityRequirements !== undefined &&
+    (!Array.isArray(capabilityRequirements) ||
+      capabilityRequirements.length > 128 ||
+      capabilityRequirements.some((ref) => typeof ref !== "string" || ref.length > 256 || !ref.includes(".")))
+  ) {
+    throw new Error("Invalid worker capability requirements");
+  }
   const meshRoot = optional(args, "mesh-root");
   const projectRoot = optional(args, "project-root");
   const ownerHostId = optional(args, "owner-host-id");
@@ -79,8 +93,13 @@ export const parseWorkerOptions = (
     ...(thinking ? { thinking } : {}),
     ...(systemPrompt ? { systemPrompt } : {}),
     ...(sessionFile ? { sessionFile } : {}),
+    ...(sessionExportFile ? { sessionExportFile } : {}),
     ...(actorId ? { actorId } : {}),
     ...(actorName ? { actorName } : {}),
+    ...(capabilityRequirements
+      ? { capabilityRequirements: [...new Set(capabilityRequirements as string[])] }
+      : {}),
+    ...(capabilityDigest ? { capabilityDigest } : {}),
     ...(meshRoot ? { meshRoot } : {}),
     ...(projectRoot ? { projectRoot } : {}),
     ...(ownerHostId ? { ownerHostId } : {}),

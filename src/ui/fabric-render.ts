@@ -603,6 +603,17 @@ const callHeadlinePreview = (audit: FabricRenderAudit): string | undefined => {
     || structuralCallDetail(provider, tool, args, audit.result);
 };
 
+const nestedResultTruncated = (audit: FabricRenderAudit): boolean => {
+  if (audit.resultTruncated === true) return true;
+  const result = audit.result;
+  if (typeof result !== "object" || result === null) return false;
+  const details = (result as Record<string, unknown>).details;
+  if (typeof details !== "object" || details === null) return false;
+  const truncation = (details as Record<string, unknown>).truncation;
+  if (typeof truncation !== "object" || truncation === null) return false;
+  return (truncation as Record<string, unknown>).truncated === true;
+};
+
 /** Compact one-line title for a nested Fabric call, e.g. `read src/index.ts` or `$ ls -la`. */
 export function nestedCallTitle(
   audit: FabricRenderAudit,
@@ -610,6 +621,18 @@ export function nestedCallTitle(
   invalidate?: () => void,
   core?: { cwd: string; settings: CodePreviewSettings },
 ): string {
+  const title = nestedCallTitleText(audit, theme, invalidate, core);
+  return nestedResultTruncated(audit)
+    ? `${title} ${theme.fg("warning", "· truncated")}`
+    : title;
+}
+
+const nestedCallTitleText = (
+  audit: FabricRenderAudit,
+  theme: Theme,
+  invalidate?: () => void,
+  core?: { cwd: string; settings: CodePreviewSettings },
+): string => {
   const coreTitle = core
     ? coreToolTitle(audit, theme, { ...core, ...(invalidate ? { invalidate } : {}) })
     : null;
@@ -651,7 +674,7 @@ export function nestedCallTitle(
       || "";
   }
   return detail ? `${title} ${theme.fg("accent", detail)}` : title;
-}
+};
 
 const transcriptToolAudit = (entry: FabricTranscriptEntry): FabricRenderAudit => {
   const rawName = entry.toolName ?? entry.label;

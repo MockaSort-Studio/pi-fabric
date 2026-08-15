@@ -1,7 +1,8 @@
 import releaseSyncVariant from "@jitl/quickjs-singlefile-mjs-release-sync";
 import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
 import { runAbortable, settleWithin } from "../async-settlement.js";
-import { transpileFabricCode } from "./type-checker.js";
+import { createGuestStackMap, remapGuestErrorText } from "./guest-stack-map.js";
+import { transpileFabricCodeWithSourceMap } from "./type-checker.js";
 
 export type FabricSandboxTerminationReason =
   | "completed"
@@ -28,6 +29,7 @@ export interface FabricSandboxOptions {
     args: Record<string, unknown>,
   ): number | undefined;
   transpiledCode?: string;
+  transpiledSourceMap?: string;
 }
 
 export type FabricHostCall = (
@@ -420,6 +422,7 @@ globalThis.extensions = __providerProxy("extensions");
 globalThis.memory = __providerProxy("memory");
 globalThis.state = __providerProxy("state");
 globalThis.schema = __providerProxy("schema");
+globalThis.components = __providerProxy("components");
 globalThis.compact = __providerProxy("compact");
 const __createActor = async (args = {}) => {
   if (!args || typeof args !== "object" || Array.isArray(args)) {
@@ -991,8 +994,12 @@ export class QuickJsRuntime {
 
       executionGate = context.newPromise();
       context.setProp(context.global, "__fabricExecutionGate", executionGate.handle);
-      const guestProgram = options.transpiledCode ?? transpileFabricCode(code);
-      const wrappedCode = `${guestProgram}\nPromise.race([__piFabricMain(), globalThis.__fabricExecutionGate])`;
+      const guestBundle = options.transpiledCode === undefined
+        ? transpileFabricCodeWithSourceMap(code)
+        : { code: options.transpiledCode, sourceMap: options.transpiledSourceMap };
+      const guestStackMap = createGuestStackMap(guestBundle.sourceMap);
+      const guestLineCount = guestBundle.code.split("\n").length;
+      const wrappedCode = `${guestBundle.code}\nPromise.race([__piFabricMain(), globalThis.__fabricExecutionGate])`;
       const evaluation = context.evalCode(wrappedCode, "pi-fabric-guest.js");
       runtime.executePendingJobs();
       if (evaluation.error) {
@@ -1002,7 +1009,7 @@ export class QuickJsRuntime {
           ? "Execution cancelled"
           : deadlineExceeded
             ? timeoutMessage()
-            : formatValue(context.dump(evaluation.error));
+            : remapGuestErrorText(formatValue(context.dump(evaluation.error)), guestStackMap, guestLineCount);
         evaluation.error.dispose();
         abortHostCalls(error);
         return {
@@ -1046,7 +1053,7 @@ export class QuickJsRuntime {
           ? "Execution cancelled"
           : deadlineExceeded
             ? timeoutMessage()
-            : formatValue(context.dump(resolution.error));
+            : remapGuestErrorText(formatValue(context.dump(resolution.error)), guestStackMap, guestLineCount);
         resolution.error.dispose();
         abortHostCalls(error);
         return {

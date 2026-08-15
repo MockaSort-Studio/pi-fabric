@@ -55,7 +55,9 @@ import { createFabricExecTool } from "./fabric-exec-tool.js";
 import { FabricState } from "./fabric-state.js";
 import { piHostCompatibilityWarning } from "./host-compatibility.js";
 import {
+  FABRIC_COMPONENT_REGISTER_EVENT,
   FABRIC_PROVIDER_REGISTER_EVENT,
+  type FabricComponentRegistration,
   type FabricProviderRegistration,
 } from "./protocol.js";
 import type { AgentToolResultMessage } from "./agents/types.js";
@@ -83,6 +85,24 @@ const FABRIC_RUNTIME_PATHS = {
   skills: path.resolve(FABRIC_ENTRY_DIR, "..", "skills"),
 };
 const FABRIC_SKILLS_DIR = FABRIC_RUNTIME_PATHS.skills;
+
+const componentRegistrationFrom = (
+  value: unknown,
+): FabricComponentRegistration | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const registration = value as Partial<FabricComponentRegistration>;
+  const component = registration.component;
+  if (
+    registration.version !== 1 ||
+    typeof component !== "object" ||
+    component === null ||
+    typeof component.name !== "string" ||
+    typeof component.activate !== "function"
+  ) {
+    return undefined;
+  }
+  return registration as FabricComponentRegistration;
+};
 
 const registrationFrom = (value: unknown): FabricProviderRegistration | undefined => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
@@ -197,6 +217,18 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       hiddenNames: hiddenCapturedToolNames,
       apply: (hidden) => toolOwnership.apply(true, hidden),
     });
+
+  const unsubscribeComponentRegistration = pi.events.on(
+    FABRIC_COMPONENT_REGISTER_EVENT,
+    (value: unknown) => {
+      const registration = componentRegistrationFrom(value);
+      if (!registration) throw new Error("Invalid Pi Fabric component registration");
+      state.registerExternalComponent(
+        registration.component,
+        registration.overwrite === undefined ? {} : { overwrite: registration.overwrite },
+      );
+    },
+  );
 
   const unsubscribeProviderRegistration = pi.events.on(
     FABRIC_PROVIDER_REGISTER_EVENT,
@@ -655,7 +687,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       : undefined;
     const guidance = (effectiveFullCodeMode
       ? "Pi Fabric full code mode: `fabric_exec` is the only way to call Pi core tools — use them as `pi.*` inside `code`.\nExamples and returns: `pi.read('/x')`, `pi.grep('TODO','src')` / `pi.grep({pattern:'TODO', path:'src', ignoreCase:true, context:2})`, `pi.find({pattern:'*.ts', path:'src', limit:20})`, and `pi.ls('src')` return strings; `pi.bash({cmd:'ls'})`, `pi.edit({path:'/x', old:'a', new:'b'})`, and `pi.write({path:'/y', text:'z'})` return `{ok, output, details}` (read `.output`); failed core calls reject, including `bash` on an ordinary nonzero exit; pass `settle: true` to `pi.bash` to get `{ ok: false, exitCode, output, error }` instead. Timeout, cancellation, approval, and security failures still reject.\n`tools` is discovery + generic calls only (`providers`/`catalog`/`list`/`search`/`describe`/`call`/`models`). Call known MCP tools as `mcp.<sanitized_server>.<sanitized_tool>(args)`, captured tools as `extensions.<tool>(args)`, and stable providers as `memory.*`, `state.*`, `schema.*`, or `compact.*`. Use `tools.call({ref,args})` for computed refs. `pi` is the core tools; `π.<key>` reads named `strings` (not a tool)."
-      : "Pi Fabric is in orchestration-only mode. Pi core and registered extension tools stay on their native direct execution path; inside fabric_exec, `pi.*` and `extensions.*` are unavailable. Call known actions through `mcp.<sanitized_server>.<sanitized_tool>(args)`, `memory.*`, `state.*`, `schema.*`, `compact.*`, `agents.*`, or `mesh.*`; use `tools.catalog`/`search`/`describe`/`list` for discovery and `tools.call({ref,args})` for computed refs. Other surfaces are opt-in via user-loaded skills.")
+      : "Pi Fabric is in orchestration-only mode. Pi core and registered extension tools stay on their native direct execution path; inside fabric_exec, `pi.*` and `extensions.*` are unavailable. Call known actions through `mcp.<sanitized_server>.<sanitized_tool>(args)`, `memory.*`, `state.*`, `schema.*`, `components.*`, `compact.*`, `agents.*`, or `mesh.*`; use `tools.catalog`/`search`/`describe`/`list` for discovery and `tools.call({ref,args})` for computed refs. Other surfaces are opt-in via user-loaded skills.")
       + (schemaMode === "enforce"
         ? "\n\nSchema enforce mode is fixed for this session. Reads remain available, but protected-workspace changes must use schema.hypothesize → schema.verify → schema.commit in the same fabric_exec invocation. Direct pi.edit/write/bash, agents, state/mesh writes, compaction requests, MCP, extensions, and external providers are blocked by the host gate."
         : schemaMode === "audit"
@@ -696,6 +728,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   });
 
   pi.on("session_shutdown", async () => {
+    unsubscribeComponentRegistration();
     unsubscribeProviderRegistration();
     pendingHandoffs.clear();
     directToolApproval.clear();

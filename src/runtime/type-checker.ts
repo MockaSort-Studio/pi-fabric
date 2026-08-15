@@ -10,6 +10,7 @@ export interface FabricTypeError {
 export interface FabricTypeCheckResult {
   errors: FabricTypeError[];
   javascript?: string;
+  sourceMap?: string;
 }
 
 const compilerOptions: ts.CompilerOptions = {
@@ -26,6 +27,7 @@ const compilerOptions: ts.CompilerOptions = {
   noImplicitThis: false,
   useUnknownInCatchVariables: false,
   noEmit: false,
+  sourceMap: true,
   skipLibCheck: true,
   lib: ["lib.es2022.d.ts"],
 };
@@ -41,6 +43,10 @@ let nextCheckerId = 0;
 
 export const normalizeTypeScriptPath = (fileName: string): string =>
   fileName.replaceAll("\\", "/");
+
+/** Guest programs execute inside this wrapper; user code starts on wrapped line 2. */
+export const wrapFabricGuestCode = (code: string): string =>
+  `async function __piFabricMain() {\n${code}\n}\n`;
 
 class FabricTypeChecker {
   readonly #guestFile: string;
@@ -106,7 +112,7 @@ class FabricTypeChecker {
   }
 
   check(code: string): FabricTypeCheckResult {
-    this.#sourceText = `async function __piFabricMain() {\n${code}\n}\n`;
+    this.#sourceText = wrapFabricGuestCode(code);
     this.#sourceFile = ts.createSourceFile(
       this.#guestFile,
       this.#sourceText,
@@ -141,10 +147,16 @@ class FabricTypeChecker {
     if (errors.length > 0) return { errors };
 
     let javascript: string | undefined;
+    let sourceMap: string | undefined;
     program.emit(this.#sourceFile, (fileName, content) => {
-      if (fileName.endsWith(".js")) javascript = content;
+      if (fileName.endsWith(".js.map")) sourceMap = content;
+      else if (fileName.endsWith(".js")) javascript = content;
     });
-    return { errors, ...(javascript ? { javascript } : {}) };
+    return {
+      errors,
+      ...(javascript ? { javascript } : {}),
+      ...(sourceMap ? { sourceMap } : {}),
+    };
   }
 }
 
@@ -168,13 +180,24 @@ const checkerFor = (declarations: string): FabricTypeChecker => {
   return checker;
 };
 
-export const transpileFabricCode = (code: string): string =>
-  ts.transpileModule(`async function __piFabricMain() {\n${code}\n}\n`, {
+export interface FabricTranspileResult {
+  code: string;
+  sourceMap?: string;
+}
+
+export const transpileFabricCodeWithSourceMap = (code: string): FabricTranspileResult => {
+  const result = ts.transpileModule(wrapFabricGuestCode(code), {
     compilerOptions: {
       target: ts.ScriptTarget.ES2022,
       module: ts.ModuleKind.ESNext,
+      sourceMap: true,
     },
-  }).outputText;
+  });
+  return {
+    code: result.outputText,
+    ...(result.sourceMapText ? { sourceMap: result.sourceMapText } : {}),
+  };
+};
 
 export const typeCheckFabricCode = (
   code: string,

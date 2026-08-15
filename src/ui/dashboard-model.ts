@@ -6,6 +6,7 @@ import type {
   FabricActivityRun,
 } from "../activity/types.js";
 import type { GlobalActorDefinition } from "../actors/types.js";
+import type { FabricComponentInfo } from "../components/types.js";
 import type {
   FabricDashboardSnapshot,
   FabricUiActor,
@@ -38,6 +39,7 @@ export type Entity =
   | { id: string; kind: "call"; label: string; status: string; value: FabricActivityCall }
   | { id: string; kind: "item"; label: string; status: string; value: FabricActivityItem }
   | { id: string; kind: "state"; label: string; status: string; value: FabricUiStateEntry }
+  | { id: string; kind: "component"; label: string; status: string; value: FabricComponentInfo }
   | {
       id: string;
       kind: "meshParticipant";
@@ -83,6 +85,7 @@ type EntityGroupKind =
   | "globalActor"
   | "peer"
   | "state"
+  | "component"
   | "meshParticipant"
   | "meshTopic"
   | "meshRoute";
@@ -105,6 +108,7 @@ const entityGroupOrder: readonly EntityGroupKind[] = [
   "task",
   "custom",
   "state",
+  "component",
   "meshParticipant",
   "meshTopic",
   "meshRoute",
@@ -122,6 +126,7 @@ const entityGroupLabels: Record<EntityGroupKind, string> = {
   task: "Tasks",
   custom: "Custom items",
   state: "Shared state",
+  component: "Components",
   meshParticipant: "Project participants",
   meshTopic: "Topics",
   meshRoute: "Recent routes",
@@ -133,6 +138,7 @@ const entityGroupKind = (entity: Entity): EntityGroupKind => {
   if (entity.kind === "actor") return "actor";
   if (entity.kind === "globalActor") return "globalActor";
   if (entity.kind === "state") return "state";
+  if (entity.kind === "component") return "component";
   if (entity.kind === "meshParticipant") return "meshParticipant";
   if (entity.kind === "meshTopic") return "meshTopic";
   if (entity.kind === "meshRoute") return "meshRoute";
@@ -242,6 +248,13 @@ const entitiesFor = (
       status: "global",
       value: definition,
     }));
+    const components: Entity[] = snapshot.componentGraph.components.map((component) => ({
+      id: `component:${component.id}`,
+      kind: "component",
+      label: component.id,
+      status: component.state,
+      value: component,
+    }));
     const state: Entity[] = snapshot.state.map((entry) => ({
       id: `state:${entry.key}`,
       kind: "state",
@@ -255,6 +268,7 @@ const entitiesFor = (
       ...peers,
       ...actors,
       ...globalActors,
+      ...components,
       ...state,
     ]);
   }
@@ -320,7 +334,7 @@ const projectMeshEntitiesFor = (
     ...(snapshot.participants ? { participants: snapshot.participants } : {}),
     now: snapshot.now,
   });
-  return model.rows.flatMap((row): Entity[] => {
+  const entities = model.rows.flatMap((row): Entity[] => {
     if (row.kind === "meshRoot") return [mainEntity(snapshot)];
     if (row.kind === "meshActor") {
       return [{
@@ -378,6 +392,16 @@ const projectMeshEntitiesFor = (
     }
     return [];
   });
+  return [
+    ...entities,
+    ...snapshot.componentGraph.components.map((component): Entity => ({
+      id: `component:${component.id}`,
+      kind: "component",
+      label: component.id,
+      status: component.state,
+      value: component,
+    })),
+  ];
 };
 
 const unifiedTopologyEntitiesFor = (

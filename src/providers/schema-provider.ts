@@ -6,6 +6,7 @@ import type {
 } from "../protocol.js";
 import { SchemaController } from "../schema/controller.js";
 import type { SchemaEvidence, SchemaFileOperation } from "../schema/types.js";
+import { actionArgNormalizer } from "./arg-normalization.js";
 
 const pathProperty = { type: "string", minLength: 1 };
 const evidenceSchema = {
@@ -180,6 +181,12 @@ const descriptors: FabricActionDescriptor[] = [
   },
 ];
 
+
+
+// Argument repair derives from the action schemas plus the shared synonym
+// lexicon; no schema-specific table remains.
+export const normalizeSchemaArgs = actionArgNormalizer(() => descriptors);
+
 export class SchemaProvider implements FabricProvider {
   readonly name = "schema";
   readonly description = "Host-owned, opt-in Schema verification and bounded local-file transaction control plane";
@@ -203,6 +210,13 @@ export class SchemaProvider implements FabricProvider {
     _context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor | undefined> {
     return descriptors.find((descriptor) => descriptor.name === actionName);
+  }
+
+  prepareArguments(
+    actionName: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return normalizeSchemaArgs(actionName, args);
   }
 
   async invoke(

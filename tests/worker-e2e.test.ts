@@ -134,6 +134,102 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     }
   }, 30_000);
 
+  describe("agent session usage export", () => {
+    const exportRoots: string[] = [];
+    let savedExportEnv: string | undefined;
+
+    afterEach(() => {
+      if (savedExportEnv === undefined) delete process.env.PI_FABRIC_AGENT_DIR;
+      else process.env.PI_FABRIC_AGENT_DIR = savedExportEnv;
+      for (const root of exportRoots.splice(0)) {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    const runExported = (sessionExport: boolean): Promise<AgentRunResult> => {
+      savedExportEnv = savedExportEnv ?? process.env.PI_FABRIC_AGENT_DIR;
+      const exportRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-export-e2e-"));
+      exportRoots.push(exportRoot);
+      process.env.PI_FABRIC_AGENT_DIR = exportRoot;
+      process.env.FAKE_PI_BEHAVIOR = "usage-flow";
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
+      roots.push(root);
+      const config = {
+        ...DEFAULT_FABRIC_CONFIG.agents,
+        timeoutMs: 4_000,
+        maxConcurrent: 1,
+        sessionExport,
+      };
+      const manager = new AgentManager(process.cwd(), config, {
+        workerPath,
+        piBinary,
+        runRoot: root,
+      });
+      managers.push(manager);
+      return manager.run({ task: "sum things", transport: "process" }).then((result) => ({
+        ...result,
+        exportRoot,
+      })) as Promise<AgentRunResult>;
+    };
+
+    it("writes a pi-format usage session with fabricagent attribution", async () => {
+      const result = (await runExported(true)) as AgentRunResult & { exportRoot: string };
+      expect(result.status).toBe("completed");
+      expect(result.usage?.cost).toBeCloseTo(0.03);
+
+      const sessionsRoot = path.join(result.exportRoot, "sessions", ".fabric");
+      const files = fs
+        .readdirSync(sessionsRoot)
+        .flatMap((dir) =>
+          fs
+            .readdirSync(path.join(sessionsRoot, dir))
+            .filter((file) => file.endsWith(".jsonl"))
+            .map((file) => path.join(sessionsRoot, dir, file)),
+        );
+      expect(files).toHaveLength(1);
+
+      const lines = fs
+        .readFileSync(files[0]!, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+      expect(lines[0]).toMatchObject({
+        type: "session",
+        version: 3,
+        cwd: process.cwd(),
+      });
+      expect(lines[1]).toMatchObject({ type: "session_info" });
+      expect(String(lines[1]!.name)).toBe("fabricagent-sum things");
+
+      const messages = lines.filter((line) => line.type === "message");
+      expect(messages).toHaveLength(2);
+      const tokenSums = messages.map(
+        (entry) => (entry.message as { usage: Record<string, number> }).usage,
+      );
+      expect(tokenSums[0]).toMatchObject({
+        input: 100,
+        output: 50,
+        cacheRead: 10,
+        cacheWrite: 5,
+        totalTokens: 165,
+        cost: { total: 0.01 },
+      });
+      expect(tokenSums[1]).toMatchObject({ input: 200, output: 100, cost: { total: 0.02 } });
+      // No transcript content is exported — counters and attribution only.
+      for (const entry of messages) {
+        expect(entry.message).not.toHaveProperty("content");
+      }
+    }, 30_000);
+
+    it("leaves no export file when the export is disabled", async () => {
+      const result = (await runExported(false)) as AgentRunResult & { exportRoot: string };
+      expect(result.status).toBe("completed");
+      const sessionsRoot = path.join(result.exportRoot, "sessions");
+      expect(fs.existsSync(sessionsRoot)).toBe(false);
+    }, 30_000);
+  });
+
   const runVeda = async (
     behavior: string,
     task = "do it",

@@ -39,6 +39,7 @@ const emptySnapshot = (): FabricDashboardSnapshot => {
     peers: [],
     agents: [],
     actors: [],
+    componentGraph: { components: [], edges: [], cycles: [] },
     globalActors: [],
     state: [],
     events: [],

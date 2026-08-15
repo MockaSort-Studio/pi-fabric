@@ -35,6 +35,7 @@ import {
   type SearchItem,
 } from "../memory/search.js";
 import type { MemoryQueryMode } from "../memory/tokenize.js";
+import { actionArgNormalizer, type ArgNormalizationSpec } from "./arg-normalization.js";
 
 const RECALL_DEFAULT_PAGE_SIZE = 25;
 const RECALL_MAX_PAGE_SIZE = 200;
@@ -167,6 +168,11 @@ const descriptors: FabricActionDescriptor[] = [
           enum: ["active", "all"],
           description: "Count the active parent-linked path (default) or every branch.",
         },
+        limit: {
+          type: "number",
+          minimum: 1,
+          description: "Maximum sessions returned; capped at the internal session ceiling.",
+        },
       },
       additionalProperties: false,
     },
@@ -174,6 +180,32 @@ const descriptors: FabricActionDescriptor[] = [
     namespace: "memory",
   },
 ];
+
+// Value spellings models reliably substitute for the documented memory scopes,
+// e.g. scope "cwd" for "project". Same discipline as the key aliases below:
+// identical intent only. Unknown scopes still fall through to resolveScope's
+// default "session" handling.
+const MEMORY_SCOPE_VALUE_ALIASES: Record<string, string> = {
+  cwd: "project",
+  repo: "project",
+  directory: "project",
+  folder: "project",
+  all: "global",
+  current: "session",
+};
+
+const MEMORY_ARG_NORMALIZATION: Record<string, ArgNormalizationSpec> = {
+  recall: { values: { scope: MEMORY_SCOPE_VALUE_ALIASES } },
+  sessions: { values: { scope: MEMORY_SCOPE_VALUE_ALIASES } },
+};
+
+// Argument repair derives from the action schemas plus the shared synonym
+// lexicon; only scope value spellings stay table-bound because the schema
+// spells scope as a free string rather than an enum.
+export const normalizeMemoryArgs = actionArgNormalizer(
+  () => descriptors,
+  MEMORY_ARG_NORMALIZATION,
+);
 
 export interface MemoryProviderContext {
   agentDir: string;
@@ -298,6 +330,13 @@ export class MemoryProvider implements FabricProvider {
     _context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor | undefined> {
     return descriptors.find((descriptor) => descriptor.name === actionName);
+  }
+
+  prepareArguments(
+    actionName: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return normalizeMemoryArgs(actionName, args);
   }
 
   async invoke(
@@ -754,7 +793,11 @@ export class MemoryProvider implements FabricProvider {
   private async sessions(args: Record<string, unknown>): Promise<unknown> {
     const scope = typeof args.scope === "string" ? args.scope : undefined;
     const branches = parseBranches(args.branches, "memory.sessions");
-    const refs = resolveRefs(scope, this.context, true).slice(0, SESSIONS_MAX);
+    const limit =
+      typeof args.limit === "number" && Number.isSafeInteger(args.limit) && args.limit >= 1
+        ? Math.min(args.limit, SESSIONS_MAX)
+        : SESSIONS_MAX;
+    const refs = resolveRefs(scope, this.context, true).slice(0, limit);
     const options = resolveIndexOptions(
       this.context.config,
       this.context.agentDir,

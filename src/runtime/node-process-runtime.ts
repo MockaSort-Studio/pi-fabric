@@ -7,7 +7,8 @@ import {
   type FabricSandboxResult,
 } from "./quickjs-runtime.js";
 import { NODE_PROCESS_CHILD_SOURCE } from "./node-process-child-source.js";
-import { transpileFabricCode } from "./type-checker.js";
+import { createGuestStackMap, remapGuestErrorText } from "./guest-stack-map.js";
+import { transpileFabricCodeWithSourceMap } from "./type-checker.js";
 import { resolveScriptRuntimeSync } from "../agents/transports/process-utils.js";
 
 interface ChildCallMessage {
@@ -75,6 +76,12 @@ export class NodeProcessRuntime {
     let finishing = false;
     const hostTasks = new Set<Promise<void>>();
 
+    const guestBundle = options.transpiledCode === undefined
+      ? transpileFabricCodeWithSourceMap(code)
+      : { code: options.transpiledCode, sourceMap: options.transpiledSourceMap };
+    const guestStackMap = createGuestStackMap(guestBundle.sourceMap);
+    const guestLineCount = guestBundle.code.split("\n").length;
+
     return new Promise<FabricSandboxResult>((resolve) => {
       const finish = (result: FabricSandboxResult): void => {
         if (settled) return;
@@ -134,7 +141,14 @@ export class NodeProcessRuntime {
               );
               await settleWithin(hostTasks, HOST_TASK_SETTLE_GRACE_MS);
             }
-            finish(message.result);
+            finish(
+              message.result.error === undefined
+                ? message.result
+                : {
+                    ...message.result,
+                    error: remapGuestErrorText(message.result.error, guestStackMap, guestLineCount),
+                  },
+            );
           })();
           return;
         }
@@ -178,7 +192,7 @@ export class NodeProcessRuntime {
       send(child, {
         type: "execute",
         setup: GUEST_SETUP,
-        code: options.transpiledCode ?? transpileFabricCode(code),
+        code: guestBundle.code,
         strings: options.strings ?? {},
         tokenBudget: options.tokenBudget,
         maxLogChars: options.maxLogChars ?? 100_000,

@@ -34,6 +34,10 @@ export const createRunningRecord = (
   ...(thinking ? { thinking } : {}),
   ...(options.actorId ? { actorId: options.actorId } : {}),
   ...(options.actorName ? { actorName: options.actorName } : {}),
+  ...(options.capabilityRequirements
+    ? { capabilityRequirements: [...options.capabilityRequirements] }
+    : {}),
+  ...(options.capabilityDigest ? { capabilityDigest: options.capabilityDigest } : {}),
   startedAt,
   updatedAt: startedAt,
   turns: 0,

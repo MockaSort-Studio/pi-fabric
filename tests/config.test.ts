@@ -34,6 +34,22 @@ afterEach(() => {
 });
 
 describe("Fabric configuration", () => {
+  it("normalizes declarative component entries", () => {
+    expect(DEFAULT_FABRIC_CONFIG.components).toEqual([]);
+    const config = normalizeFabricConfig({
+      components: [
+        { id: "cache", component: "cache-service", config: { limit: 12 } },
+        { id: "off", component: "observer", disabled: true },
+        { id: "missing-component" },
+        "invalid",
+      ],
+    });
+    expect(config.components).toEqual([
+      { id: "cache", component: "cache-service", config: { limit: 12 } },
+      { id: "off", component: "observer", disabled: true },
+    ]);
+  });
+
   it("keeps model-visible execution output at Pi read parity by default", () => {
     expect(DEFAULT_FABRIC_CONFIG.executor.maxOutputChars).toBe(50_000);
   });

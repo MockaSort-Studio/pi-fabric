@@ -1702,3 +1702,48 @@ b`, theme)).toBe("");
     expect(compactProgressPreview("one\ntwo\nthree")).toBe("… 2 lines · three");
   });
 });
+
+describe("nestedCallTitle truncation marker", () => {
+  const bashAudit = (result: unknown) => ({
+    ref: "pi.bash",
+    provider: "pi",
+    tool: "bash",
+    args: { cmd: "curl -sf https://example.com" },
+    result,
+  });
+
+  it("marks results truncated by the core bash tool", () => {
+    const title = nestedCallTitle(
+      bashAudit({
+        ok: true,
+        output: "    },",
+        details: { truncation: { truncated: true, maxBytes: 51200 } },
+      }),
+      plainTheme,
+    );
+
+    expect(title).toContain("truncated");
+  });
+
+  it("marks results truncated at the fabric result boundary", () => {
+    const title = nestedCallTitle(
+      { ...bashAudit({ ok: true, output: "line" }), resultTruncated: true },
+      plainTheme,
+    );
+
+    expect(title).toContain("truncated");
+  });
+
+  it("omits the marker for complete results", () => {
+    const title = nestedCallTitle(
+      bashAudit({
+        ok: true,
+        output: "line",
+        details: { truncation: { truncated: false } },
+      }),
+      plainTheme,
+    );
+
+    expect(title).not.toContain("truncated");
+  });
+});

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { FabricCapabilityRequirement } from "../components/types.js";
 import { writeJsonAtomic } from "../core/atomic-write.js";
 import type { FabricAgentTransport } from "../config.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
@@ -19,6 +20,31 @@ const TOPIC_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/;
 const HOST_EVENTS: ReadonlySet<FabricActorHostEvent> = new Set(FABRIC_ACTOR_HOST_EVENTS);
 const DELIVERIES = new Set<FabricActorDelivery>(["mailbox", "steer", "followUp", "nextTurn"]);
 const RESPONSE_MODES = new Set<FabricActorResponseMode>(["text", "directive"]);
+const normalizeRequirements = (value: unknown): FabricCapabilityRequirement[] | undefined => {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 128) {
+    throw new Error("Invalid global actor capability requirements");
+  }
+  const normalized = new Map<string, boolean>();
+  for (const item of value) {
+    const ref = typeof item === "string"
+      ? item.trim()
+      : typeof item === "object" && item !== null && !Array.isArray(item) &&
+          typeof (item as { ref?: unknown }).ref === "string"
+        ? (item as { ref: string }).ref.trim()
+        : "";
+    if (ref.length > 256 || !ref.includes(".") || ref.startsWith(".") || ref.endsWith(".")) {
+      throw new Error("Invalid global actor capability requirement");
+    }
+    const optional = typeof item === "object" && item !== null &&
+      (item as { optional?: unknown }).optional === true;
+    normalized.set(ref, (normalized.get(ref) ?? true) && optional);
+  }
+  return [...normalized]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([ref, optional]) => ({ ref, ...(optional ? { optional: true } : {}) }));
+};
+
 const TRANSPORTS = new Set<FabricAgentTransport>([
   "auto",
   "process",
@@ -265,6 +291,7 @@ export class GlobalActorRegistry {
       def.transport !== undefined && TRANSPORTS.has(def.transport) ? def.transport : undefined;
     const timeoutMs = typeof def.timeoutMs === "number" ? def.timeoutMs : undefined;
     const extensions = typeof def.extensions === "boolean" ? def.extensions : undefined;
+    const requires = normalizeRequirements(def.requires);
     const validWhile = def.validWhile?.version === 1 &&
       typeof def.validWhile.source === "string" &&
       def.validWhile.source.trim() &&
@@ -289,6 +316,7 @@ export class GlobalActorRegistry {
       ...(transport ? { transport } : {}),
       ...(timeoutMs ? { timeoutMs } : {}),
       ...(extensions !== undefined ? { extensions } : {}),
+      ...(requires && requires.length > 0 ? { requires } : {}),
       ...(validWhile ? { validWhile } : {}),
     };
   }
@@ -347,6 +375,12 @@ export class GlobalActorRegistry {
         record.transport !== undefined && TRANSPORTS.has(record.transport) ? record.transport : undefined;
       const timeoutMs = typeof record.timeoutMs === "number" ? record.timeoutMs : undefined;
       const extensions = typeof record.extensions === "boolean" ? record.extensions : undefined;
+      let requires: FabricCapabilityRequirement[] | undefined;
+      try {
+        requires = normalizeRequirements(record.requires);
+      } catch {
+        continue;
+      }
       const validWhile = record.validWhile?.version === 1 &&
         typeof record.validWhile.source === "string" &&
         record.validWhile.source.length <= 16_000
@@ -372,6 +406,7 @@ export class GlobalActorRegistry {
         ...(transport ? { transport } : {}),
         ...(timeoutMs ? { timeoutMs } : {}),
         ...(extensions !== undefined ? { extensions } : {}),
+        ...(requires && requires.length > 0 ? { requires } : {}),
         ...(validWhile ? { validWhile } : {}),
       };
       this.#actors.set(def.id, def);

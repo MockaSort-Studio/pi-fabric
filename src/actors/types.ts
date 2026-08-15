@@ -2,6 +2,7 @@ import type { ExtensionEvent } from "@earendil-works/pi-coding-agent";
 import type { FabricAgentRunner, FabricAgentTransport } from "../config.js";
 import type { FabricThinking } from "../thinking.js";
 import type { FabricLogLine, AgentRunRecord, AgentUsage } from "../agents/types.js";
+import type { FabricCapabilityRequirement } from "../components/types.js";
 import type { FabricParticipantResidency } from "../topology/types.js";
 
 export type FabricActorPiHostEvent = Exclude<ExtensionEvent["type"], "project_trust">;
@@ -142,6 +143,8 @@ export interface FabricActorRequest {
    * actor's ordinary tool allowlist. Fixed at creation.
    */
   extensions?: boolean;
+  /** Exact Fabric actions committed before every actor run. Optional entries do not block a run. */
+  requires?: readonly (string | FabricCapabilityRequirement)[];
   /** Serialized guest predicate evaluated before work and before delivery. */
   validWhile?: FabricActorValidWhileSource;
 }
@@ -163,6 +166,9 @@ export interface FabricActorInfo {
   thinking?: FabricThinking;
   tools?: string[];
   extensions?: boolean;
+  requirements?: FabricCapabilityRequirement[];
+  capabilityDigest?: string;
+  missingCapabilities?: string[];
   validWhile?: FabricActorValidWhileSource;
   queued: number;
   messages: number;

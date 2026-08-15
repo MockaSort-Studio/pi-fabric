@@ -7,6 +7,7 @@ import type {
 import { MeshStore, type MeshIdentity } from "../mesh/store.js";
 import type { FabricParticipantSource } from "../topology/types.js";
 import { FABRIC_PARTICIPANT_LIFECYCLE_TOPIC } from "../lifecycle/types.js";
+import { actionArgNormalizer } from "./arg-normalization.js";
 
 const emptySchema = { type: "object", properties: {}, additionalProperties: false };
 const INTERNAL_STATE_PREFIXES = ["topology/", "sessions/", "actors/", "residency/"];
@@ -146,6 +147,12 @@ const descriptors: FabricActionDescriptor[] = [
   },
 ];
 
+
+
+// Argument repair derives from the action schemas plus the shared synonym
+// lexicon; no mesh-specific table remains.
+export const normalizeMeshArgs = actionArgNormalizer(() => descriptors);
+
 export class MeshProvider implements FabricProvider {
   readonly name = "mesh";
   readonly description =
@@ -174,6 +181,13 @@ export class MeshProvider implements FabricProvider {
     _context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor | undefined> {
     return descriptors.find((descriptor) => descriptor.name === actionName);
+  }
+
+  prepareArguments(
+    actionName: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return normalizeMeshArgs(actionName, args);
   }
 
   async invoke(

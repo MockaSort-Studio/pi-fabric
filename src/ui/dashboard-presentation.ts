@@ -142,6 +142,21 @@ export const entityTail = (entity: Entity, now: number): string => {
       .filter((value): value is string => Boolean(value))
       .join(" · ");
   }
+  if (entity.kind === "component") {
+    return [
+      entity.value.guarantee,
+      entity.value.parentId ? `child of ${entity.value.parentId}` : undefined,
+      (entity.value.effects?.length ?? 0) > 0
+        ? `${entity.value.effects!.length} effects`
+        : undefined,
+      entity.value.requirements.length > 0
+        ? `${entity.value.requirements.length} requirements`
+        : undefined,
+      entity.value.provisions.length > 0
+        ? `${entity.value.provisions.length} provisions`
+        : undefined,
+    ].filter((value): value is string => Boolean(value)).join(" · ");
+  }
   return [entity.value.owner, entity.value.detail, `v${entity.value.version}`]
     .filter((value): value is string => Boolean(value))
     .join(" · ");
