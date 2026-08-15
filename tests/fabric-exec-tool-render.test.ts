@@ -31,9 +31,10 @@ const stateFor = (
 const toolFor = (
   state: FabricState,
   display?: FabricToolDisplayController,
+  codePreviewSettings = defaultCodePreviewSettings(),
 ) => createFabricExecTool(
   state,
-  defaultCodePreviewSettings(),
+  codePreviewSettings,
   new Map(),
   (tool) => tool,
   display,
@@ -81,7 +82,7 @@ const renderResult = (
 const nestedRows = (rendered: string): string[] => rendered.split("\n").slice(1);
 
 describe("registered fabric_exec compact transcript rendering", () => {
-  it("keeps full source while compact elevates intent and falls back to Tool for absent or blank names", () => {
+  it("keeps full source while compact elevates intent and falls back to Fabric for absent or blank names", () => {
     const args = {
       code: "const implementationSecret = await discover();\nreturn implementationSecret;",
       display: { name: "Apply migration", description: "Persist the verified setting" },
@@ -89,6 +90,7 @@ describe("registered fabric_exec compact transcript rendering", () => {
 
     const full = renderCall(toolFor(stateFor("full")), args, true);
     const compact = renderCall(toolFor(stateFor("compact")), args);
+    const composing = renderCall(toolFor(stateFor("compact")), { code: "" });
     const fallback = renderCall(toolFor(stateFor("compact")), { code: args.code });
     const blank = renderCall(toolFor(stateFor("compact")), { code: args.code, display: { name: "   " } });
 
@@ -106,8 +108,9 @@ describe("registered fabric_exec compact transcript rendering", () => {
     expect(compact).not.toContain("fabric");
     expect(compact).not.toContain("TypeScript");
     expect(compact).not.toContain("implementationSecret");
-    expect(fallback).toContain("Tool");
-    expect(blank).toContain("Tool");
+    expect(composing).toContain("Fabric");
+    expect(fallback).toContain("Fabric");
+    expect(blank).toContain("Fabric");
   });
 
   it("promotes a compact card to the full transcript while the expand toggle is on", () => {
@@ -137,6 +140,63 @@ describe("registered fabric_exec compact transcript rendering", () => {
     expect(compactCollapsed).not.toContain("Fabric complete");
     expect(compactExpanded).toBe(fullExpanded);
     expect(compactExpanded).toContain("Fabric complete");
+  });
+
+  it("adds configured duration metadata to completed provider calls", () => {
+    const args = { code: "return await extensions.fovea_focus({ query: 'src/fabric-exec-tool.ts' });" };
+    const details = {
+      success: true,
+      audits: [
+        {
+          ref: "extensions.fovea_focus",
+          provider: "extensions",
+          tool: "fovea_focus",
+          args: { query: "src/fabric-exec-tool.ts" },
+          success: true,
+          startedAt: 1_000,
+          endedAt: 1_129,
+        },
+        {
+          ref: "memory.recall",
+          provider: "memory",
+          tool: "recall",
+          args: { query: "renderer" },
+          success: true,
+          startedAt: 2_000,
+          endedAt: 3_250,
+        },
+        {
+          ref: "mcp.github.search_code",
+          provider: "mcp",
+          tool: "github.search_code",
+          args: { query: "timing metadata" },
+          success: true,
+          startedAt: 4_000,
+          endedAt: 4_042,
+        },
+      ],
+      phases: [],
+    };
+    const timingSettings = { ...defaultCodePreviewSettings(), toolCallTiming: true };
+    const rendered = renderResult(
+      toolFor(stateFor("compact"), undefined, timingSettings),
+      args,
+      details,
+      "",
+    );
+    const timingDisabled = renderResult(
+      toolFor(stateFor("compact"), undefined, { ...timingSettings, toolCallTiming: false }),
+      args,
+      details,
+      "",
+    );
+
+    expect(rendered).toContain("fovea_focus src/fabric-exec-tool.ts · 129ms");
+    expect(rendered).toContain("recall renderer · 1.3s");
+    expect(rendered).toContain("github.search_code timing metadata · 42ms");
+    expect(timingDisabled).not.toContain("129ms");
+    expect(timingDisabled).not.toContain("1.3s");
+    expect(timingDisabled).not.toContain("42ms");
   });
 
   it("uses Tools or Evaluated summaries while preserving completed nested detail and bounded returns", () => {

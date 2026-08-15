@@ -247,7 +247,7 @@ export const createFabricExecTool = (
         const title = display?.name?.trim() || fabricExecTitleHintCached(code);
         const header = renderBoundedLines(
           [
-            theme.fg("toolTitle", theme.bold(safeTerminalText(title || "Tool"))),
+            theme.fg("toolTitle", theme.bold(safeTerminalText(title || "Fabric"))),
             ...(display?.description
               ? [theme.fg("dim", safeTerminalText(display.description))]
               : []),

@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { CodePreviewSettings } from "./code-preview.js";
+import { formatToolCallDuration } from "./tool-call-timing.js";
 import { diffLines } from "diff";
 import { bundledLanguages } from "shiki/langs";
 import type { FabricRenderAudit } from "./fabric-render.js";
@@ -1494,16 +1495,8 @@ export const coreToolTitle = (
   observePiTheme(theme);
   if (!coreToolRendererEnabled(audit, options.settings) || !audit.tool) return null;
   const title = theme.fg("toolTitle", theme.bold(audit.tool));
-  const durationMs =
-    options.settings.toolCallTiming &&
-    audit.startedAt !== undefined &&
-    audit.endedAt !== undefined
-      ? Math.max(0, audit.endedAt - audit.startedAt)
-      : undefined;
-  const timing = durationMs !== undefined
-    ? durationMs < 1_000
-      ? `${durationMs}ms`
-      : `${(durationMs / 1_000).toFixed(1)}s`
+  const timing = options.settings.toolCallTiming
+    ? formatToolCallDuration(audit.startedAt, audit.endedAt)
     : undefined;
   const filePath = argString(audit, "path") ?? "";
   if (audit.tool === "bash") {

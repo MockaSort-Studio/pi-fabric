@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AppKeybinding, Theme } from "@earendil-works/pi-coding-agent";
 import type { CodePreviewSettings } from "./code-preview.js";
+import { formatToolCallDuration } from "./tool-call-timing.js";
 import {
   getKeybindings,
   truncateToWidth,
@@ -639,6 +640,11 @@ const nestedCallTitleText = (
     ? coreToolTitle(audit, theme, { ...core, ...(invalidate ? { invalidate } : {}) })
     : null;
   if (coreTitle) return coreTitle;
+  const timing = core?.settings.toolCallTiming
+    ? formatToolCallDuration(audit.startedAt, audit.endedAt)
+    : undefined;
+  const withTiming = (value: string): string =>
+    timing ? `${value}${theme.fg("dim", ` · ${timing}`)}` : value;
   const ref = audit.ref;
   const provider = audit.provider ?? ref.split(".")[0] ?? ref;
   const tool = audit.tool ?? ref.split(".")[1] ?? ref;
@@ -652,7 +658,7 @@ const nestedCallTitleText = (
     audit.preview,
     audit.previewHeadline,
   );
-  if (providerDetail) return `${title} ${theme.fg("accent", providerDetail)}`;
+  if (providerDetail) return withTiming(`${title} ${theme.fg("accent", providerDetail)}`);
   const command = argString(args, "command");
   if (command) {
     const firstLine = command.split("\n")[0] ?? "";
@@ -660,7 +666,7 @@ const nestedCallTitleText = (
       firstLine.length > 0 ? highlightCode(firstLine, "bash", invalidate) : null;
     const cmd =
       highlighted && highlighted[0] ? highlighted[0] : theme.fg("accent", firstLine);
-    return `${title} ${theme.fg("dim", "$")} ${cmd}`;
+    return withTiming(`${title} ${theme.fg("dim", "$")} ${cmd}`);
   }
   const path = argString(args, "path");
   const pattern = argString(args, "pattern");
@@ -675,7 +681,7 @@ const nestedCallTitleText = (
       || audit.previewHeadline
       || "";
   }
-  return detail ? `${title} ${theme.fg("accent", detail)}` : title;
+  return withTiming(detail ? `${title} ${theme.fg("accent", detail)}` : title);
 };
 
 const transcriptToolAudit = (entry: FabricTranscriptEntry): FabricRenderAudit => {
