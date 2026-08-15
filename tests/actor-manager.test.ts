@@ -184,8 +184,10 @@ describe("ActorManager", () => {
     const bindingDirectory = path.join(owner.root, "actors", "bindings");
     const bindingFiles = fs.readdirSync(bindingDirectory);
     expect(bindingFiles).toHaveLength(2);
-    for (const file of bindingFiles) {
-      expect(fs.statSync(path.join(bindingDirectory, file)).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      for (const file of bindingFiles) {
+        expect(fs.statSync(path.join(bindingDirectory, file)).mode & 0o777).toBe(0o600);
+      }
     }
     const registry = JSON.parse(
       fs.readFileSync(registryPath, "utf8"),
