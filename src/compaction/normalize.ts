@@ -8,6 +8,7 @@ import {
 } from "./branch-details.js";
 import { clipUtf8, utf8Bytes } from "./bounds.js";
 import { normalizeRunDisplay } from "../run-display.js";
+import { fabricExecTitleHintCached } from "../ui/fabric-title-hint.js";
 
 // A purely structural, typed view of one session window. Every event carries
 // the 1-based `index` it occupied in the normalized stream (stable, used by the
@@ -235,10 +236,19 @@ interface FabricRunIntent {
 const fabricRunIntent = (call: PendingCall | undefined): FabricRunIntent | undefined => {
   if (!call || call.name !== "fabric_exec") return undefined;
   const display = normalizeRunDisplay(call.args.display);
-  if (!display || display.name === undefined) return undefined;
-  const name = clipUtf8(display.name.trim(), FABRIC_BRANCH_RUN_NAME_MAX_BYTES);
+  // Fallback parity with the compact card header and the activity feed: when
+  // no name is declared, derive one lexically from the recorded program so
+  // intent continuity never depends on the live UI. A declared description is
+  // preserved even when the name comes from the program.
+  const intentName = display?.name?.trim()
+    ? display.name
+    : typeof call.args.code === "string"
+      ? fabricExecTitleHintCached(call.args.code)
+      : undefined;
+  if (intentName === undefined) return undefined;
+  const name = clipUtf8(intentName.trim(), FABRIC_BRANCH_RUN_NAME_MAX_BYTES);
   if (!name) return undefined;
-  const description = display.description !== undefined
+  const description = display?.description !== undefined
     ? clipUtf8(display.description.trim(), FABRIC_BRANCH_RUN_DESCRIPTION_MAX_BYTES)
     : "";
   return { name, ...(description ? { description } : {}) };

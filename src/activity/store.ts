@@ -148,9 +148,12 @@ export class FabricActivityStore {
     this.#emit();
   }
 
-  start(id: string, display: FabricRunDisplay = {}): FabricActivityRun {
+  start(id: string, display: FabricRunDisplay = {}, nameHint?: string): FabricActivityRun {
     const now = Date.now();
-    const name = cleanText(display.name, MAX_NAME_CHARS) ?? "Fabric program";
+    const name =
+      cleanText(display.name, MAX_NAME_CHARS) ??
+      cleanText(nameHint, MAX_NAME_CHARS) ??
+      "Fabric program";
     const description = cleanText(display.description, MAX_DESCRIPTION_CHARS);
     const run: FabricActivityRun = {
       id,

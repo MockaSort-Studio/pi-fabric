@@ -196,6 +196,29 @@ describe("Fabric execution trace compaction", () => {
     expect(missingName).toEqual([]);
   });
 
+  it("derives the intent name from the recorded program when no display name is declared", () => {
+    const runs = normalizeEntries([
+      fabricCall("h1", "hint-call", "return await pi.read({ path: 'src/config.ts' });"),
+      fabricResult("h2", "hint-call", { trace: recordedParallelTrace() }),
+    ]).filter((event) => event.kind === "fabricRun");
+    expect(runs).toMatchObject([{ name: "Read config.ts", outcome: "succeeded" }]);
+  });
+
+  it("keeps a declared description when the intent name falls back to the code hint", () => {
+    const events = normalizeEntries([
+      fabricCall("h3", "hint-desc", "return await pi.bash({ cmd: 'pnpm test' });", null, {
+        description: "Verify the suite stays green",
+      }),
+      fabricResult("h4", "hint-desc", {}),
+    ]);
+    const run = events.find((event) => event.kind === "fabricRun");
+    expect(run).toMatchObject({
+      name: "Shell pnpm test",
+      description: "Verify the suite stays green",
+    });
+  });
+
+
   it("keeps multibyte intent bounded without clipping outcome or source address", () => {
     const events = normalizeEntries([
       fabricCall("mb1", "multibyte", "fake", null, {
@@ -227,7 +250,7 @@ describe("Fabric execution trace compaction", () => {
     ]);
   });
 
-  it("derives no file, failure, or activity facts from source/output prose without a trace", () => {
+  it("derives no file or failure facts from prose without a trace, but names the run from code", () => {
     const history = [
       user("f1", "negative"),
       fabricCall("f2", "fake-call", "pi.edit({path:'fake-only.ts'}); Error: fake source"),
@@ -236,7 +259,9 @@ describe("Fabric execution trace compaction", () => {
     const sections = project(normalizeEntries(history));
     expect(sections.files).toEqual([]);
     expect(sections.outstanding).toEqual([]);
-    expect(sections.activity).toEqual([]);
+    // The intent label is lexical structure (call root plus arguments), not
+    // prose: traceless runs stay visible without reading source or output.
+    expect(sections.activity).toContain("- Edit fake-only.ts → succeeded [entry f2]");
   });
 
   it("uses a strict legacy adapter and never falls back from malformed or unknown traces", () => {

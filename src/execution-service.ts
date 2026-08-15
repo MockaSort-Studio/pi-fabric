@@ -36,6 +36,7 @@ import {
   isBlockingOrchestrationRef,
 } from "./runtime/orchestration.js";
 import type { FabricCommittedCapabilityView } from "./protocol.js";
+import { fabricExecTitleHintCached } from "./ui/fabric-title-hint.js";
 import type {
   QuickJsRuntime,
   FabricSandboxResult,
@@ -161,7 +162,11 @@ export class FabricExecutionService {
   async execute(options: FabricExecutionOptions): Promise<FabricExecutionResult> {
     const startedAt = performance.now();
     const traceRecorder = new FabricExecutionTraceRecorder();
-    this.activity?.start(options.parentToolCallId, options.display);
+    this.activity?.start(
+      options.parentToolCallId,
+      options.display,
+      options.display?.name?.trim() ? undefined : fabricExecTitleHintCached(options.code),
+    );
     const dependencies = await loadRuntimeDependencies();
     const effectiveFullCodeMode =
       this.config.fullCodeMode || this.config.schema.mode === "enforce";

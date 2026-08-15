@@ -10,6 +10,7 @@ import {
   type FabricToolShellDecorator,
   withCodePreviewShell,
 } from "./ui/code-preview-shell.js";
+import { fabricExecTitleHintCached } from "./ui/fabric-title-hint.js";
 import { Type } from "typebox";
 import {
   createFabricPersistedExecutionDetails,
@@ -241,9 +242,12 @@ export const createFabricExecTool = (
       // promotes a compact card to the full transcript below.
       if (mode === "compact" && !context.expanded) {
         const display = normalizeRunDisplay(params.display);
+        // Session-wide memo keyed by the program string: the same hint serves
+        // the live card, the activity feed, and compaction intent.
+        const title = display?.name?.trim() || fabricExecTitleHintCached(code);
         const header = renderBoundedLines(
           [
-            theme.fg("toolTitle", theme.bold(safeTerminalText(display?.name?.trim() || "Tool"))),
+            theme.fg("toolTitle", theme.bold(safeTerminalText(title || "Tool"))),
             ...(display?.description
               ? [theme.fg("dim", safeTerminalText(display.description))]
               : []),

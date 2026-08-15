@@ -292,4 +292,18 @@ describe("FabricActivityStore", () => {
     expect(detailed?.calls[0]?.args).toMatchObject({ path: "src/a.ts" });
     expect(detailed?.items[0]?.data).toMatchObject({ entries: [1, 2, 3] });
   });
+
+  it("falls back to a lexical name hint only when no display name is declared", () => {
+    const store = new FabricActivityStore();
+
+    const hinted = store.start("hint-1", {}, "Read config.ts");
+    expect(hinted.name).toBe("Read config.ts");
+
+    const declared = store.start("hint-2", { name: "Declared milestone" }, "Read config.ts");
+    expect(declared.name).toBe("Declared milestone");
+
+    const plain = store.start("hint-3");
+    expect(plain.name).toBe("Fabric program");
+  });
 });
+

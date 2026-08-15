@@ -145,3 +145,257 @@ export const fabricWriteBindings = (code: string): FabricWriteBinding[] => {
   }
   return bindings;
 };
+
+const TITLE_MAX_CHARS = 80;
+const TITLE_MAX_ANCHOR_CHARS = 40;
+const TITLE_MAX_COMMAND_CHARS = 30;
+const TITLE_MAX_TASK_CHARS = 40;
+const TITLE_MAX_PATTERN_CHARS = 24;
+const TITLE_MAX_KEY_CHARS = 24;
+const TITLE_MAX_WINDOW_TOKENS = 96;
+const TITLE_SAFE_ANCHOR = /^[A-Za-z0-9_./~@*+,-]+$/;
+const TITLE_FILE_LIKE = /\.[A-Za-z0-9]{1,8}$/;
+
+const PI_VERB_LABELS: Record<string, string> = {
+  read: "Read",
+  bash: "Shell",
+  edit: "Edit",
+  write: "Write",
+  grep: "Search",
+  find: "Search",
+  ls: "Search",
+};
+
+const ROOT_VERB_LABELS: Record<string, string> = {
+  agents: "Agent",
+  memory: "Memory",
+  state: "State",
+  schema: "Schema",
+  compact: "Compact",
+  mesh: "Mesh",
+  tools: "Tools",
+};
+
+const TITLE_PATH_KEYS = new Set(["path", "file", "file_path"]);
+
+const humanizeIdentifier = (value: string): string =>
+  value
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/^./, (char) => char.toUpperCase());
+
+const titleAnchorPathLike = (value: string): boolean =>
+  value.length > 0 &&
+  value.length <= 64 &&
+  TITLE_SAFE_ANCHOR.test(value) &&
+  (value.includes("/") || TITLE_FILE_LIKE.test(value) || value.includes("*"));
+
+const titleBasename = (value: string): string =>
+  value.split("/").filter(Boolean).pop() ?? value;
+
+const titleClip = (value: string, maxChars: number): string =>
+  value.length > maxChars ? `${value.slice(0, maxChars - 1)}…` : value;
+
+const clipWords = (value: string, maxChars: number): string => {
+  if (value.length <= maxChars) return value;
+  const cut = value.slice(0, maxChars - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${space > 0 ? cut.slice(0, space) : cut}…`;
+};
+
+// Token range of one call's argument list: from just after the opening paren
+// to the depth-matched close, capped so a malformed call cannot smear across
+// the rest of the program.
+const callWindow = (tokens: Token[], openIndex: number): { start: number; end: number } => {
+  let depth = 0;
+  let end = openIndex;
+  while (end < tokens.length && end - openIndex < TITLE_MAX_WINDOW_TOKENS) {
+    const text = tokens[end]!.text;
+    if (text === "(" || text === "[" || text === "{") depth++;
+    else if (text === ")" || text === "]" || text === "}") {
+      depth--;
+      if (depth <= 0) break;
+    }
+    end++;
+  }
+  return { start: openIndex + 1, end };
+};
+
+const isNamedStringToken = (tokens: Token[], index: number): boolean =>
+  tokens[index]?.kind === "string" && tokens[index - 1]?.text === "[" && tokens[index - 2]?.text === "π";
+
+const windowKeyedString = (
+  tokens: Token[],
+  start: number,
+  end: number,
+  keys: Set<string> | string,
+): string | undefined => {
+  for (let index = start; index < end; index++) {
+    if (tokens[index]?.kind !== "string" || isNamedStringToken(tokens, index)) continue;
+    if (tokens[index - 1]?.text !== ":") continue;
+    const key = propertyName(tokens[index - 2]);
+    if (key === undefined || !(typeof keys === "string" ? key === keys : keys.has(key))) continue;
+    return tokens[index]!.text;
+  }
+  return undefined;
+};
+
+const windowFirstString = (tokens: Token[], start: number, end: number): string | undefined => {
+  for (let index = start; index < end; index++) {
+    if (tokens[index]?.kind === "string" && !isNamedStringToken(tokens, index)) return tokens[index]!.text;
+  }
+  return undefined;
+};
+
+const windowPathLike = (tokens: Token[], start: number, end: number): string | undefined => {
+  for (let index = start; index < end; index++) {
+    if (tokens[index]?.kind === "string" && !isNamedStringToken(tokens, index) && titleAnchorPathLike(tokens[index]!.text)) {
+      return tokens[index]!.text;
+    }
+  }
+  return undefined;
+};
+
+const dirQualifier = (value: string): string | undefined =>
+  TITLE_FILE_LIKE.test(titleBasename(value))
+    ? titleClip(titleBasename(value), TITLE_MAX_ANCHOR_CHARS)
+    : TITLE_SAFE_ANCHOR.test(value) && value !== "." && value.length <= TITLE_MAX_ANCHOR_CHARS
+      ? value
+      : undefined;
+
+const searchTarget = (tokens: Token[], start: number, end: number): string | undefined => {
+  const pattern = windowKeyedString(tokens, start, end, "pattern");
+  let head: string | undefined;
+  if (pattern !== undefined) {
+    if (titleAnchorPathLike(pattern)) head = titleClip(titleBasename(pattern), TITLE_MAX_ANCHOR_CHARS);
+    else if (TITLE_SAFE_ANCHOR.test(pattern) && pattern.length <= TITLE_MAX_PATTERN_CHARS) head = `"${pattern}"`;
+  }
+  const pathValue = windowKeyedString(tokens, start, end, TITLE_PATH_KEYS);
+  let tail: string | undefined = pathValue !== undefined ? dirQualifier(pathValue) : undefined;
+  if (tail === undefined && pathValue === undefined) {
+    // ls-style positional: the first bare string argument.
+    const positional = windowFirstString(tokens, start, end);
+    if (positional !== undefined && TITLE_SAFE_ANCHOR.test(positional) && positional.length <= TITLE_MAX_ANCHOR_CHARS) {
+      tail = titleAnchorPathLike(positional) ? titleClip(titleBasename(positional), TITLE_MAX_ANCHOR_CHARS) : positional;
+    }
+  }
+  if (head !== undefined && tail !== undefined) return `${head} in ${tail}`;
+  return head ?? tail;
+};
+
+const pathTarget = (tokens: Token[], start: number, end: number): string | undefined => {
+  const keyed = windowKeyedString(tokens, start, end, TITLE_PATH_KEYS);
+  if (keyed !== undefined && TITLE_FILE_LIKE.test(titleBasename(keyed))) {
+    return titleClip(titleBasename(keyed), TITLE_MAX_ANCHOR_CHARS);
+  }
+  const loose = windowPathLike(tokens, start, end);
+  if (loose !== undefined) return titleClip(titleBasename(loose), TITLE_MAX_ANCHOR_CHARS);
+  return keyed !== undefined ? dirQualifier(keyed) : undefined;
+};
+
+const piCallTarget = (
+  label: string,
+  tokens: Token[],
+  start: number,
+  end: number,
+): string | undefined => {
+  if (label === "Shell") {
+    const command = windowFirstString(tokens, start, end);
+    return command !== undefined ? titleClip(command.split("\n")[0]!, TITLE_MAX_COMMAND_CHARS) : undefined;
+  }
+  if (label === "Search") return searchTarget(tokens, start, end);
+  return pathTarget(tokens, start, end);
+};
+
+// Deterministic lexical title for a fabric_exec program, derived without
+// executing it. Every recognized call contributes "Verb target" — target is
+// a basename, glob, quoted literal search head, command head, mcp ref, or
+// task/key clip — and segments join in first-occurrence order under a char
+// budget. π payload keys are skipped so named strings never surface in
+// titles. Returns undefined when the program holds no recognizable Fabric
+// call, letting callers keep a neutral fallback.
+export const fabricExecTitleHint = (code: string): string | undefined => {
+  const tokens = tokenize(code);
+  const groups = new Map<string, (string | undefined)[]>();
+  const record = (verb: string, target: string | undefined): void => {
+    const list = groups.get(verb);
+    if (list) list.push(target);
+    else groups.set(verb, [target]);
+  };
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token.kind !== "identifier") continue;
+    if ((token.text === "agents" || token.text === "compact") && tokens[index + 1]?.text === "(") {
+      const window = callWindow(tokens, index + 1);
+      const target = token.text === "agents"
+        ? (() => {
+            const task = windowKeyedString(tokens, window.start, window.end, "task");
+            return task !== undefined ? clipWords(task.split("\n")[0]!, TITLE_MAX_TASK_CHARS) : undefined;
+          })()
+        : undefined;
+      record(ROOT_VERB_LABELS[token.text]!, target);
+      continue;
+    }
+    const dot = tokens[index + 1];
+    const leaf = tokens[index + 2];
+    if (dot?.text !== "." || leaf?.kind !== "identifier") continue;
+    if (token.text === "pi" && tokens[index + 3]?.text === "(") {
+      const label = PI_VERB_LABELS[leaf.text] ?? humanizeIdentifier(leaf.text);
+      const window = callWindow(tokens, index + 3);
+      record(label, piCallTarget(label, tokens, window.start, window.end));
+      continue;
+    }
+    if (
+      token.text === "mcp" &&
+      tokens[index + 3]?.text === "." &&
+      tokens[index + 4]?.kind === "identifier" &&
+      tokens[index + 5]?.text === "("
+    ) {
+      record("Mcp", `${leaf.text}.${tokens[index + 4]!.text}`);
+      continue;
+    }
+    if (tokens[index + 3]?.text === "(") {
+      const label = ROOT_VERB_LABELS[token.text];
+      if (!label) continue;
+      if (token.text === "memory" || token.text === "state") {
+        const window = callWindow(tokens, index + 3);
+        const key = windowKeyedString(tokens, window.start, window.end, "key");
+        record(label, key !== undefined ? clipWords(key.split("\n")[0]!, TITLE_MAX_KEY_CHARS) : undefined);
+      } else {
+        record(label, undefined);
+      }
+    }
+  }
+  if (groups.size === 0) return undefined;
+  const segments: string[] = [];
+  for (const [verb, targets] of groups) {
+    const first = targets.find((target) => target !== undefined);
+    let segment = verb;
+    if (first !== undefined) {
+      segment = `${verb} ${first}`;
+      if (targets.length > 1) {
+        segment += targets.every((target) => target === first) ? ` ×${targets.length}` : ` +${targets.length - 1}`;
+      }
+    } else if (targets.length > 1) {
+      segment += ` ×${targets.length}`;
+    }
+    segments.push(segment);
+  }
+  let title: string | undefined;
+  let overflow = false;
+  for (const segment of segments) {
+    if (title === undefined) {
+      title = segment.length <= TITLE_MAX_CHARS ? segment : clipWords(segment, TITLE_MAX_CHARS);
+      continue;
+    }
+    const candidate = `${title} + ${segment}`;
+    if (candidate.length <= TITLE_MAX_CHARS) {
+      title = candidate;
+      continue;
+    }
+    overflow = true;
+    break;
+  }
+  if (overflow && title !== undefined && title.length + 3 <= TITLE_MAX_CHARS) title = `${title} +…`;
+  return title;
+};
