@@ -490,7 +490,8 @@ const sectionSubmenu = (
   items: SettingItem[],
   persist: (id: string, value: string) => void,
 ): SettingsSubmenu => (_currentValue, done) =>
-  new SectionSubmenu(theme, title, description, markDrillIn(items), persist, () => done());
+  // Match the root page: sections get type-to-search filtering too.
+  new SectionSubmenu(theme, title, description, markDrillIn(items), persist, () => done(), true);
 
 class IntegerInputSubmenu extends Container {
   readonly input: Input;

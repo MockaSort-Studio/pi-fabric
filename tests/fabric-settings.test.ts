@@ -205,6 +205,23 @@ describe("FabricSettingsComponent", () => {
     expect(lines).toContain("auto");
   });
 
+  it("section submenus offer the same type-to-search filter as the root page", () => {
+    const items = buildItems();
+    const executor = items.find((item) => item.id === "executor")!;
+    const submenu = executor.submenu!("", () => {});
+
+    const initial = submenu.render(80).join("\n");
+    expect(initial).toContain("Type to search");
+    expect(initial).toContain("Runtime");
+
+    for (const char of "memory") submenu.handleInput?.(char);
+    const filtered = submenu.render(80).join("\n");
+    expect(filtered).toContain("Memory limit");
+    expect(filtered).not.toContain("Timeout");
+    expect(filtered).not.toContain("Result format");
+    expect(filtered).not.toContain("No matching settings");
+  });
+
   it("exposes the compaction engine", () => {
     const items = buildItems();
     const compaction = items.find((item) => item.id === "compaction");
