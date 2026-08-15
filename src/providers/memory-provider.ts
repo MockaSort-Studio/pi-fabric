@@ -194,40 +194,18 @@ const MEMORY_SCOPE_VALUE_ALIASES: Record<string, string> = {
   current: "session",
 };
 
-export const MEMORY_ARG_NORMALIZATION: Record<string, ArgNormalizationSpec> = {
-  recall: {
-    aliases: {
-      q: "query",
-      limit: "pageSize",
-      max: "pageSize",
-      page_size: "pageSize",
-      query_mode: "queryMode",
-      entry_range: "entryRange",
-    },
-    values: { scope: MEMORY_SCOPE_VALUE_ALIASES },
-    numerics: ["page", "pageSize", "since", "until"],
-  },
-  expand: {
-    aliases: {
-      id: "session",
-      file: "session",
-      path: "session",
-      session_id: "session",
-      index: "indices",
-      entry_ids: "entryIds",
-      entry_range: "entryRange",
-      operation_addresses: "operationAddresses",
-    },
-    numericArrays: ["indices"],
-  },
-  sessions: {
-    aliases: { max: "limit" },
-    values: { scope: MEMORY_SCOPE_VALUE_ALIASES },
-    numerics: ["limit"],
-  },
+const MEMORY_ARG_NORMALIZATION: Record<string, ArgNormalizationSpec> = {
+  recall: { values: { scope: MEMORY_SCOPE_VALUE_ALIASES } },
+  sessions: { values: { scope: MEMORY_SCOPE_VALUE_ALIASES } },
 };
 
-const memoryArgNormalizer = actionArgNormalizer(() => descriptors, MEMORY_ARG_NORMALIZATION);
+// Argument repair derives from the action schemas plus the shared synonym
+// lexicon; only scope value spellings stay table-bound because the schema
+// spells scope as a free string rather than an enum.
+export const normalizeMemoryArgs = actionArgNormalizer(
+  () => descriptors,
+  MEMORY_ARG_NORMALIZATION,
+);
 
 export interface MemoryProviderContext {
   agentDir: string;
@@ -358,7 +336,7 @@ export class MemoryProvider implements FabricProvider {
     actionName: string,
     args: Record<string, unknown>,
   ): Record<string, unknown> {
-    return memoryArgNormalizer(actionName, args);
+    return normalizeMemoryArgs(actionName, args);
   }
 
   async invoke(

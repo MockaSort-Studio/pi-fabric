@@ -6,7 +6,7 @@ import type {
 } from "../protocol.js";
 import type { MeshIdentity, MeshStore } from "../mesh/store.js";
 import { StateStore, type StateTransitionKind } from "../state/store.js";
-import { actionArgNormalizer, type ArgNormalizationSpec } from "./arg-normalization.js";
+import { actionArgNormalizer } from "./arg-normalization.js";
 
 const STATE_ENTITY_ID = "fabric-state";
 
@@ -135,33 +135,7 @@ const schemasByAction: Record<string, Record<string, unknown>> = {
   checkGoal: checkGoalSchema,
 };
 
-export const STATE_ARG_NORMALIZATION: Record<string, ArgNormalizationSpec> = {
-  transition: {
-    aliases: { name: "label", description: "summary" },
-  },
-  history: {
-    aliases: { name: "label", max: "limit" },
-    numerics: ["limit"],
-  },
-  complexity: {
-    aliases: { paths: "files" },
-  },
-  verify: {
-    aliases: { label: "labels" },
-    numerics: ["timeoutMs"],
-  },
-  goal: {
-    aliases: { command: "check", cmd: "check", predicate: "check" },
-  },
-  checkGoal: {
-    numerics: ["timeoutMs"],
-  },
-};
 
-const stateArgNormalizer = actionArgNormalizer(
-  () => Object.entries(schemasByAction).map(([name, inputSchema]) => ({ name, inputSchema })),
-  STATE_ARG_NORMALIZATION,
-);
 
 const descriptors: FabricActionDescriptor[] = [
   {
@@ -218,6 +192,10 @@ const descriptors: FabricActionDescriptor[] = [
   },
 ];
 
+// Argument repair derives from the action schemas plus the shared synonym
+// lexicon; no state-specific table remains.
+export const normalizeStateArgs = actionArgNormalizer(() => descriptors);
+
 export class StateProvider implements FabricProvider {
   readonly name = "state";
   readonly description =
@@ -258,7 +236,7 @@ export class StateProvider implements FabricProvider {
     actionName: string,
     args: Record<string, unknown>,
   ): Record<string, unknown> {
-    return stateArgNormalizer(actionName, args);
+    return normalizeStateArgs(actionName, args);
   }
 
   async invoke(

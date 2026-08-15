@@ -14,7 +14,7 @@ import type {
   FabricProvider,
   FabricProviderListRequest,
 } from "../protocol.js";
-import { actionArgNormalizer, type ArgNormalizationSpec } from "./arg-normalization.js";
+import { actionArgNormalizer } from "./arg-normalization.js";
 
 // Fabric provider exposing the host-session compaction controller to
 // `fabric_exec`. Compaction is advisory-then-committed: `request` only records
@@ -80,13 +80,7 @@ const emptySchema = {
   additionalProperties: false,
 };
 
-export const COMPACT_ARG_NORMALIZATION: Record<string, ArgNormalizationSpec> = {
-  request: {
-    aliases: { instruction: "instructions", requested_by: "requestedBy" },
-  },
-};
 
-const compactArgNormalizer = actionArgNormalizer(() => descriptors, COMPACT_ARG_NORMALIZATION);
 
 const descriptors: FabricActionDescriptor[] = [
   {
@@ -110,6 +104,10 @@ const descriptors: FabricActionDescriptor[] = [
     risk: "read",
   },
 ];
+
+// Argument repair derives from the action schemas plus the shared synonym
+// lexicon; no compact-specific table remains.
+export const normalizeCompactArgs = actionArgNormalizer(() => descriptors);
 
 export class CompactProvider implements FabricProvider {
   readonly name = "compact";
@@ -141,7 +139,7 @@ export class CompactProvider implements FabricProvider {
     actionName: string,
     args: Record<string, unknown>,
   ): Record<string, unknown> {
-    return compactArgNormalizer(actionName, args);
+    return normalizeCompactArgs(actionName, args);
   }
 
   async invoke(

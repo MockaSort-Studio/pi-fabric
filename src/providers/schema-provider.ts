@@ -6,7 +6,7 @@ import type {
 } from "../protocol.js";
 import { SchemaController } from "../schema/controller.js";
 import type { SchemaEvidence, SchemaFileOperation } from "../schema/types.js";
-import { actionArgNormalizer, type ArgNormalizationSpec } from "./arg-normalization.js";
+import { actionArgNormalizer } from "./arg-normalization.js";
 
 const pathProperty = { type: "string", minLength: 1 };
 const evidenceSchema = {
@@ -181,20 +181,11 @@ const descriptors: FabricActionDescriptor[] = [
   },
 ];
 
-export const SCHEMA_ARG_NORMALIZATION: Record<string, ArgNormalizationSpec> = {
-  hypothesize: {
-    aliases: {
-      name: "label",
-      description: "summary",
-      complexity_reduction: "complexityReduction",
-    },
-  },
-  verify: { aliases: { id: "hypothesisId", hypothesis_id: "hypothesisId" } },
-  commit: { aliases: { id: "hypothesisId", hypothesis_id: "hypothesisId" } },
-  abort: { aliases: { id: "hypothesisId", hypothesis_id: "hypothesisId" } },
-};
 
-const schemaArgNormalizer = actionArgNormalizer(() => descriptors, SCHEMA_ARG_NORMALIZATION);
+
+// Argument repair derives from the action schemas plus the shared synonym
+// lexicon; no schema-specific table remains.
+export const normalizeSchemaArgs = actionArgNormalizer(() => descriptors);
 
 export class SchemaProvider implements FabricProvider {
   readonly name = "schema";
@@ -225,7 +216,7 @@ export class SchemaProvider implements FabricProvider {
     actionName: string,
     args: Record<string, unknown>,
   ): Record<string, unknown> {
-    return schemaArgNormalizer(actionName, args);
+    return normalizeSchemaArgs(actionName, args);
   }
 
   async invoke(

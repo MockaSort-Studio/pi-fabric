@@ -6,14 +6,16 @@ import { describe, expect, it, afterEach } from "vitest";
 import {
   actionArgNormalizer,
   normalizeActionArgs,
-  type ArgNormalizationSpec,
 } from "../src/providers/arg-normalization.js";
-import { MEMORY_ARG_NORMALIZATION, MemoryProvider } from "../src/providers/memory-provider.js";
-import { STATE_ARG_NORMALIZATION } from "../src/providers/state-provider.js";
-import { SCHEMA_ARG_NORMALIZATION } from "../src/providers/schema-provider.js";
-import { COMPACT_ARG_NORMALIZATION } from "../src/providers/compact-provider.js";
-import { MESH_ARG_NORMALIZATION } from "../src/providers/mesh-provider.js";
-import { AGENTS_ARG_NORMALIZATION } from "../src/providers/agents-provider.js";
+import {
+  normalizeMemoryArgs,
+  MemoryProvider,
+} from "../src/providers/memory-provider.js";
+import { normalizeStateArgs } from "../src/providers/state-provider.js";
+import { normalizeSchemaArgs } from "../src/providers/schema-provider.js";
+import { normalizeCompactArgs } from "../src/providers/compact-provider.js";
+import { normalizeMeshArgs } from "../src/providers/mesh-provider.js";
+import { normalizeAgentsArgs } from "../src/providers/agents-provider.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
 import type {
   FabricInvocationContext,
@@ -100,128 +102,152 @@ describe("normalizeActionArgs", () => {
   });
 });
 
-describe("actionArgNormalizer", () => {
-  it("fills knownKeys from the descriptor schema properties", () => {
-    const normalize = actionArgNormalizer(
-      () => [
-        {
-          name: "pick",
-          inputSchema: {
-            type: "object",
-            properties: { limit: { type: "number" } },
-          },
+describe("schema-derived repair", () => {
+  const normalize = actionArgNormalizer(() => [
+    {
+      name: "probe",
+      inputSchema: {
+        type: "object",
+        properties: {
+          entryRange: { type: "object" },
+          labels: { type: "array", items: { type: "string" } },
+          timeoutMs: { type: "number" },
+          indices: { type: "array", items: { type: "number" } },
+          scope: { type: "string", enum: ["local", "lineage", "project"] },
         },
-      ],
-      { pick: { aliases: { max: "limit" }, numerics: ["limit"] } },
-    );
-    const out = normalize(
-      "pick",
-      { max: "3", query: null } as unknown as Record<string, unknown>,
-    );
-    expect(out.limit).toBe(3);
-    // Undeclared keys are retained so the validation stage owns their failure.
-    expect("query" in out).toBe(true);
-    const stripped = normalize("pick", { limit: null });
-    expect("limit" in stripped).toBe(false);
+        additionalProperties: false,
+      },
+    },
+  ]);
+
+  it("repairs casing and snake_case variants of declared keys", () => {
+    expect(
+      normalize("probe", { entry_range: { first: 0, last: 1 }, TIMEOUTMS: "5" }),
+    ).toEqual({ entryRange: { first: 0, last: 1 }, timeoutMs: 5 });
+  });
+
+  it("repairs singular spelling of a declared plural key", () => {
+    expect(normalize("probe", { label: ["init"] })).toEqual({ labels: ["init"] });
+  });
+
+  it("coerces numeric strings from declared schema types, not a table", () => {
+    expect(
+      normalize("probe", { timeoutMs: "250", indices: ["1", "x"] }),
+    ).toEqual({ timeoutMs: 250, indices: [1, "x"] });
+  });
+
+  it("repairs enum value casing variants", () => {
+    expect(normalize("probe", { scope: "PROJECT" })).toEqual({ scope: "project" });
+  });
+
+  it("repairs enum values through synonym classes claimed by the declared enum", () => {
+    expect(normalize("probe", { scope: "cwd" })).toEqual({ scope: "project" });
+  });
+
+  it("leaves enum synonyms untouched when the enum does not claim them", () => {
+    expect(normalize("probe", { scope: "all" })).toEqual({ scope: "all" });
   });
 });
 
-const specOf = (table: Record<string, ArgNormalizationSpec>, action: string): ArgNormalizationSpec => {
-  const spec = table[action];
-  if (!spec) throw new Error(`missing normalization spec for ${action}`);
-  return spec;
-};
+describe("synonym lexicon", () => {
+  it("repairs through classes when the schema declares a unique member", () => {
+    const normalize = actionArgNormalizer(() => [
+      {
+        name: "probe",
+        inputSchema: { type: "object", properties: { session: { type: "string" } } },
+      },
+    ]);
+    expect(normalize("probe", { id: "s1" })).toEqual({ session: "s1" });
+  });
 
-describe("provider normalization tables", () => {
+  it("refuses ambiguous repairs and leaves the key for validation", () => {
+    const normalize = actionArgNormalizer(() => [
+      {
+        name: "probe",
+        inputSchema: {
+          type: "object",
+          properties: { label: { type: "string" }, name: { type: "string" } },
+        },
+      },
+    ]);
+    expect(normalize("probe", { title: "t" })).toEqual({ title: "t" });
+  });
+});
+
+describe("provider argument normalization", () => {
   it("memory.sessions repairs scope spellings and max with numeric coercion", () => {
-    expect(
-      normalizeActionArgs({ scope: "cwd", max: "3" }, specOf(MEMORY_ARG_NORMALIZATION, "sessions")),
-    ).toEqual({ scope: "project", limit: 3 });
+    expect(normalizeMemoryArgs("sessions", { scope: "cwd", max: "3" })).toEqual({
+      scope: "project",
+      limit: 3,
+    });
   });
 
   it("memory.expand repairs session/id spellings; window guesses pass through to validation", () => {
     expect(
-      normalizeActionArgs(
-        { id: "75292bd6", indices: ["1", "2"], before: 8 },
-        specOf(MEMORY_ARG_NORMALIZATION, "expand"),
-      ),
+      normalizeMemoryArgs("expand", { id: "75292bd6", indices: ["1", "2"], before: 8 }),
     ).toEqual({ session: "75292bd6", indices: [1, 2], before: 8 });
   });
 
   it("memory.recall repairs query and page size spellings", () => {
     expect(
-      normalizeActionArgs(
-        { q: "auth", limit: "5", entry_range: { first: 0, last: 3 } },
-        specOf(MEMORY_ARG_NORMALIZATION, "recall"),
-      ),
+      normalizeMemoryArgs("recall", {
+        q: "auth",
+        limit: "5",
+        entry_range: { first: 0, last: 3 },
+      }),
     ).toEqual({ query: "auth", pageSize: 5, entryRange: { first: 0, last: 3 } });
   });
 
   it("state repairs summary/label spellings and numeric strings", () => {
+    expect(normalizeStateArgs("goal", { command: "make test" })).toEqual({
+      check: "make test",
+    });
     expect(
-      normalizeActionArgs({ command: "make test" }, specOf(STATE_ARG_NORMALIZATION, "goal")),
-    ).toEqual({ check: "make test" });
-    expect(
-      normalizeActionArgs(
-        { label: ["init"], timeoutMs: "5000" },
-        specOf(STATE_ARG_NORMALIZATION, "verify"),
-      ),
+      normalizeStateArgs("verify", { label: ["init"], timeoutMs: "5000" }),
     ).toEqual({ labels: ["init"], timeoutMs: 5000 });
-    expect(
-      normalizeActionArgs({ name: "init", max: "3" }, specOf(STATE_ARG_NORMALIZATION, "history")),
-    ).toEqual({ label: "init", limit: 3 });
+    expect(normalizeStateArgs("history", { name: "init", max: "3" })).toEqual({
+      label: "init",
+      limit: 3,
+    });
   });
 
   it("schema repairs hypothesis id spellings", () => {
     for (const action of ["verify", "commit", "abort"]) {
-      expect(
-        normalizeActionArgs({ id: "h1" }, specOf(SCHEMA_ARG_NORMALIZATION, action)),
-      ).toEqual({ hypothesisId: "h1" });
+      expect(normalizeSchemaArgs(action, { id: "h1" })).toEqual({ hypothesisId: "h1" });
     }
     expect(
-      normalizeActionArgs(
-        { description: "d", complexity_reduction: true },
-        specOf(SCHEMA_ARG_NORMALIZATION, "hypothesize"),
-      ),
+      normalizeSchemaArgs("hypothesize", {
+        description: "d",
+        complexity_reduction: true,
+      }),
     ).toEqual({ summary: "d", complexityReduction: true });
   });
 
   it("compact repairs instruction spellings", () => {
     expect(
-      normalizeActionArgs(
-        { instruction: "summarize", requested_by: "me" },
-        specOf(COMPACT_ARG_NORMALIZATION, "request"),
-      ),
+      normalizeCompactArgs("request", { instruction: "summarize", requested_by: "me" }),
     ).toEqual({ instructions: "summarize", requestedBy: "me" });
   });
 
   it("mesh repairs publish text and CAS version spellings", () => {
-    expect(
-      normalizeActionArgs({ message: "hi" }, specOf(MESH_ARG_NORMALIZATION, "publish")),
-    ).toEqual({ text: "hi" });
-    expect(
-      normalizeActionArgs({ key: "k", version: "3" }, specOf(MESH_ARG_NORMALIZATION, "put")),
-    ).toEqual({ key: "k", ifVersion: 3 });
-    expect(
-      normalizeActionArgs({ max: "7", include_stale: true }, specOf(MESH_ARG_NORMALIZATION, "members")),
-    ).toEqual({ limit: 7, includeStale: true });
+    expect(normalizeMeshArgs("publish", { message: "hi" })).toEqual({ text: "hi" });
+    expect(normalizeMeshArgs("put", { key: "k", version: "3" })).toEqual({
+      key: "k",
+      ifVersion: 3,
+    });
+    expect(normalizeMeshArgs("members", { max: "7", include_stale: true })).toEqual({
+      limit: 7,
+      includeStale: true,
+    });
   });
 
   it("agents repair task, timeout, and id spellings", () => {
     expect(
-      normalizeActionArgs(
-        { prompt: "do it", timeout_ms: "5000" },
-        specOf(AGENTS_ARG_NORMALIZATION, "run"),
-      ),
+      normalizeAgentsArgs("run", { prompt: "do it", timeout_ms: "5000" }),
     ).toEqual({ task: "do it", timeoutMs: 5000 });
+    expect(normalizeAgentsArgs("wait", { agent_id: "a1" })).toEqual({ id: "a1" });
     expect(
-      normalizeActionArgs({ agent_id: "a1" }, specOf(AGENTS_ARG_NORMALIZATION, "wait")),
-    ).toEqual({ id: "a1" });
-    expect(
-      normalizeActionArgs(
-        { agentId: "a1", delete_branch: true },
-        specOf(AGENTS_ARG_NORMALIZATION, "cleanup"),
-      ),
+      normalizeAgentsArgs("cleanup", { agentId: "a1", delete_branch: true }),
     ).toEqual({ id: "a1", deleteBranch: true });
   });
 });

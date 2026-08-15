@@ -7,7 +7,7 @@ import type {
 import { MeshStore, type MeshIdentity } from "../mesh/store.js";
 import type { FabricParticipantSource } from "../topology/types.js";
 import { FABRIC_PARTICIPANT_LIFECYCLE_TOPIC } from "../lifecycle/types.js";
-import { actionArgNormalizer, type ArgNormalizationSpec } from "./arg-normalization.js";
+import { actionArgNormalizer } from "./arg-normalization.js";
 
 const emptySchema = { type: "object", properties: {}, additionalProperties: false };
 const INTERNAL_STATE_PREFIXES = ["topology/", "sessions/", "actors/", "residency/"];
@@ -147,33 +147,11 @@ const descriptors: FabricActionDescriptor[] = [
   },
 ];
 
-export const MESH_ARG_NORMALIZATION: Record<string, ArgNormalizationSpec> = {
-  publish: {
-    aliases: { message: "text", body: "text" },
-  },
-  read: {
-    aliases: { max: "limit" },
-    numerics: ["after", "limit"],
-  },
-  members: {
-    aliases: { max: "limit", include_stale: "includeStale" },
-    numerics: ["limit"],
-  },
-  list: {
-    aliases: { max: "limit" },
-    numerics: ["limit"],
-  },
-  put: {
-    aliases: { if_version: "ifVersion", version: "ifVersion" },
-    numerics: ["ifVersion"],
-  },
-  delete: {
-    aliases: { if_version: "ifVersion", version: "ifVersion" },
-    numerics: ["ifVersion"],
-  },
-};
 
-const meshArgNormalizer = actionArgNormalizer(() => descriptors, MESH_ARG_NORMALIZATION);
+
+// Argument repair derives from the action schemas plus the shared synonym
+// lexicon; no mesh-specific table remains.
+export const normalizeMeshArgs = actionArgNormalizer(() => descriptors);
 
 export class MeshProvider implements FabricProvider {
   readonly name = "mesh";
@@ -209,7 +187,7 @@ export class MeshProvider implements FabricProvider {
     actionName: string,
     args: Record<string, unknown>,
   ): Record<string, unknown> {
-    return meshArgNormalizer(actionName, args);
+    return normalizeMeshArgs(actionName, args);
   }
 
   async invoke(
