@@ -703,6 +703,7 @@ export class FabricExecutionService {
           maxLogChars: this.config.executor.maxOutputChars,
           minimumTimeoutMsForHostCall,
           ...(checked.javascript ? { transpiledCode: checked.javascript } : {}),
+          ...(checked.sourceMap ? { transpiledSourceMap: checked.sourceMap } : {}),
           ...(options.strings ? { strings: options.strings } : {}),
           ...(options.tokenBudget !== undefined ? { tokenBudget: options.tokenBudget } : {}),
           ...(options.signal ? { signal: options.signal } : {}),

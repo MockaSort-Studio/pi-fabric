@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { QuickJsRuntime } from "../src/runtime/quickjs-runtime.js";
+import { transpileFabricCodeWithSourceMap } from "../src/runtime/type-checker.js";
 
 const options = {
   timeoutMs: 5_000,
@@ -998,6 +999,64 @@ return r.split(",");
     );
     expect(result.error).toBeDefined();
     expect(result.error).not.toContain("envelope");
+  });
+});
+
+describe("QuickJsRuntime guest stack remapping", () => {
+  const remapOptions = { timeoutMs: 5_000, memoryLimitBytes: 32 * 1024 * 1024 };
+
+  it("remaps thrown error frames to user code lines", async () => {
+    const result = await new QuickJsRuntime().execute(
+      ["const before = 1;", "print(before);", 'throw new Error("boom");'].join("\n"),
+      async () => undefined,
+      remapOptions,
+    );
+
+    expect(result.terminationReason).toBe("runtime_error");
+    expect(result.error).toContain("guest code:3:");
+    expect(result.error).toContain("boom");
+  });
+
+  it("remaps native parse errors raised from user code", async () => {
+    const result = await new QuickJsRuntime().execute(
+      ['const payload = "    },";', "JSON.parse(payload);"].join("\n"),
+      async () => undefined,
+      remapOptions,
+    );
+
+    expect(result.terminationReason).toBe("runtime_error");
+    expect(result.error).toContain("unexpected token");
+    expect(result.error).toContain("guest code:2:");
+    expect(result.error).toContain("at parse (native)");
+  });
+
+  it("remaps frames for pre-transpiled code when a source map is provided", async () => {
+    const code = ["const a = 1;", 'throw new Error("pre");'].join("\n");
+    const transpiled = transpileFabricCodeWithSourceMap(code);
+    const result = await new QuickJsRuntime().execute(
+      code,
+      async () => undefined,
+      {
+        ...remapOptions,
+        transpiledCode: transpiled.code,
+        ...(transpiled.sourceMap ? { transpiledSourceMap: transpiled.sourceMap } : {}),
+      },
+    );
+
+    expect(result.terminationReason).toBe("runtime_error");
+    expect(result.error).toContain("guest code:2:");
+  });
+
+  it("keeps emitted frames when no source map accompanies pre-transpiled code", async () => {
+    const transpiled = transpileFabricCodeWithSourceMap('throw new Error("pre");');
+    const result = await new QuickJsRuntime().execute(
+      'throw new Error("pre");',
+      async () => undefined,
+      { ...remapOptions, transpiledCode: transpiled.code },
+    );
+
+    expect(result.terminationReason).toBe("runtime_error");
+    expect(result.error).toContain("pi-fabric-guest.js");
   });
 });
 

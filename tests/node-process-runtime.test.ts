@@ -171,3 +171,17 @@ await Promise.all([
     expect(result.error).toBe("Execution cancelled");
   });
 });
+
+describe("NodeProcessRuntime guest stack remapping", () => {
+  it("remaps child error frames to user code lines", async () => {
+    const result = await new NodeProcessRuntime().execute(
+      ["const before = 1;", "print(before);", 'throw new Error("boom");'].join("\n"),
+      async () => undefined,
+      { timeoutMs: 5_000, memoryLimitBytes: 128 * 1024 * 1024 },
+    );
+
+    expect(result.terminationReason).toBe("runtime_error");
+    expect(result.error).toContain("guest code:3:");
+    expect(result.error).toContain("boom");
+  });
+});
