@@ -3,6 +3,9 @@ import type { FabricDynamicGuestDeclarations } from "../protocol.js";
 // These names and compatibility fields are the single source of truth for
 // generated core-override overloads. Keep them beside PiToolsApi below so an
 // override extends the same guest contract rather than copying its signatures.
+// Numeric fields widen to `number | string` in generated overloads too,
+// mirroring built-in runtime normalization; a strict override schema still
+// rejects the string form at validation time, and the registry error wins.
 export const PI_CORE_COMPATIBILITY_ARGUMENT_TYPE_NAMES = {
   read: "PiReadCompatibilityArgument",
   bash: "PiBashCompatibilityArgument",
