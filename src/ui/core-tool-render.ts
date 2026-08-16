@@ -574,8 +574,8 @@ const createSimpleDiff = (before: string, after: string): string => {
   let changed = false;
   let firstChangedLine = 1;
   const context = 3;
-  const contextLines = (lines: string[], oldStart: number, newStart: number): string[] =>
-    lines.map((line, offset) => ` ${newStart + offset} ${line}`);
+  const contextLines = (lines: string[], oldStart: number): string[] =>
+    lines.map((line, offset) => ` ${oldStart + offset} ${line}`);
   for (let index = 0; index < changes.length; index++) {
     const change = changes[index]!;
     const lines = change.value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
@@ -584,14 +584,14 @@ const createSimpleDiff = (before: string, after: string): string => {
       const later = hasChangeAfter[index] ?? false;
       if (!changed && later) {
         const start = Math.max(0, lines.length - context);
-        out.push(...contextLines(lines.slice(start), oldLine + start, newLine + start));
+        out.push(...contextLines(lines.slice(start), oldLine + start));
       } else if (changed) {
         if (later && lines.length > context * 2) {
-          out.push(...contextLines(lines.slice(0, context), oldLine, newLine));
+          out.push(...contextLines(lines.slice(0, context), oldLine));
           out.push("...");
-          out.push(...contextLines(lines.slice(-context), oldLine + lines.length - context, newLine + lines.length - context));
+          out.push(...contextLines(lines.slice(-context), oldLine + lines.length - context));
         } else {
-          out.push(...contextLines(lines.slice(0, later ? lines.length : context), oldLine, newLine));
+          out.push(...contextLines(lines.slice(0, later ? lines.length : context), oldLine));
         }
       }
       oldLine += lines.length;
@@ -622,6 +622,35 @@ const hashSourceText = (value: string): number => {
 // Bounds the virtual document so a deep edit never triggers a huge background
 // tokenization just to recover grammar state for a handful of removed lines.
 const DIFF_REMOVED_CONTEXT_LINES = 512;
+
+/**
+ * Resolve surviving compact-diff rows to their post-edit file positions.
+ * pi numbers additions on the new side, but context and removals on the old
+ * side. Tracking the line delta is O(visible rows) and lets one existing
+ * highlightFileLines request serve every matching row without extra I/O or
+ * tokenization.
+ */
+const postEditFileRows = (
+  parsed: Array<ParsedDiffLine | null>,
+): Array<{ index: number; lineNumber: number }> => {
+  const rows: Array<{ index: number; lineNumber: number }> = [];
+  let lineDelta = 0;
+  for (let index = 0; index < parsed.length; index++) {
+    const line = parsed[index];
+    if (!line) continue;
+    const lineNumber = Number.parseInt(line.lineNumber.trim(), 10);
+    if (line.kind === "+") {
+      if (Number.isFinite(lineNumber) && lineNumber > 0) rows.push({ index, lineNumber });
+      lineDelta++;
+    } else if (line.kind === "-") {
+      lineDelta--;
+    } else if (Number.isFinite(lineNumber)) {
+      const translated = lineNumber + lineDelta;
+      if (translated > 0) rows.push({ index, lineNumber: translated });
+    }
+  }
+  return rows;
+};
 
 /**
  * Highlight removed (`-`) diff lines against a virtual pre-edit document.
@@ -739,16 +768,17 @@ const renderDiff = (
     // coverage. Removed/rewritten lines of a successful edit (and proposed
     // edits whose file doesn't match) fail verification and fall through.
     if (filePath) {
-      const numbered: Array<{ index: number; n: number }> = [];
-      for (let index = 0; index < parsed.length; index++) {
-        const line = parsed[index];
-        if (!line) continue;
-        const n = Number.parseInt(line.lineNumber.trim(), 10);
-        if (Number.isFinite(n) && n > 0) numbered.push({ index, n });
-      }
+      const numbered = postEditFileRows(parsed);
       if (numbered.length > 0) {
-        const from = Math.min(...numbered.map((row) => row.n)) - 1;
-        const to = Math.max(...numbered.map((row) => row.n)) + 1;
+        let from = numbered[0]!.lineNumber;
+        let to = from;
+        for (let index = 1; index < numbered.length; index++) {
+          const lineNumber = numbered[index]!.lineNumber;
+          from = Math.min(from, lineNumber);
+          to = Math.max(to, lineNumber);
+        }
+        from--;
+        to++;
         const slice = highlightFileLines(
           resolve(options.cwd, filePath),
           language,
@@ -758,7 +788,7 @@ const renderDiff = (
         );
         if (slice) {
           for (const row of numbered) {
-            const entry = slice[row.n - 1 - from];
+            const entry = slice[row.lineNumber - 1 - from];
             if (entry && entry.raw === expandTabs(parsed[row.index]!.content)) {
               highlighted[row.index] = entry.ansi;
             }

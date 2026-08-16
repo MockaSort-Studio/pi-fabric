@@ -630,6 +630,73 @@ describe("Fabric core tool stateful highlighting", () => {
     expect(closer).toContain(commentColor);
   }, 20_000);
 
+  it("keeps compact multi-hunk edits on full-file grammar state", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const path = (await import("node:path")).join(dir, "declarations.ts");
+    const source = [
+      "export const declarations = `",
+      "type Root = string;",
+      "interface Added {",
+      "  kind: string;",
+      "}",
+      "interface First {",
+      "  effect?: Added;",
+      "  keep?: boolean;",
+      "}",
+      "const spacer = true;",
+      "interface Second {",
+      "  requirements?: string[];",
+      "  valid?: boolean;",
+      "}",
+      "`;",
+    ].join("\n");
+    writeFileSync(path, source, "utf8");
+    const diff = [
+      "    2 type Root = string;",
+      "+   3 interface Added {",
+      "+   4   kind: string;",
+      "+   5 }",
+      "    3 interface First {",
+      "+   7   effect?: Added;",
+      "    4   keep?: boolean;",
+      "    5 }",
+      "      ...",
+      "    7 interface Second {",
+      "+  12   requirements?: string[];",
+      "    8   valid?: boolean;",
+      "    9 }",
+    ].join("\n");
+
+    const coverage = vi.fn();
+    highlightFileLines(path, "typescript", 0, 15, coverage);
+    await vi.waitFor(() => expect(coverage).toHaveBeenCalled(), { timeout: 15_000 });
+
+    const rendered = renderCoreToolBody(
+      audit("edit", {
+        args: { path },
+        success: true,
+        result: { details: { diff } },
+      }),
+      theme,
+      options({ expanded: true }),
+    );
+    expect(rendered).not.toBeNull();
+    const stripAnsi = (line: string) =>
+      line.replace(/\u0000PI_DIFF_[A-Z]+\u0000/g, "").replace(/\x1b\[[0-9;]*m/g, "");
+    const foregrounds = (line: string): string[] =>
+      [...line.matchAll(/\x1b\[38;2;([0-9;]+)m/g)].map((match) => match[1]!);
+    const stringForeground = foregrounds(highlightCode(source, "typescript")![2]!)[0];
+    expect(stringForeground).toBeTruthy();
+    expect(new Set(foregrounds(highlightCode("interface First {", "typescript")![0]!)).size)
+      .toBeGreaterThan(1);
+
+    for (const content of ["interface Added {", "interface First {", "interface Second {"]) {
+      const row = rendered!.lines.find((line) => stripAnsi(line).includes(content));
+      expect(row, content).toBeDefined();
+      expect(new Set(foregrounds(row!))).toEqual(new Set([stringForeground!]));
+    }
+  }, 20_000);
+
   it("tokenizes proposed edit diff sides as separate streams", async () => {
     const call = audit("edit", {
       args: {
