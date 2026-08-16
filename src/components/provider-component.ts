@@ -139,7 +139,12 @@ export const createProviderComponent = <TProvider extends FabricProvider>(
         }
         context.defer(
           () => spec.unmounted?.(provider),
-          `provider-component:${spec.provider}:holder`,
+          {
+            label: `provider-component:${spec.provider}:holder`,
+            kind: "transactional",
+            resources: [`fabric:provider:${spec.provider}:holder`],
+            ordering: "ordered",
+          },
         );
       }
       await spec.start?.(provider);

@@ -110,7 +110,7 @@ describe("provider binding generations", () => {
       description: "Effect conflicts",
       async list() { return []; },
       async describe(name) {
-        if (!["first", "second", "distinct"].includes(name)) return undefined;
+        if (!["first", "second", "distinct", "unknown"].includes(name)) return undefined;
         return {
           name,
           description: name,
@@ -118,7 +118,9 @@ describe("provider binding generations", () => {
           risk: "write",
           effect: {
             kind: "transactional",
-            resources: [name === "distinct" ? "workspace:b" : "workspace:a"],
+            ...(name === "unknown"
+              ? {}
+              : { resources: [name === "distinct" ? "workspace:b" : "workspace:a"] }),
             ordering: "ordered",
           },
         };
@@ -152,7 +154,12 @@ describe("provider binding generations", () => {
       resources: ["workspace:a"],
       reason: "shared_resource",
     }]);
-    await expect(call("second", "strict")).rejects.toThrow("Fabric effect conflict");
+    await expect(call("second", "strict")).rejects.toThrow(
+      "effects.first [workspace:a] (shared noncommutative resource)",
+    );
+    await expect(call("unknown", "strict")).rejects.toThrow(
+      "effects.first [*] (unknown resource footprint; declare resources and ordering)",
+    );
     const distinctAudits: Parameters<ActionRegistry["invoke"]>[2]["audits"] = [];
     await expect(call("distinct", "strict", distinctAudits)).resolves.toBe("distinct");
     expect(distinctAudits[0]?.effectConflicts).toBeUndefined();

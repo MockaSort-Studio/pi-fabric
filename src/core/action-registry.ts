@@ -29,6 +29,7 @@ import {
   type FabricProviderListRequest,
   type FabricScopedProviderResult,
 } from "../protocol.js";
+import { formatFabricEffectConflict } from "./effect-conflict.js";
 import { stableJsonHash } from "./stable-hash.js";
 import type { FabricNestedToolResultProxy } from "./tool-result-proxy.js";
 import {
@@ -845,7 +846,11 @@ export class ActionRegistry {
         failureStage = "guard";
         throw new FabricTraceSafeError(
           `Fabric effect conflict for ${ref}: ${effectConflicts
-            .map((conflict) => `${conflict.withRef} [${conflict.resources.join(", ")}]`)
+            .map((conflict) => formatFabricEffectConflict(
+              conflict.withRef,
+              conflict.resources,
+              conflict.reason,
+            ))
             .join("; ")}`,
         );
       }

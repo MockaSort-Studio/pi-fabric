@@ -695,7 +695,6 @@ describe("FabricComponentSupervisor", () => {
     const supervisor = new FabricComponentSupervisor(registry, { invocationContext });
     await supervisor.start(entry("unknown"), {
       name: "unknown",
-      guarantee: "revertible",
       async activate(context) {
         await context.effect(() => () => {}, {
           label: "unknown mutation",
@@ -714,7 +713,9 @@ describe("FabricComponentSupervisor", () => {
           ordering: "ordered",
         });
       },
-    })).rejects.toThrow("unknown [*]");
+    })).rejects.toThrow(
+      "unknown [*] (unknown resource footprint; declare resources and ordering)",
+    );
     await supervisor.close();
     await registry.close();
   });

@@ -114,6 +114,48 @@ describe("provider components", () => {
     await direct.close();
   });
 
+  it("keeps provider holders independent from unrelated revertible effects", async () => {
+    const { registry, catalog, supervisor, loader } = harness();
+    let mounted: RevisionProvider | undefined;
+    const component = createProviderComponent({
+      provider: "mcp",
+      description: "MCP provider component",
+      create: () => new RevisionProvider("mcp", "v1"),
+      mounted: (provider) => { mounted = provider; },
+      unmounted: (provider) => {
+        if (mounted === provider) mounted = undefined;
+      },
+    });
+    catalog.register(component.definition);
+    await loader.installPinned([component.entry]);
+
+    expect(mounted?.revision).toBe("v1");
+    expect(supervisor.status("fabric.provider.mcp").effects).toEqual([{
+      label: "provider-component:mcp:holder",
+      kind: "transactional",
+      resources: ["fabric:provider:mcp:holder"],
+      ordering: "ordered",
+    }]);
+
+    await supervisor.start({ id: "guidance", component: "guidance" }, {
+      name: "guidance",
+      guarantee: "revertible",
+      activate(context) {
+        context.guide({
+          label: "profile",
+          models: ["deepseek/*"],
+          content: "Use the DeepSeek profile.",
+        });
+      },
+    });
+    expect(supervisor.status("guidance")).toMatchObject({ state: "active" });
+    expect(supervisor.status("guidance").effectConflicts).toBeUndefined();
+
+    await loader.close();
+    expect(mounted).toBeUndefined();
+    await registry.close();
+  });
+
   it("owns every non-kernel first-party namespace through a pinned component", async () => {
     const { registry, catalog, loader } = harness();
     const direct = new ActionRegistry();

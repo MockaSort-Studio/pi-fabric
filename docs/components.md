@@ -283,6 +283,8 @@ effect: {
 
 When a descriptor omits this metadata, Fabric normalizes it conservatively. A `read` risk becomes commutative `none`, and any other risk becomes an unknown-order `emission`. Missing resource identities normalize to `*`, the top/unknown footprint. An unknown noncommutative footprint conflicts with every effect. Shared named resources commute only when both declarations say `commutative`. On a `revertible` component, a plain string label stays conservative until the author supplies explicit resources and ordering. These declarations are author witnesses, and the runtime accepts them as claims it cannot prove.
 
+`[*] (unknown resource footprint)` in an error or dashboard describes effect metadata; it grants no wildcard capability or tool access. Fabric-owned provider holders use `fabric:provider:<name>:holder`, which keeps framework bookkeeping disjoint from unrelated component effects. Changing a component to `managed` suppresses strict independence rejection. Choose that guarantee when advisory independence is intended. Treat an unexplained `*` as missing metadata to investigate.
+
 ## Parent-owned components
 
 A component may install another supervised component as a registration effect:

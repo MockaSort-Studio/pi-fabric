@@ -8,6 +8,7 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { FabricActivityCall } from "../activity/types.js";
+import { formatFabricEffectConflict } from "../core/effect-conflict.js";
 import type { CodePreviewSettings } from "./code-preview.js";
 import { coreToolTitle, renderCoreToolBody } from "./core-tool-render.js";
 import type { Entity } from "./dashboard-model.js";
@@ -820,7 +821,11 @@ export class DashboardDetailRenderer {
       }
       field("Effects", visibleEffects.join("; "));
       field("Effect conflicts", component.effectConflicts?.map((conflict) =>
-        `${conflict.withComponent} [${conflict.resources.join(", ")}]`,
+        formatFabricEffectConflict(
+          conflict.withComponent,
+          conflict.resources,
+          conflict.reason,
+        )
       ).join("; "));
       field("Requirements", component.requirements.join(", "));
       field("Provisions", component.provisions.join(", "));

@@ -27,6 +27,17 @@ describe("Fabric runtime provider components", () => {
         emit: vi.fn((event: string, payload: unknown) => {
           if (event === FABRIC_COMPONENT_DISCOVER_EVENT) {
             componentDiscovery = payload as FabricComponentDiscovery;
+            componentDiscovery.register({
+              name: "guidance-only",
+              guarantee: "revertible",
+              activate(component) {
+                component.guide({
+                  label: "deepseek-profile",
+                  models: ["deepseek/*"],
+                  content: "Use the DeepSeek profile.",
+                });
+              },
+            });
           }
           if (event === FABRIC_PROVIDER_DISCOVER_EVENT) {
             discoverySnapshots.push({
@@ -66,6 +77,7 @@ describe("Fabric runtime provider components", () => {
     const config = normalizeFabricConfig({
       fullCodeMode: true,
       capture: { enabled: true },
+      components: [{ id: "guidance-only", component: "guidance-only" }],
       mcp: { enabled: false, cache: { enabled: false } },
       mesh: { enabled: true },
       memory: { enabled: true },
@@ -109,7 +121,10 @@ describe("Fabric runtime provider components", () => {
       }, { overwrite: true })).toThrow(
         "Reserved Fabric component name: fabric.provider.mcp",
       );
-      expect(runtime.componentGraph().components).toEqual(
+      const builtins = runtime.componentGraph().components.filter((component) =>
+        component.id.startsWith("fabric.provider.")
+      );
+      expect(builtins).toEqual(
         expect.arrayContaining([
           ...[
             "pi",
@@ -126,6 +141,27 @@ describe("Fabric runtime provider components", () => {
             state: "active",
           })),
         ]),
+      );
+      expect(builtins.flatMap((component) =>
+        component.effects?.flatMap((effect) => effect.resources) ?? []
+      )).not.toContain("*");
+      expect(builtins.find((component) => component.id === "fabric.provider.mcp")?.effects).toEqual([{
+        label: "provider-component:mcp:holder",
+        kind: "transactional",
+        resources: ["fabric:provider:mcp:holder"],
+        ordering: "ordered",
+      }]);
+
+      const guidance = runtime.componentGraph().components.find((component) =>
+        component.id === "guidance-only"
+      );
+      expect(guidance).toMatchObject({ state: "active" });
+      expect(guidance?.effectConflicts).toBeUndefined();
+      expect(runtime.modelGuidance()).toContainEqual(
+        expect.objectContaining({
+          componentId: "guidance-only",
+          label: "deepseek-profile",
+        }),
       );
     } finally {
       await runtime.shutdown();

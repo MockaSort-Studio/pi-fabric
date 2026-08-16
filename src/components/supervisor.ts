@@ -5,6 +5,7 @@ import {
   type FabricCapabilityViewLease,
   type ResolvedFabricAction,
 } from "../core/action-registry.js";
+import { formatFabricEffectConflict } from "../core/effect-conflict.js";
 import { stableJsonHash } from "../core/stable-hash.js";
 import type {
   FabricInvocationContext,
@@ -1485,7 +1486,11 @@ export class FabricComponentSupervisor {
     throw new FabricComponentIndependenceError(
       `Revertible Fabric component ${component.entry.id} has non-independent effects: ` +
       conflicts.map((conflict) =>
-        `${conflict.withComponent} [${conflict.resources.join(", ")}]`,
+        formatFabricEffectConflict(
+          conflict.withComponent,
+          conflict.resources,
+          conflict.reason,
+        )
       ).join("; "),
     );
   }
