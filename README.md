@@ -128,7 +128,7 @@ See the [interface & commands reference](docs/interface.md) for every view, keyb
 - [Configuration](docs/configuration.md): `fabric.json`, code modes, tool capture, approvals, and budgets.
 - [Interface & commands](docs/interface.md): dashboard, settings, keybindings, slash commands, and headless runs.
 - [Agents, actors & mesh](docs/agents.md): model handoff, `/fabric prewalk`, runners, transports, actors, councils, recursive queries, and durable coordination.
-- [Components & committed capabilities](docs/components.md): supervised effects, exact requirements, rolling provider generations, actor commitments, and both formal calculi.
+- [Components & committed capabilities](docs/components.md): supervised effects, exact requirements, external per-model guidance and execution-profile replacement, rolling provider generations, actor commitments, and both formal calculi.
 - [External providers](docs/providers.md): the versioned provider protocol for extensions.
 - [Architecture & security](docs/architecture.md): the host bridge, sandboxing, tool-call robustness, and limits.
 - [Skills](docs/skills.md): the core-first invocation policy and user-invoked advanced patterns.

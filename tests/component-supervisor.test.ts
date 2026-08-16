@@ -719,6 +719,75 @@ describe("FabricComponentSupervisor", () => {
     await registry.close();
   });
 
+  it("commits model guidance transactionally and removes it on disposal or rollback", async () => {
+    const registry = new ActionRegistry();
+    const supervisor = new FabricComponentSupervisor(registry, { invocationContext });
+    let disposeGuidance!: ReturnType<FabricComponentContext["guide"]>;
+    let retainedContext!: FabricComponentContext;
+    await supervisor.start(entry("guidance"), {
+      name: "guidance",
+      guarantee: "revertible",
+      activate(context) {
+        retainedContext = context;
+        disposeGuidance = context.guide({
+          label: "deepseek-flash",
+          models: ["deepseek/deepseek-*"],
+          targets: ["main", "participant"],
+          content: "Use short tool batches.",
+        });
+      },
+    });
+
+    expect(supervisor.guidance()).toEqual([expect.objectContaining({
+      componentId: "guidance",
+      label: "deepseek-flash",
+      content: "Use short tool batches.",
+    })]);
+    expect(supervisor.status("guidance")).toMatchObject({
+      guidance: [expect.objectContaining({
+        label: "deepseek-flash",
+        placement: "append",
+        contentChars: 23,
+      })],
+      effects: [expect.objectContaining({
+        label: "guidance:deepseek-flash",
+        kind: "transactional",
+        ordering: "commutative",
+      })],
+    });
+
+    await disposeGuidance();
+    expect(supervisor.guidance()).toEqual([]);
+    expect(supervisor.status("guidance").guidance).toBeUndefined();
+
+    const disposeLiveGuidance = retainedContext.guide({
+      label: "live-guidance",
+      models: ["provider/*"],
+      content: "Registered after activation.",
+    });
+    expect(supervisor.guidance()).toEqual([expect.objectContaining({
+      label: "live-guidance",
+      content: "Registered after activation.",
+    })]);
+    await disposeLiveGuidance();
+    expect(supervisor.guidance()).toEqual([]);
+
+    await expect(supervisor.start(entry("failed-guidance"), {
+      name: "failed-guidance",
+      activate(context) {
+        context.guide({
+          label: "never-committed",
+          models: ["provider/*"],
+          content: "Do not publish this.",
+        });
+        throw new Error("activation failed");
+      },
+    })).rejects.toThrow("activation failed");
+    expect(supervisor.guidance()).toEqual([]);
+    await supervisor.close();
+    await registry.close();
+  });
+
   it("keeps managed conflict evidence informational rather than warning-bearing", async () => {
     const registry = new ActionRegistry();
     const supervisor = new FabricComponentSupervisor(registry, { invocationContext });

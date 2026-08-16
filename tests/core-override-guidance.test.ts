@@ -117,6 +117,76 @@ describe("core override prompt guidance", () => {
       expect(prompt).toContain("Prefer symbol IDs when available.");
       expect(prompt).not.toContain("extensions.read");
 
+      const modelGuidance = vi.spyOn(FabricState.prototype, "modelGuidance").mockReturnValue([
+        {
+          componentId: "deepseek-profile",
+          component: "deepseek-profile",
+          revision: 1,
+          label: "profile",
+          models: ["deepseek/*"],
+          targets: ["main"],
+          placement: "replace",
+          slot: "fabric.execution",
+          content: "Custom DeepSeek execution profile",
+        },
+        {
+          componentId: "deepseek-extra",
+          component: "deepseek-extra",
+          revision: 1,
+          label: "extra",
+          models: ["deepseek/*"],
+          targets: ["main"],
+          placement: "append",
+          content: "DeepSeek-specific final instruction",
+        },
+      ]);
+      try {
+        const skills = [
+          { name: "active", description: "Active workflow", filePath: "/skills/active/SKILL.md" },
+          {
+            name: "dependency",
+            description: "Required dependency",
+            filePath: "/skills/dependency/SKILL.md",
+          },
+        ];
+        const modelContext = { model: { provider: "deepseek", id: "deepseek-chat" } };
+        const guidedEvent = {
+          systemPrompt: "base system",
+          prompt: "inspect source",
+          systemPromptOptions: { skills },
+        };
+        const guidedResult = await handler(guidedEvent, modelContext);
+        const repeatedResult = await handler(guidedEvent, modelContext);
+        const guidedPrompt = (guidedResult as { systemPrompt: string }).systemPrompt;
+        expect((repeatedResult as { systemPrompt: string }).systemPrompt).toBe(guidedPrompt);
+        expect(guidedPrompt).toContain("Pi Fabric full code mode");
+        expect(guidedPrompt).toContain("Custom DeepSeek execution profile");
+        expect(guidedPrompt).toContain("DeepSeek-specific final instruction");
+        expect(guidedPrompt).not.toContain("Examples and returns");
+
+        const skillResult = await handler({
+          ...guidedEvent,
+          prompt: [
+            '<skill name="active" location="/skills/active/SKILL.md">',
+            "",
+            "Always use /dependency.",
+            "</skill>",
+            "",
+            "Inspect source",
+          ].join("\n"),
+        }, modelContext);
+        const skillPrompt = (skillResult as { systemPrompt: string }).systemPrompt;
+        expect(skillPrompt.startsWith(`${guidedPrompt}\n\nThe active skill`)).toBe(true);
+        expect(skillPrompt.indexOf("structure-aware reads")).toBeLessThan(
+          skillPrompt.indexOf("DeepSeek-specific final instruction"),
+        );
+        expect(skillPrompt.indexOf("DeepSeek-specific final instruction")).toBeLessThan(
+          skillPrompt.indexOf("The active skill"),
+        );
+      } finally {
+        modelGuidance.mockRestore();
+      }
+
       const enforceConfig = structuredClone(DEFAULT_FABRIC_CONFIG);
       enforceConfig.fullCodeMode = false;
       enforceConfig.schema.mode = "enforce";

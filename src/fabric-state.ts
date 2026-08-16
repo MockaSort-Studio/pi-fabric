@@ -8,6 +8,7 @@ import {
   FABRIC_COMPONENT_PROVIDER_NAMES,
   FABRIC_PROVIDER_COMPONENT_PREFIX,
 } from "./components/provider-component.js";
+import type { FabricOwnedModelGuidance } from "./components/model-guidance.js";
 import type { FabricComponentGraph } from "./components/types.js";
 import { loadFabricConfig, type FabricConfig, type FabricResultFormat } from "./config.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
@@ -198,6 +199,7 @@ export class FabricState {
       Boolean(process.env.PI_FABRIC_CAPABILITY_DIGEST)
     ) return true;
     if (this.config.prewalk.alwaysRearm) return true;
+    if (this.config.components.some((component) => component.disabled !== true)) return true;
     if (!context.isProjectTrusted() || !this.config.mesh.enabled || this.config.schema.mode === "enforce") {
       return false;
     }
@@ -240,6 +242,7 @@ export class FabricState {
   componentGraph(): FabricComponentGraph {
     return this.#current()?.componentGraph() ?? { components: [], edges: [], cycles: [] };
   }
+  modelGuidance(): FabricOwnedModelGuidance[] { return this.#current()?.modelGuidance() ?? []; }
   participantInfos(options: FabricParticipantListOptions = {}): FabricParticipantInfo[] {
     return this.#current()?.participantInfos(options) ?? [];
   }

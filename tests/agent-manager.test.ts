@@ -144,6 +144,56 @@ describe("AgentManager", () => {
     expect(manager.status(result.id).status).toBe("completed");
   });
 
+  it("adds component guidance to direct participants without duplicating recursive guidance", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const resolveParticipantGuidance = vi.fn(({ model }: { model?: string }) =>
+      model === "deepseek/deepseek-chat" ? "DeepSeek participant guidance" : undefined);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      resolveParticipantGuidance,
+    });
+    managers.push(manager);
+
+    const direct = await manager.run({
+      task: "Direct guided participant",
+      transport: "process",
+      model: "deepseek/deepseek-chat",
+      systemPrompt: "Actor role prompt",
+    });
+    expect((direct as AgentRunResult & { systemPrompt?: string }).systemPrompt).toBe(
+      "Actor role prompt\n\nDeepSeek participant guidance",
+    );
+    expect(resolveParticipantGuidance).toHaveBeenCalledWith({
+      model: "deepseek/deepseek-chat",
+      runner: "pi",
+    });
+
+    const secondDirect = await manager.run({
+      task: "Different task, same guided participant",
+      transport: "process",
+      model: "deepseek/deepseek-chat",
+      systemPrompt: "Actor role prompt",
+    });
+    expect((secondDirect as AgentRunResult & { systemPrompt?: string }).systemPrompt).toBe(
+      (direct as AgentRunResult & { systemPrompt?: string }).systemPrompt,
+    );
+
+    resolveParticipantGuidance.mockClear();
+    const recursive = await manager.run({
+      task: "Recursive participant",
+      transport: "process",
+      model: "deepseek/deepseek-chat",
+      recursive: true,
+      systemPrompt: "Recursive role prompt",
+    });
+    expect((recursive as AgentRunResult & { systemPrompt?: string }).systemPrompt).toBe(
+      "Recursive role prompt",
+    );
+    expect(resolveParticipantGuidance).not.toHaveBeenCalled();
+  });
+
   it("relays child Pi lifecycle records and a normalized terminal event", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);

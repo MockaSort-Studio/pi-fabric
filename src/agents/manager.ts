@@ -102,6 +102,15 @@ export const effectiveAgentTimeoutMs = (
   );
 };
 
+interface AgentParticipantGuidanceRequest {
+  model?: string;
+  runner: FabricAgentRunner;
+}
+
+type AgentParticipantGuidanceResolver = (
+  request: AgentParticipantGuidanceRequest,
+) => string | undefined;
+
 interface ManagedAgent {
   id: string;
   name: string;
@@ -347,6 +356,7 @@ export class AgentManager {
   readonly #onBackgroundComplete: ((result: AgentRunResult) => void) | undefined;
   readonly #onLifecycle: ((event: FabricLifecyclePublishRequest) => void) | undefined;
   readonly #preparePiModel: ((model: string) => Promise<void>) | undefined;
+  readonly #resolveParticipantGuidance: AgentParticipantGuidanceResolver | undefined;
   readonly #piModelPreparations = new Map<string, Promise<void>>();
   readonly #budget: BudgetLedgerState | undefined;
   readonly #budgetOwned: boolean;
@@ -381,6 +391,7 @@ export class AgentManager {
       onBackgroundComplete?: (result: AgentRunResult) => void;
       onLifecycle?: (event: FabricLifecyclePublishRequest) => void;
       preparePiModel?: (model: string) => Promise<void>;
+      resolveParticipantGuidance?: AgentParticipantGuidanceResolver;
     } = {},
   ) {
     this.#semaphore = new Semaphore(config.maxConcurrent);
@@ -400,6 +411,7 @@ export class AgentManager {
     this.#onBackgroundComplete = options.onBackgroundComplete;
     this.#onLifecycle = options.onLifecycle;
     this.#preparePiModel = options.preparePiModel;
+    this.#resolveParticipantGuidance = options.resolveParticipantGuidance;
     this.#currentDepth = Math.max(0, Number(process.env.PI_FABRIC_DEPTH ?? "0") || 0);
     this.#fullCodeMode = options.fullCodeMode ?? true;
     this.#mainAgentId =
@@ -578,6 +590,12 @@ export class AgentManager {
       const thinking = request.thinking ?? this.config.thinking;
       const recursive = runner === "pi" && request.recursive === true;
       const extensions = recursive ? true : (request.extensions ?? this.config.extensions);
+      const componentGuidance = recursive
+        ? undefined
+        : this.#resolveParticipantGuidance?.({ ...(model ? { model } : {}), runner })?.trim();
+      const systemPrompt = [request.systemPrompt?.trim(), componentGuidance]
+        .filter((section): section is string => Boolean(section))
+        .join("\n\n") || undefined;
       const sessionExportDir = resolveSessionExportDir(this.config);
       const sessionExportFile = sessionExportDir
         ? sessionExportFileFor(sessionExportDir, agentCwd, id, new Date())
@@ -631,7 +649,7 @@ export class AgentManager {
         ...(recursive ? ["--fabric-extension", this.#fabricExtensionPath] : []),
         ...(model ? ["--model", model] : []),
         ...(thinking ? ["--thinking", thinking] : []),
-        ...(request.systemPrompt ? ["--system-prompt", request.systemPrompt] : []),
+        ...(systemPrompt ? ["--system-prompt", systemPrompt] : []),
         ...(sessionFile ? ["--session-file", sessionFile] : []),
         ...(sessionExportFile ? ["--session-export-file", sessionExportFile] : []),
         ...(request.actorId ? ["--actor-id", request.actorId] : []),

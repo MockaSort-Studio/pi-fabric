@@ -14,11 +14,23 @@ import {
   FabricEffectDivertedError,
   FabricEffectScope,
 } from "./effect-scope.js";
+import {
+  MAX_FABRIC_MODEL_GUIDANCE_PER_COMPONENT,
+  MAX_FABRIC_MODEL_GUIDANCE_REGISTRATIONS,
+  MAX_FABRIC_MODEL_GUIDANCE_SNAPSHOT_CHARS,
+  MAX_FABRIC_MODEL_GUIDANCE_TOTAL_CHARS,
+  compareFabricOwnedModelGuidance,
+  fabricModelGuidanceInfo,
+  normalizeFabricModelGuidance,
+  type FabricOwnedModelGuidance,
+  type NormalizedFabricModelGuidance,
+} from "./model-guidance.js";
 import type {
   FabricCapabilityRequirement,
   FabricComponentChildOptions,
   FabricComponentContext,
   FabricComponentDefinition,
+  FabricComponentDisposer,
   FabricComponentEffectConflict,
   FabricComponentEffectInfo,
   FabricComponentEffectOptions,
@@ -59,6 +71,7 @@ interface ManagedComponent {
   viewLease: FabricCapabilityViewLease | undefined;
   providerLeases: FabricComponentProviderLease[];
   actionEffects: FabricComponentEffectInfo[];
+  modelGuidance: NormalizedFabricModelGuidance[];
   abortController: AbortController | undefined;
   transition: Promise<void> | undefined;
   tearingDown?: boolean;
@@ -350,6 +363,18 @@ export class FabricComponentSupervisor {
     return this.#info(this.#require(id));
   }
 
+  guidance(): FabricOwnedModelGuidance[] {
+    return [...this.#components.values()]
+      .filter((component) => component.state === "active")
+      .flatMap((component) => component.modelGuidance.map((guidance) => ({
+        ...structuredClone(guidance),
+        componentId: component.entry.id,
+        component: component.definition.name,
+        revision: component.revision,
+      })))
+      .sort(compareFabricOwnedModelGuidance);
+  }
+
   graph(): FabricComponentGraph {
     const providers = new Map<string, string>();
     for (const component of this.#components.values()) {
@@ -455,6 +480,7 @@ export class FabricComponentSupervisor {
     component.missing = [];
     component.optionalMissing = [];
     component.actionEffects = [];
+    component.modelGuidance = [];
     component.consecutiveDiversions = 0;
     component.removeWhenSettled = false;
     delete component.error;
@@ -568,6 +594,7 @@ export class FabricComponentSupervisor {
       viewLease: undefined,
       providerLeases: [],
       actionEffects: [],
+      modelGuidance: [],
       abortController: undefined,
       transition: undefined,
       blockedOnEffects: false,
@@ -709,6 +736,7 @@ export class FabricComponentSupervisor {
     component.missing = [];
     component.optionalMissing = [];
     component.actionEffects = [];
+    component.modelGuidance = [];
     component.childSequence = 0;
     component.consecutiveDiversions = 0;
     component.removeWhenSettled = false;
@@ -845,6 +873,7 @@ export class FabricComponentSupervisor {
     component.updatedAt = Date.now();
     component.missing = [];
     component.actionEffects = [];
+    component.modelGuidance = [];
     component.consecutiveDiversions = 0;
     component.removeWhenSettled = false;
     delete component.error;
@@ -856,6 +885,7 @@ export class FabricComponentSupervisor {
     let viewLease: FabricCapabilityViewLease | undefined;
     const providerLeases: FabricComponentProviderLease[] = [];
     const actionEffects: FabricComponentEffectInfo[] = [];
+    const modelGuidance: NormalizedFabricModelGuidance[] = [];
     try {
       viewLease = await this.registry.acquireCapabilityView(
         component.requirements,
@@ -885,6 +915,7 @@ export class FabricComponentSupervisor {
       component.abortController = controller;
       component.providerLeases = providerLeases;
       component.actionEffects = actionEffects;
+      component.modelGuidance = modelGuidance;
       const declared = new Set(component.provisions);
       const assertRegistrationOpen = (): void => {
         if (component.tearingDown || scope?.state !== "open") {
@@ -932,6 +963,74 @@ export class FabricComponentSupervisor {
               `Revertible Fabric component ${component.entry.id} cannot defer an emission effect`,
             );
           }
+          return async () => {
+            await dispose();
+            this.refresh();
+          };
+        },
+        guide: (guidance) => {
+          assertRegistrationOpen();
+          const normalized = normalizeFabricModelGuidance(guidance);
+          if (modelGuidance.some((entry) => entry.label === normalized.label)) {
+            throw new Error(
+              `Fabric component ${component.entry.id} registered guidance label ${normalized.label} more than once`,
+            );
+          }
+          if (modelGuidance.length >= MAX_FABRIC_MODEL_GUIDANCE_PER_COMPONENT) {
+            throw new Error(
+              `Fabric component ${component.entry.id} supports at most ${MAX_FABRIC_MODEL_GUIDANCE_PER_COMPONENT} guidance registrations`,
+            );
+          }
+          const totalChars = modelGuidance.reduce((sum, entry) => sum + entry.content.length, 0) +
+            normalized.content.length;
+          if (totalChars > MAX_FABRIC_MODEL_GUIDANCE_TOTAL_CHARS) {
+            throw new Error(
+              `Fabric component ${component.entry.id} guidance exceeds ${MAX_FABRIC_MODEL_GUIDANCE_TOTAL_CHARS} characters`,
+            );
+          }
+          const projection = [...this.#components.values()]
+            .flatMap((candidate) => candidate.modelGuidance);
+          if (projection.length >= MAX_FABRIC_MODEL_GUIDANCE_REGISTRATIONS) {
+            throw new Error(
+              `Fabric component guidance supports at most ${MAX_FABRIC_MODEL_GUIDANCE_REGISTRATIONS} registrations`,
+            );
+          }
+          const projectionChars = projection.reduce((sum, entry) => sum + entry.content.length, 0) +
+            normalized.content.length;
+          if (projectionChars > MAX_FABRIC_MODEL_GUIDANCE_SNAPSHOT_CHARS) {
+            throw new Error(
+              `Fabric component guidance snapshot exceeds ${MAX_FABRIC_MODEL_GUIDANCE_SNAPSHOT_CHARS} characters`,
+            );
+          }
+          const registration = {
+            label: `guidance:${normalized.label}`,
+            kind: "transactional" as const,
+            resources: [`fabric:guidance:${component.entry.id}:${normalized.label}`],
+            ordering: "commutative" as const,
+          };
+          if (component.guarantee === "revertible") {
+            this.#assertEffectCapacity(component, 1);
+            this.#assertIndependent(component, [registrationEffect(registration)]);
+          }
+          let registered = true;
+          const unregister = (): void => {
+            if (!registered) return;
+            registered = false;
+            const index = modelGuidance.indexOf(normalized);
+            if (index >= 0) modelGuidance.splice(index, 1);
+            component.updatedAt = Date.now();
+            if (component.state === "active") this.#emit(component.entry.id);
+          };
+          modelGuidance.push(normalized);
+          let dispose: FabricComponentDisposer;
+          try {
+            dispose = scope!.defer(unregister, registration);
+          } catch (error) {
+            unregister();
+            throw error;
+          }
+          component.updatedAt = Date.now();
+          if (component.state === "active") this.#emit(component.entry.id);
           return async () => {
             await dispose();
             this.refresh();
@@ -1090,6 +1189,7 @@ export class FabricComponentSupervisor {
       if (component.abortController === controller) component.abortController = undefined;
       if (component.providerLeases === providerLeases) component.providerLeases = [];
       if (component.actionEffects === actionEffects) component.actionEffects = [];
+      if (component.modelGuidance === modelGuidance) component.modelGuidance = [];
       component.tearingDown = false;
       component.updatedAt = Date.now();
       const cleanupErrors = [
@@ -1251,6 +1351,7 @@ export class FabricComponentSupervisor {
     component.abortController = undefined;
     component.providerLeases = [];
     component.actionEffects = [];
+    component.modelGuidance = [];
     component.tearingDown = false;
     component.updatedAt = Date.now();
     const cleanupErrors = [
@@ -1420,6 +1521,9 @@ export class FabricComponentSupervisor {
       optionalMissing: [...component.optionalMissing],
       effects,
       ...(effectConflicts.length > 0 ? { effectConflicts } : {}),
+      ...(component.state === "active" && component.modelGuidance.length > 0
+        ? { guidance: component.modelGuidance.map(fabricModelGuidanceInfo) }
+        : {}),
       ...(component.viewLease?.view?.digest
         ? { targetDigest: component.viewLease.view.digest }
         : {}),

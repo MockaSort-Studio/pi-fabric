@@ -19,6 +19,18 @@ export interface FabricComponentProvision {
 
 export type FabricComponentDisposer = () => void | Promise<void>;
 
+export type FabricModelGuidanceTarget = "main" | "participant";
+export type FabricModelGuidancePlacement = "append" | "replace";
+
+export interface FabricModelGuidance {
+  label: string;
+  models: readonly string[];
+  content: string;
+  targets?: readonly FabricModelGuidanceTarget[];
+  placement?: FabricModelGuidancePlacement;
+  slot?: string;
+}
+
 type FabricComponentEffectValue =
   | void
   | FabricComponentDisposer
@@ -88,6 +100,7 @@ export interface FabricComponentContext {
     registration?: FabricComponentEffectRegistration,
   ): FabricComponentDisposer;
   provide(provider: FabricProvider): FabricComponentProviderLease;
+  guide(guidance: FabricModelGuidance): FabricComponentDisposer;
   use<TConfig = unknown>(
     definition: FabricComponentDefinition<TConfig>,
     options?: FabricComponentChildOptions<TConfig>,
@@ -119,6 +132,16 @@ export interface FabricComponentEffectInfo {
   ordering: FabricEffectOrdering;
 }
 
+export interface FabricModelGuidanceInfo {
+  label: string;
+  models: string[];
+  targets: FabricModelGuidanceTarget[];
+  placement: FabricModelGuidancePlacement;
+  slot?: string;
+  contentChars: number;
+  contentHash: string;
+}
+
 export interface FabricComponentEffectConflict {
   withComponent: string;
   resources: string[];
@@ -137,6 +160,7 @@ export interface FabricComponentInfo {
   optionalMissing: string[];
   effects?: FabricComponentEffectInfo[];
   effectConflicts?: FabricComponentEffectConflict[];
+  guidance?: FabricModelGuidanceInfo[];
   targetDigest?: string;
   error?: string;
   cleanupErrors?: string[];

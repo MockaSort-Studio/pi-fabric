@@ -139,6 +139,106 @@ Declare instances at the root of `fabric.json`:
 
 A definition may arrive after the configuration that references it. The unresolved instance stays `waiting` and lists `component:<name>` in `missing`. Component discovery activates the instance later. `/fabric reload` reconciles changed entries. When a later activation fails during a multi-entry reconciliation, Fabric rolls back the additions and replacements from that pass. Two live component records may never declare the same provider name. Fabric rejects the insertion or replacement before it disturbs either fiber.
 
+## Model-facing guidance components
+
+A component can contribute bounded system guidance without adding model-specific prose to Pi Fabric itself. The component repository remains an ordinary Pi extension package: its small extension entry registers the definition through `FABRIC_COMPONENT_REGISTER_EVENT` and the discovery handshake shown above. Install that entry through Pi's normal package mechanism, place it in `~/.pi/agent/extensions/` for all projects, or place it in `.pi/extensions/` for one project. Put only the declarative instance in that project's `fabric.json`:
+
+```json
+{
+  "components": [
+    {
+      "id": "deepseek-guidance",
+      "component": "deepseek-guidance"
+    }
+  ]
+}
+```
+
+Configured components activate eagerly, before the first model turn. A standalone package can therefore contain only its registration bridge and component definition:
+
+```ts
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  FABRIC_COMPONENT_DISCOVER_EVENT,
+  FABRIC_COMPONENT_REGISTER_EVENT,
+  FABRIC_EXECUTION_GUIDANCE_SLOT,
+  type FabricComponentDefinition,
+  type FabricComponentDiscovery,
+} from "pi-fabric/protocol";
+
+const component: FabricComponentDefinition = {
+  name: "deepseek-guidance",
+  description: "DeepSeek-specific Fabric execution guidance",
+  guarantee: "revertible",
+  activate(context) {
+    context.guide({
+      label: "deepseek-execution-profile",
+      models: ["deepseek/deepseek-*"],
+      targets: ["main", "participant"],
+      placement: "replace",
+      slot: FABRIC_EXECUTION_GUIDANCE_SLOT,
+      content: `Use explicit, compact Fabric calls. Keep dependent reads and edits sequential.
+Inspect a failed nested result before retrying with changed arguments.`,
+    });
+
+    context.guide({
+      label: "deepseek-provider-notes",
+      models: ["deepseek/deepseek-*"],
+      targets: ["main", "participant"],
+      content: "Prefer described provider refs over guessed action names.",
+    });
+  },
+};
+
+export default function extension(pi: ExtensionAPI) {
+  pi.events.emit(FABRIC_COMPONENT_REGISTER_EVENT, {
+    version: 1,
+    component,
+    overwrite: true,
+  });
+  pi.events.on(FABRIC_COMPONENT_DISCOVER_EVENT, (discovery: FabricComponentDiscovery) => {
+    discovery.register(component, { overwrite: true });
+  });
+}
+```
+
+`context.guide()` accepts these fields:
+
+- `label`: a stable label unique within that component instance.
+- `models`: one or more canonical `provider/model` globs. `*` and `?` are supported; matching is case-sensitive. Guidance does not apply when the target model is unknown.
+- `targets`: `main`, `participant`, or both. Omitting it selects both.
+- `content`: the model-visible text.
+- `placement`: `append` by default, or `replace` for a named slot.
+- `slot`: required for `replace` and forbidden for `append`.
+
+`FABRIC_EXECUTION_GUIDANCE_SLOT` (`fabric.execution`) is Pi Fabric's replaceable execution profile. Replacing it removes the built-in examples, provider-navigation hints, and other tunable execution prose for matching model turns. It does **not** replace the small Fabric kernel, active Schema gate, selected-skill references, or live core-override contracts. This lets users swap the upstream profile without weakening the host invariants that describe the actual tool surface. Two active components may not win by load order: if both replace the same slot for one model and target, that model launch fails with a conflict naming both registrations.
+
+Append contributions are ordered by component ID and label, not activation timing. Each registration is a transactional, commutative component effect. It becomes visible only when activation commits, disappears immediately when unload begins, rolls back on activation failure, and can be removed early through the disposer returned by `context.guide()`. A component may register at most 64 entries, each entry is capped at 32,000 characters, and its combined guidance is capped at 64,000 characters. One supervisor accepts at most 1,024 registrations and 1,000,000 stored guidance characters; one resolved prompt projection is capped at 64,000 characters. Status reports selectors, placement, character count, and a content hash. It omits the prompt text.
+
+### Prompt-cache and cold-prefill behavior
+
+With an unchanged host prompt, skill catalog, model, target, Fabric mode, core-override catalog, and committed component projection, Fabric emits a byte-identical system prompt. Slot order is fixed, append entries sort by component ID and label, and no component revision, timestamp, run ID, message ID, or projection hash enters the model-visible text. Fabric appends its stable sections in this order: kernel, resolved slots, Schema notice, core-override guidance, and component appends. Turn-derived skill dependency guidance comes last. A turn that adds such guidance therefore retains the ordinary turn's complete system prompt as its cacheable prefix. Prompt-vocabulary capability advisory stays in a transcript message and does not mutate that system prefix.
+
+Participant task text and actor message envelopes remain user content. They are not interpolated into component guidance. Direct runs with the same role prompt, selected model, and committed guidance receive the same Fabric append-system prompt even when their tasks differ. Persistent actors keep a stable actor system prompt across mailbox activations; an actor identity or binding change intentionally creates a different prefix.
+
+Component authors control the remaining cache behavior:
+
+- Keep `content` deterministic. Do not embed clocks, random values, current message data, run IDs, or session-local diagnostics unless every turn needs a new prefill.
+- Narrow `models` and `targets` so unrelated models and participants do not pay the cold-prefill cost.
+- Prefer replacing `FABRIC_EXECUTION_GUIDANCE_SLOT` when a model-specific profile supersedes the default. Appending both profiles spends context and prefill on duplicate advice.
+- Keep large guidance stable after activation. Reloading, disposing, or re-registering content intentionally invalidates the changed suffix while leaving the preceding host and Fabric kernel prefix reusable.
+
+A provider may still choose not to cache, may impose a minimum cacheable token count, or may scope caches by API key and model. Fabric preserves reusable prefix structure; it cannot guarantee a provider cache hit.
+
+Propagation depends on the participant kind:
+
+- The main Pi process resolves the complete execution slot and appends matching additions on every turn, so model switches take effect without reloading the component.
+- A non-recursive agent or actor keeps its role/instructions and receives matching `participant` append guidance after them. Slot replacements are ignored because that child has no Pi Fabric execution profile to replace. Role routers that dispatch through `agents.run`, `agents.spawn`, or `agents.create` already supply the selected canonical model on those requests, so matching occurs after route selection and leaves the routed role text first.
+- A recursive Pi agent loads Pi Fabric and the same project/package components. It resolves the complete `participant` slot in its own `before_agent_start` hook; the parent deliberately does not append guidance again.
+- A durable agent or actor resolves append guidance in its resident owner. The main process writes each committed projection atomically, and an already-running resident host rereads the latest snapshot before every launch.
+
+This propagation is a prompt projection, not an authority grant. Guidance components gain no provider access unless they declare it through `requires`, and their model text cannot widen a participant's tools, committed capability view, Schema policy, or approval boundary. Component extension code itself remains trusted host code.
+
 ## Exact requirements and committed views
 
 `requires` accepts `provider.action` strings or `{ ref, optional: true }`. Fabric resolves each present action to:
@@ -161,6 +261,7 @@ Every activation runs inside a `FabricEffectScope`:
 - the options may declare `label`, `kind`, `resources`, and `ordering` for lifetime-independence checks.
 - `context.defer()` describes an effect that already happened, so a rejected emission registration stays recorded long enough for rollback to invoke its disposer.
 - `context.acquire(ref, args)` requires `effect.kind: "scoped"`, and it records the provider's single-shot disposer automatically.
+- `context.guide(definition)` stages model guidance as a transactional registration effect and returns an early-unregister disposer.
 - Fabric treats the value returned by `activate()` as an effect result too.
 - a setup failure rolls back the effects already installed.
 - a target change diverts generators at yield boundaries, after an asynchronous step lands and before its stale continuation resumes.
@@ -223,4 +324,4 @@ await components.reload({ id: "project-issues" });
 
 The dashboard renders components in a separate topology group. It draws exact requirement-to-provision edges and cycle paths, and it keeps component lifecycle separate from participant ownership. Managed components expose bounded effect evidence, and their status stays free of strict conflict warnings. Fabric reserves `effectConflicts` for fibers that opted into the `revertible` guarantee. When mesh lifecycle delivery is enabled, Fabric also publishes each changed state as an attributed `component.state` event with bounded identity and state metadata. That delivery stays observational and never drives local correctness.
 
-The states are `waiting`, `loading`, `active`, `unloading`, `failed`, `quarantined`, and `disposed`. A status response includes parent ownership, missing and optional requirements, provisions, up to 256 effect-evidence records, strict non-independence diagnostics, revision, target digest, activation error, and cleanup failures. The graph reports requirement-to-provider dependency edges, parent ownership edges, and dependency cycles. A programmatic supervisor may force-remove a quarantined record with `stop(id, { force: true })`. Force removal deletes the registry record. It makes no claim that leaked ambient state was recovered.
+The states are `waiting`, `loading`, `active`, `unloading`, `failed`, `quarantined`, and `disposed`. A status response includes parent ownership, missing and optional requirements, provisions, model-guidance selectors and content hashes, up to 256 effect-evidence records, strict non-independence diagnostics, revision, target digest, activation error, and cleanup failures. The graph reports requirement-to-provider dependency edges, parent ownership edges, and dependency cycles. A programmatic supervisor may force-remove a quarantined record with `stop(id, { force: true })`. Force removal deletes the registry record. It makes no claim that leaked ambient state was recovered.

@@ -12,6 +12,10 @@ import type { FabricActorHostEvent } from "./actors/types.js";
 import { CapturedToolCatalog, type CapturedToolEntry } from "./capture/catalog.js";
 import { FabricComponentCatalog } from "./components/catalog.js";
 import { FabricComponentLoader } from "./components/loader.js";
+import {
+  resolveFabricModelGuidance,
+  type FabricOwnedModelGuidance,
+} from "./components/model-guidance.js";
 import { FabricComponentSupervisor } from "./components/supervisor.js";
 import {
   createProviderComponent,
@@ -152,6 +156,7 @@ export class FabricRuntimeState {
   readonly sessionApprovals: FabricSessionApprovals;
   readonly #paths: FabricRuntimePaths | undefined;
   #widgetDismissedAt = 0;
+  #suppressResidentGuidanceSync = false;
 
   readonly #onCapturedToolUse: ((entry: CapturedToolEntry) => void) | undefined;
   readonly #mcpHooks: McpProviderHooks | undefined;
@@ -247,6 +252,10 @@ export class FabricRuntimeState {
     return this.#componentLoader?.graph() ?? { components: [], edges: [], cycles: [] };
   }
 
+  modelGuidance(): FabricOwnedModelGuidance[] {
+    return this.#componentSupervisor?.guidance() ?? [];
+  }
+
   participantInfos(options: FabricParticipantListOptions = {}): FabricParticipantInfo[] {
     return this.#participants?.list(options) ?? [];
   }
@@ -276,7 +285,12 @@ export class FabricRuntimeState {
   }
 
   async initialize(context: ExtensionContext, bootstrapConfig?: FabricConfig): Promise<void> {
-    await this.#closeInternal();
+    this.#suppressResidentGuidanceSync = true;
+    try {
+      await this.#closeInternal();
+    } finally {
+      this.#suppressResidentGuidanceSync = false;
+    }
     for (const name of this.#builtinComponentNames) this.componentCatalog.unregister(name);
     this.#builtinComponentNames.clear();
     this.prewalk.cancel();
@@ -498,6 +512,17 @@ export class FabricRuntimeState {
             fabricExtensionPath: this.#paths.extension,
           }
         : {}),
+      resolveParticipantGuidance: ({ model, runner }) => {
+        const targetModel = model ?? (runner === "pi" && context.model
+          ? `${context.model.provider}/${context.model.id}`
+          : undefined);
+        if (!targetModel) return undefined;
+        return resolveFabricModelGuidance(this.modelGuidance(), {
+          model: targetModel,
+          target: "participant",
+          includeSlots: false,
+        }).appendText || undefined;
+      },
       preparePiModel: async (modelKey) => {
         const separator = modelKey.indexOf("/");
         if (separator <= 0 || separator === modelKey.length - 1) return;
@@ -646,6 +671,7 @@ export class FabricRuntimeState {
               process.env.PI_FABRIC_CLAUDE_BINARY ?? this.#config.agents.claude.binary,
             vedaBinary:
               process.env.PI_FABRIC_VEDA_BINARY ?? this.#config.agents.veda.binary,
+            modelGuidance: [],
           },
           mesh: this.#mesh,
           participants: this.#participants,
@@ -944,6 +970,9 @@ export class FabricRuntimeState {
   }
 
   #observeComponentTransitions(componentId?: string): void {
+    if (!this.#suppressResidentGuidanceSync) {
+      this.#residency?.updateModelGuidance(this.modelGuidance());
+    }
     let components: FabricComponentInfo[];
     if (componentId) {
       try {
@@ -968,6 +997,7 @@ export class FabricRuntimeState {
         component.optionalMissing.join("\u0000"),
         component.error ?? "",
         component.cleanupErrors?.join("\u0000") ?? "",
+        JSON.stringify(component.guidance ?? []),
       ].join("\u0001");
       if (this.#componentTransitionSignatures.get(component.id) === signature) continue;
       this.#componentTransitionSignatures.set(component.id, signature);
@@ -1041,6 +1071,7 @@ export class FabricRuntimeState {
   }
 
   async shutdown(): Promise<void> {
+    this.#suppressResidentGuidanceSync = true;
     await this.#participants?.quiesce().catch(() => undefined);
     await this.#componentLoader?.close();
     await Promise.allSettled([...this.#componentTransitionPublications]);

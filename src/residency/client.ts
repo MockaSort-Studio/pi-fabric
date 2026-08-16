@@ -7,6 +7,7 @@ import { writeJsonAtomic } from "../core/atomic-write.js";
 import type { FabricAgentLog, AgentHandleInfo, AgentRunRecord, AgentRunRequest, AgentRunResult } from "../agents/types.js";
 import { executeFile, processIsAlive, spawnDetached } from "../agents/transports/process-utils.js";
 import { readJsonlPage } from "../log-tail.js";
+import type { FabricOwnedModelGuidance } from "../components/model-guidance.js";
 import type { FabricMainAgentTarget } from "../main-agent.js";
 import { MeshStore, type MeshStateEntry } from "../mesh/store.js";
 import type { FabricParticipantSource } from "../topology/types.js";
@@ -64,6 +65,7 @@ export class ResidencyClient {
   readonly #deliveryPrefix: string;
   readonly #hostPath: string;
   #deliveryTimer: NodeJS.Timeout | undefined;
+  #modelGuidanceJson: string | undefined;
   #drainingDeliveries = false;
   #closed = false;
 
@@ -94,6 +96,17 @@ export class ResidencyClient {
     if (this.#deliveryTimer) clearInterval(this.#deliveryTimer);
     this.#deliveryTimer = undefined;
     while (this.#drainingDeliveries) await delay(10);
+  }
+
+  updateModelGuidance(guidance: readonly FabricOwnedModelGuidance[]): void {
+    const snapshot: FabricOwnedModelGuidance[] = structuredClone([...guidance]);
+    const serialized = JSON.stringify(snapshot);
+    if (serialized === this.#modelGuidanceJson) return;
+    this.#modelGuidanceJson = serialized;
+    this.options.config.modelGuidance = snapshot;
+    if (fs.existsSync(this.options.config.residencyRoot)) {
+      atomicWrite(this.#configPath, this.options.config);
+    }
   }
 
   async ensureHost(): Promise<ResidentHostOwner> {

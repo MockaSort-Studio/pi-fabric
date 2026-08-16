@@ -5,6 +5,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeJsonAtomic } from "../core/atomic-write.js";
+import {
+  parseFabricOwnedModelGuidance,
+  resolveFabricModelGuidance,
+} from "../components/model-guidance.js";
 import { ActorManager } from "../actors/manager.js";
 import { AgentManager } from "../agents/manager.js";
 import { useBudgetLedger } from "../agents/budget-ledger.js";
@@ -163,6 +167,11 @@ export class ResidentHost {
         id: this.hostId,
       });
     }
+    const guidanceConfigPath = path.join(config.residencyRoot, "config.json");
+    const currentModelGuidance = () => {
+      const current = readJson<Partial<ResidentHostConfig>>(guidanceConfigPath);
+      return parseFabricOwnedModelGuidance(current?.modelGuidance ?? config.modelGuidance);
+    };
     this.agents = new AgentManager(config.cwd, config.agents, {
       workerPath: config.workerPath,
       fabricExtensionPath: config.fabricExtensionPath,
@@ -177,6 +186,14 @@ export class ResidentHost {
       hostId: this.hostId,
       identityId: this.identity.id,
       retention: config.retention,
+      resolveParticipantGuidance: ({ model }) => {
+        if (!model) return undefined;
+        return resolveFabricModelGuidance(currentModelGuidance(), {
+          model,
+          target: "participant",
+          includeSlots: false,
+        }).appendText || undefined;
+      },
       onLifecycle: (event) => void this.lifecycle?.publish(event).catch(() => undefined),
       onBackgroundComplete: (result) => {
         if (!config.agents.notifyOnComplete) return;

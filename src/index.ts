@@ -36,6 +36,15 @@ import {
   expandSkillDirMarkersInSkillBlock,
 } from "./core/skill-dir.js";
 import { coreOverridePromptGuidance } from "./core/core-override-guidance.js";
+import {
+  fabricExecutionKernelGuidance,
+  defaultFabricExecutionGuidance,
+  fabricSchemaGuidance,
+} from "./core/system-guidance.js";
+import {
+  FABRIC_EXECUTION_GUIDANCE_SLOT,
+  resolveFabricModelGuidance,
+} from "./components/model-guidance.js";
 import { restoreSkillsForFullCodePrompt } from "./core/skill-prompt.js";
 import {
   FabricDirectToolApproval,
@@ -664,7 +673,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     return changed ? { messages } : undefined;
   });
 
-  pi.on("before_agent_start", async (event) => {
+  pi.on("before_agent_start", async (event, context) => {
     const fullCodeMode = state.cwd
       ? state.config.fullCodeMode
       : DEFAULT_FABRIC_CONFIG.fullCodeMode;
@@ -686,18 +695,30 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     const skillReferenceGuidance = effectiveFullCodeMode
       ? buildSkillReferenceGuidance(event.prompt, skills)
       : undefined;
-    const guidance = (effectiveFullCodeMode
-      ? "Pi Fabric full code mode: `fabric_exec` is the only way to call Pi core tools — use them as `pi.*` inside `code`.\nExamples and returns: `pi.read('/x')`, `pi.grep('TODO','src')` / `pi.grep({pattern:'TODO', path:'src', ignoreCase:true, context:2})`, `pi.find({pattern:'*.ts', path:'src', limit:20})`, and `pi.ls('src')` return strings; `pi.bash({cmd:'ls'})`, `pi.edit({path:'/x', old:'a', new:'b'})`, and `pi.write({path:'/y', text:'z'})` return `{ok, output, details}` (read `.output`); failed core calls reject, including `bash` on an ordinary nonzero exit; pass `settle: true` to `pi.bash` to get `{ ok: false, exitCode, output, error }` instead. Timeout, cancellation, approval, and security failures still reject.\n`tools` is discovery + generic calls only (`providers`/`catalog`/`list`/`search`/`describe`/`call`/`models`). Call known MCP tools as `mcp.<sanitized_server>.<sanitized_tool>(args)`, captured tools as `extensions.<tool>(args)`, and stable providers as `memory.*`, `state.*`, `schema.*`, or `compact.*`. Use `tools.call({ref,args})` for computed refs. `pi` is the core tools; `π.<key>` reads named `strings` (not a tool)."
-      : "Pi Fabric is in orchestration-only mode. Pi core and registered extension tools stay on their native direct execution path; inside fabric_exec, `pi.*` and `extensions.*` are unavailable. Call known actions through `mcp.<sanitized_server>.<sanitized_tool>(args)`, `memory.*`, `state.*`, `schema.*`, `components.*`, `compact.*`, `agents.*`, or `mesh.*`; use `tools.catalog`/`search`/`describe`/`list` for discovery and `tools.call({ref,args})` for computed refs. Other surfaces are opt-in via user-loaded skills.")
-      + (schemaMode === "enforce"
-        ? "\n\nSchema enforce mode is fixed for this session. Reads remain available, but protected-workspace changes must use schema.hypothesize → schema.verify → schema.commit in the same fabric_exec invocation. Direct pi.edit/write/bash, agents, state/mesh writes, compaction requests, MCP, extensions, and external providers are blocked by the host gate."
-        : schemaMode === "audit"
-          ? "\n\nSchema audit mode reports actions that enforce mode would block, but preserves their current behavior."
-          : "")
-      + (skillReferenceGuidance ? `\n\n${skillReferenceGuidance}` : "");
+    const currentModel = context.model
+      ? `${context.model.provider}/${context.model.id}`
+      : undefined;
+    const resolvedGuidance = resolveFabricModelGuidance(state.modelGuidance(), {
+      ...(currentModel ? { model: currentModel } : {}),
+      target: process.env.PI_FABRIC_PARENT_RUN ? "participant" : "main",
+      defaults: [{
+        slot: FABRIC_EXECUTION_GUIDANCE_SLOT,
+        content: defaultFabricExecutionGuidance(effectiveFullCodeMode),
+      }],
+    });
     const overrideGuidance = effectiveFullCodeMode
-      ? coreOverridePromptGuidance(capturedTools)
-      : "";
+      ? coreOverridePromptGuidance(capturedTools).trim()
+      : undefined;
+    const guidance = [
+      fabricExecutionKernelGuidance(effectiveFullCodeMode),
+      resolvedGuidance.slotText,
+      fabricSchemaGuidance(schemaMode),
+      overrideGuidance,
+      resolvedGuidance.appendText,
+      // Turn-derived skill dependencies stay last so the stable system prefix
+      // remains reusable by provider prompt caches across ordinary turns.
+      skillReferenceGuidance,
+    ].filter((section): section is string => Boolean(section)).join("\n\n");
     // One-shot capability steering: when the prompt's vocabulary matches a
     // capability source's fingerprint, name the tools once so the model
     // reaches for extensions.* / mcp.* instead of re-implementing them. Slice
@@ -712,7 +733,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     // message below is the transcript record a session replay recovers after
     // a reload.
     return {
-      systemPrompt: `${systemPrompt}\n\n${guidance}${overrideGuidance}`,
+      systemPrompt: `${systemPrompt}\n\n${guidance}`,
       ...(advisory
         ? {
             message: {

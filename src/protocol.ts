@@ -270,8 +270,21 @@ export type {
   FabricComponentHandle,
   FabricComponentInfo,
   FabricComponentProviderLease,
+  FabricModelGuidance,
+  FabricModelGuidanceInfo,
+  FabricModelGuidancePlacement,
+  FabricModelGuidanceTarget,
   FabricComponentProvision,
   FabricComponentRegistration,
   FabricComponentState,
   FabricComponentStopOptions,
 } from "./components/types.js";
+
+export {
+  FABRIC_EXECUTION_GUIDANCE_SLOT,
+  MAX_FABRIC_MODEL_GUIDANCE_CONTENT_CHARS,
+  MAX_FABRIC_MODEL_GUIDANCE_PER_COMPONENT,
+  MAX_FABRIC_MODEL_GUIDANCE_REGISTRATIONS,
+  MAX_FABRIC_MODEL_GUIDANCE_SNAPSHOT_CHARS,
+  MAX_FABRIC_MODEL_GUIDANCE_TOTAL_CHARS,
+} from "./components/model-guidance.js";

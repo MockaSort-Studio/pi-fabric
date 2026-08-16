@@ -407,6 +407,56 @@ describe.skipIf(!hasResidentHost)("durable participant residency", () => {
     await state.participants.close();
   });
 
+  it("applies live model guidance snapshots to durable participants", { timeout: 20_000 }, async () => {
+    const state = await rootHarness("resident-guidance");
+    const client = new ResidencyClient({
+      config: state.config,
+      mesh: state.mesh,
+      participants: state.participants,
+      mainAgent: state.mainAgent,
+      hostPath,
+    });
+    const guidance = (content: string) => [{
+      componentId: "deepseek-guidance",
+      component: "deepseek-guidance",
+      revision: 1,
+      label: "deepseek",
+      models: ["deepseek/*"],
+      targets: ["participant" as const],
+      placement: "append" as const,
+      content,
+    }];
+
+    client.updateModelGuidance(guidance("First durable guidance"));
+    const first = await client.spawnAgent({
+      task: "First guided durable agent",
+      transport: "process",
+      residency: "durable",
+      model: "deepseek/deepseek-chat",
+    });
+    const firstResult = await client.waitAgent(first.id);
+    expect((firstResult as typeof firstResult & { systemPrompt?: string }).systemPrompt).toBe(
+      "First durable guidance",
+    );
+
+    client.updateModelGuidance(guidance("Revised durable guidance"));
+    const second = await client.spawnAgent({
+      task: "Second guided durable agent",
+      transport: "process",
+      residency: "durable",
+      model: "deepseek/deepseek-chat",
+    });
+    const secondResult = await client.waitAgent(second.id);
+    expect((secondResult as typeof secondResult & { systemPrompt?: string }).systemPrompt).toBe(
+      "Revised durable guidance",
+    );
+
+    await client.cleanupAgent(first.id);
+    await client.cleanupAgent(second.id);
+    await client.close();
+    await state.participants.close();
+  });
+
   it("completes and cleans a durable agent after its originating Main closes", { timeout: 20_000 }, async () => {
     const state = await rootHarness("resident-agent");
     const client = new ResidencyClient({

@@ -265,6 +265,18 @@ describe("FabricState lazy bootstrap", () => {
     vi.unstubAllEnvs();
   });
 
+  it("eagerly activates configured components before the first turn", async () => {
+    const cwd = project({
+      components: [{ id: "model-guidance", component: "model-guidance" }],
+      prewalk: { alwaysRearm: false },
+      mesh: { enabled: false },
+    });
+    const state = createState(runtimeHarness().loader);
+    const context = contextAt(cwd);
+    await state.bootstrap(context);
+    expect(state.shouldEagerlyActivate(context)).toBe(true);
+  });
+
   it("eagerly activates child runtimes with inherited capability commitments", async () => {
     const cwd = project({ prewalk: { alwaysRearm: false }, mesh: { enabled: false } });
     const state = createState(runtimeHarness().loader);

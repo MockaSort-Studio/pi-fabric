@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import type { FabricOwnedModelGuidance } from "../components/model-guidance.js";
 import type { FabricAgentConfig, FabricMeshConfig, FabricRetentionConfig } from "../config.js";
 import type { AgentHandleInfo, AgentRunRequest } from "../agents/types.js";
 import type { MeshIdentity } from "../mesh/store.js";
@@ -37,6 +38,7 @@ export interface ResidentHostConfig {
   piBinary: string;
   claudeBinary: string;
   vedaBinary: string;
+  modelGuidance?: FabricOwnedModelGuidance[];
 }
 
 export interface ResidentHostOwner {

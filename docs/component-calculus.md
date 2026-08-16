@@ -9,7 +9,7 @@ DeepSeek's dynamic-composition paper supplies the effect and coeffect calculus u
 For a runtime context $\Gamma$, this operational tuple represents a component instance:
 
 $$
-\langle d,\ p,\ e,\ \pi,\ \sigma,\ \tau,\ \theta,\ \omega \rangle
+\langle d,\ p,\ e,\ \pi,\ \sigma,\ q,\ \tau,\ \theta,\ \omega \rangle
 $$
 
 | Symbol | Pi Fabric realization |
@@ -19,6 +19,7 @@ $$
 | $e$ | `activate()` with its yielded and returned inverses |
 | $\pi$ | the optional `parentId` that `context.use()` creates |
 | $\sigma$ | the staged provider bindings that the instance owns |
+| $q$ | the staged model-guidance registrations that the instance owns |
 | $\tau$ | monotone retirement plus a transition epoch |
 | $\theta$ | one of `waiting`, `loading`, `active`, `unloading`, `failed`, `quarantined`, or `disposed` |
 | $\omega$ | the retained committed capability view |
@@ -32,7 +33,7 @@ Activation exposes two observable paths that must agree:
 ```text
 component definition ── activate under ω ──▶ owned effects
         │                                      │
-        │ resolve d                            │ commit p
+        │ resolve d                            │ commit p, q
         ▼                                      ▼
 live provider state ─── target(d, Γ) ─────▶ active fiber
 ```
@@ -57,7 +58,7 @@ The runtime enforces the structural part of this triangle:
 - on diversion the iterator's `return()` runs, so generator `finally` blocks can settle.
 - a cleanup failure produces the `quarantined` state, never a false claim of recovery.
 
-The runtime cannot prove that $g(f(\Gamma)) \simeq \Gamma$. The author must guarantee that the inverse is correct, and the author chooses the observational equivalence $\simeq$. Mutations performed outside `context.effect`, `context.defer`, `context.acquire`, `context.call`, `context.provide`, or `context.use` are ambient and sit outside the witnessed system.
+The runtime cannot prove that $g(f(\Gamma)) \simeq \Gamma$. The author must guarantee that the inverse is correct, and the author chooses the observational equivalence $\simeq$. Mutations performed outside `context.effect`, `context.defer`, `context.acquire`, `context.call`, `context.provide`, `context.guide`, or `context.use` are ambient and sit outside the witnessed system.
 
 ## Iteration, diversion, and inertia
 
@@ -88,6 +89,20 @@ $$
 Consumer teardown retains the old $\omega$, so the consumer can still call the retiring provider. The binding closes only after the owner retention, the committed views, the scoped acquisitions, and the in-flight calls all release it.
 
 The owner component must keep its ambient supporting state valid until the provider's `close()` runs. The registry can retain a provider object across external actor views. It cannot infer hidden closure dependencies.
+
+## Guidance projection
+
+Let $q$ be the finite set of model-guidance registrations owned by a fiber. `context.guide()` stages an element of $q$ and records its removal as a transactional, commutative registration effect. The host projection contains $q$ exactly when the fiber is `active`; `loading`, diversion, failed activation, retirement, and unload expose none of that fiber's registrations. Thus prompt observation follows the same commit edge as provider publication. It never observes activation order or a half-built profile.
+
+For canonical model $m$ and target $t$, the host computes:
+
+$$
+Q(m,t) = K \oplus \operatorname{slots}(m,t) \oplus \operatorname{append}(m,t)
+$$
+
+$K$ is the non-replaceable kernel. A slot chooses its one matching replacement or its host default. Two matching replacements for the same slot make $Q$ undefined and the launch fails; no load-order winner exists. Append entries sort by component identity and label, making equivalent active component sets observationally equal regardless of activation schedule. Model and target predicates filter entries before this algebra.
+
+A direct participant receives only $\operatorname{append}(m,\mathrm{participant})$ because it has no Fabric execution slot. A recursive Pi participant computes all of $Q$ in its own host, so the parent withholds a duplicate projection. A durable owner reads an atomically published snapshot of the committed $q$ set before each launch. The snapshot moves prompt data across a process boundary, but it carries no capability binding and cannot widen $\omega$.
 
 ## Provision disjointness
 

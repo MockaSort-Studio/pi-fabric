@@ -134,6 +134,7 @@ if (task.includes("HANG")) {
     usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0 },
     ...(args.has("model") ? { model: args.get("model") } : {}),
     ...(args.has("thinking") ? { thinking: args.get("thinking") } : {}),
+    ...(args.has("system-prompt") ? { systemPrompt: args.get("system-prompt") } : {}),
   };
   fs.mkdirSync(path.dirname(statusFile), { recursive: true });
   if (lifecycleFile) {
