@@ -175,14 +175,15 @@ describe("core override prompt guidance", () => {
             "Inspect source",
           ].join("\n"),
         }, modelContext);
+        // Turn-derived skill guidance must NOT touch the system prompt: the
+        // system prompt stays byte-identical to a non-skill turn so provider
+        // prefix caches never cold-prefill. It rides the message channel.
         const skillPrompt = (skillResult as { systemPrompt: string }).systemPrompt;
-        expect(skillPrompt.startsWith(`${guidedPrompt}\n\nThe active skill`)).toBe(true);
-        expect(skillPrompt.indexOf("structure-aware reads")).toBeLessThan(
-          skillPrompt.indexOf("DeepSeek-specific final instruction"),
-        );
-        expect(skillPrompt.indexOf("DeepSeek-specific final instruction")).toBeLessThan(
-          skillPrompt.indexOf("The active skill"),
-        );
+        expect(skillPrompt).toBe(guidedPrompt);
+        expect(skillPrompt).not.toContain("The active skill");
+        const skillMessage = (skillResult as { message?: { content: string } }).message;
+        expect(skillMessage?.content).toContain('The active skill "active" is already expanded');
+        expect(skillMessage?.content).toContain('- /dependency -> "/skills/dependency/SKILL.md"');
       } finally {
         modelGuidance.mockRestore();
       }

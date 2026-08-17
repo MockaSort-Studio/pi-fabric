@@ -692,6 +692,8 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     // Pi expands the invoked skill into the user message, but wrappers may
     // delegate by name. Resolve only explicit invocation lines so full code
     // mode preserves Pi's progressive skill loading without exposing read.
+    // Turn-derived: delivered via the message channel (below), never the
+    // system prompt, so the cached system prefix stays byte-stable.
     const skillReferenceGuidance = effectiveFullCodeMode
       ? buildSkillReferenceGuidance(event.prompt, skills)
       : undefined;
@@ -709,15 +711,15 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     const overrideGuidance = effectiveFullCodeMode
       ? coreOverridePromptGuidance(capturedTools).trim()
       : undefined;
+    // Only turn-stable sections go into the system prompt. Anything derived
+    // from the current prompt (skill references, capability advisory) rides
+    // the message channel so provider prefix caches never cold-prefill.
     const guidance = [
       fabricExecutionKernelGuidance(effectiveFullCodeMode),
       resolvedGuidance.slotText,
       fabricSchemaGuidance(schemaMode),
       overrideGuidance,
       resolvedGuidance.appendText,
-      // Turn-derived skill dependencies stay last so the stable system prefix
-      // remains reusable by provider prompt caches across ordinary turns.
-      skillReferenceGuidance,
     ].filter((section): section is string => Boolean(section)).join("\n\n");
     // One-shot capability steering: when the prompt's vocabulary matches a
     // capability source's fingerprint, name the tools once so the model
@@ -732,15 +734,23 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     // No separate persistence: ash already lives in memory, and the custom
     // message below is the transcript record a session replay recovers after
     // a reload.
+    //
+    // Turn-varying content (skill reference guidance, capability advisory) is
+    // delivered here as a persistent message, not appended to the system
+    // prompt. Keeping the system prompt byte-identical across turns is what
+    // lets provider prefix caches (e.g. DeepSeek) stay warm.
+    const turnContent = [skillReferenceGuidance, advisory?.content]
+      .filter((section): section is string => Boolean(section))
+      .join("\n\n");
     return {
       systemPrompt: `${systemPrompt}\n\n${guidance}`,
-      ...(advisory
+      ...(turnContent
         ? {
             message: {
               customType: CAPABILITY_ADVISORY_CUSTOM_TYPE,
-              content: advisory.content,
-              display: advisory.display,
-              details: advisory.details,
+              content: turnContent,
+              display: advisory?.display ?? false,
+              details: advisory?.details ?? {},
             },
           }
         : {}),
