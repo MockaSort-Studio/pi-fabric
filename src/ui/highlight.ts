@@ -845,9 +845,11 @@ const fileHighlightRange = (
     entry.waiters.push({ to: clampedTo, invalidate });
     scheduleFileHighlight(entry);
   }
-  if (entry.lines.length < to) return null;
+  // Coverage past EOF: serve the existing lines rather than wait forever on a
+  // target that can never be reached.
+  if (entry.lines.length < clampedTo) return null;
   const out: FileHighlightLine[] = [];
-  for (let index = from; index < to; index++) {
+  for (let index = from; index < Math.min(to, total); index++) {
     out.push({ raw: entry.sourceLines[index] ?? "", ansi: entry.lines[index] ?? "" });
   }
   return out;

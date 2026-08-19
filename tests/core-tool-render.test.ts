@@ -782,6 +782,96 @@ describe("Fabric core tool stateful highlighting", () => {
     expect(deEmphasized).toMatch(/\x1b\[38;2;[0-9;]+m16/);
     expect(deEmphasized).toMatch(/\x1b\[38;2;[0-9;]+mbit/);
   }, 20_000);
+
+  it("weaves removed lines past separators and in-hunk scope openers", async () => {
+    // Compact hunks arrive wrapped in "..." separator rows, and the removed
+    // run is often preceded by context lines that open a scope (here the
+    // block-comment opener at line 17). Both must not defeat the virtual
+    // pre-edit document: the separators carry no position and the context
+    // lines belong to the woven document, otherwise removed comment lines
+    // fall out of comment state and render as code.
+    const { writeFileSync } = await import("node:fs");
+    const path = (await import("node:path")).join(dir, "invariant.ts");
+    const filler = Array.from({ length: 13 }, (_, index) => `const filler${index + 1} = ${index + 1};`);
+    const post = [
+      ...filler,
+      "/** Service required before the companion can reserve package ownership. */",
+      "export const inject = ['invariants']",
+      "",
+      "/**",
+      " * No runtime invariant: the Host contribution is a schema-validated settings",
+      " * namespace whose registration/update relations are owned by dsh-settings;",
+      " * the Client contribution derives presentation from typed Session, Workspace,",
+      " * job, settings, and slot stores without emitting a package-owned event.",
+      " */",
+      "const install = () => {};",
+      "const tail = true;",
+    ].join("\n");
+    writeFileSync(path, post, "utf8");
+    await vi.waitFor(
+      () => expect(highlightCode(`const w${Math.random()} = 1;`, "typescript")).not.toBeNull(),
+      { timeout: 15_000 },
+    );
+    // Settle into the regime the screenshot came from: the renderer's own
+    // slice request resolves, so context and added rows take file-verified
+    // tokens and the removed rows stand alone.
+    await vi.waitFor(
+      () => expect(highlightFileLines(path, "typescript", 13, 24, vi.fn())).not.toBeNull(),
+      { timeout: 15_000 },
+    );
+
+    const diff = [
+      "     ...",
+      "    14 /** Service required before the companion can reserve package ownership. */",
+      "    15 export const inject = ['invariants']",
+      "    16 ",
+      "    17 /**",
+      "-   18  * No runtime invariant: a pure-consumer plugin registering presentational",
+      "-   19  * components into two host-declared slots plus its locale dictionaries; its",
+      "-   20  * inject face is stateless RPC wrappers plus a create-and-open call; it",
+      "-   21  * emits no cordis events and owns no cross-plugin mutable state.",
+      "+   18  * No runtime invariant: the Host contribution is a schema-validated settings",
+      "+   19  * namespace whose registration/update relations are owned by dsh-settings;",
+      "+   20  * the Client contribution derives presentation from typed Session, Workspace,",
+      "+   21  * job, settings, and slot stores without emitting a package-owned event.",
+      "    22  */",
+      "    23 const install = () => {};",
+      "     ...",
+    ].join("\n");
+    const call = audit("edit", {
+      args: { path },
+      success: true,
+      result: { details: { diff } },
+    });
+
+    const stripAnsi = (line: string) =>
+      line.replace(/\u0000PI_DIFF_[A-Z]+\u0000/g, "").replace(/\x1b\[[0-9;]*m/g, "");
+    const commentColor = highlightCode(post, "typescript")![17]!.match(/\x1b\[38;2;[0-9;]+m/)?.[0];
+    expect(commentColor).toBeTruthy();
+    const removedCommentColored = (): string | undefined => {
+      const rendered = renderCoreToolBody(call, theme, options({ expanded: true, invalidate: vi.fn() }));
+      const row = rendered!.lines.find((line) => stripAnsi(line).includes("a pure-consumer plugin"));
+      if (!row) return undefined;
+      const deEmphasized = row
+        .replace(/\x1b\[48;2;148;62;70m/g, "")
+        .replace(/\x1b\[48;2;64;132;82m/g, "")
+        .replace(/\x1b\[49m/g, "");
+      return deEmphasized.includes(`${commentColor} * No runtime invariant: a `) ? deEmphasized : undefined;
+    };
+    await vi.waitFor(() => expect(removedCommentColored()).toBeDefined(), { timeout: 15_000 });
+    // The whole removed line is one comment span; fragment tokenization would
+    // split it into code tokens (plain/default and identifier colors).
+    expect(removedCommentColored()!).not.toContain("\x1b[38;2;156;220;254m");
+    // The added sibling is the reference rendering of the very same state.
+    const addedRow = renderCoreToolBody(call, theme, options({ expanded: true, invalidate: vi.fn() }))!
+      .lines.find((line) => stripAnsi(line).includes("the Host contribution"))!;
+    expect(
+      addedRow
+        .replace(/\x1b\[48;2;148;62;70m/g, "")
+        .replace(/\x1b\[48;2;64;132;82m/g, "")
+        .replace(/\x1b\[49m/g, ""),
+    ).toContain(`${commentColor} * No runtime invariant: the Host contribution`);
+  }, 20_000);
 });
 
 // Resolve the exact keyword color shiki assigns under dark-plus by tokenizing

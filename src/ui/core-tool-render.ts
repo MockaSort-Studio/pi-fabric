@@ -677,13 +677,18 @@ const highlightRemovedDiffLines = (
   while (end < parsed.length && parsed[end]) end++;
   const block = parsed.slice(start, end) as ParsedDiffLine[];
   const removed: Array<{ row: number; n: number; content: string }> = [];
-  let minContext = Infinity;
+  // Context rows preceding the first removed line: they belong to the pre-edit
+  // document and must be woven in too — a scope opener (comment/string/tag) is
+  // often one of them.
+  const contextBefore: Array<{ n: number; content: string }> = [];
   for (let offset = 0; offset < block.length; offset++) {
     const line = block[offset]!;
+    // Separator ("...") and other unnumbered rows carry no file position;
+    // skip them instead of aborting the whole weave.
     const n = Number.parseInt(line.lineNumber.trim(), 10);
-    if (!Number.isFinite(n) || n <= 0) return null;
+    if (!Number.isFinite(n) || n <= 0) continue;
     if (line.kind === "-") removed.push({ row: start + offset, n, content: expandTabs(line.content) });
-    else if (line.kind === " ") minContext = Math.min(minContext, n);
+    else if (line.kind === " " && removed.length === 0) contextBefore.push({ n, content: expandTabs(line.content) });
   }
   if (removed.length === 0) return null;
   // The virtual document weaves the removed lines back in as a single run, so
@@ -694,7 +699,16 @@ const highlightRemovedDiffLines = (
     if (removed[index]!.n !== removed[index - 1]!.n + 1) return null;
   }
   const firstRemoved = removed[0]!.n;
-  const anchor = Math.min(firstRemoved, minContext === Infinity ? firstRemoved : minContext);
+  // The woven context must run contiguously right up to the first removed
+  // line; a folded gap in between (or interleaved removals) would silently
+  // reconstruct the wrong pre-edit document.
+  for (let index = 1; index < contextBefore.length; index++) {
+    if (contextBefore[index]!.n !== contextBefore[index - 1]!.n + 1) return null;
+  }
+  if (contextBefore.length > 0 && contextBefore[contextBefore.length - 1]!.n !== firstRemoved - 1) {
+    return null;
+  }
+  const anchor = contextBefore.length > 0 ? contextBefore[0]!.n : firstRemoved;
 
   const absolute = resolve(cwd, filePath);
   let stat;
@@ -717,12 +731,14 @@ const highlightRemovedDiffLines = (
   for (const line of block) {
     if (line.kind !== " ") continue;
     const n = Number.parseInt(line.lineNumber.trim(), 10);
+    if (!Number.isFinite(n)) continue;
     if (fileLines[n - 1] !== expandTabs(line.content)) return null;
   }
   const prefixCount = Math.max(0, Math.min(anchor - 1, DIFF_REMOVED_CONTEXT_LINES));
   const prefix = fileLines.slice(anchor - 1 - prefixCount, anchor - 1);
   const removedContents = removed.map((row) => row.content);
-  const virtual = [...prefix, ...removedContents];
+  const contextContents = contextBefore.map((context) => context.content);
+  const virtual = [...prefix, ...contextContents, ...removedContents];
   const cacheKey = `removed\0${language}\0${absolute}\0${hashSourceText(virtual.join("\n"))}`;
   const covered = highlightSourceLines(
     cacheKey,
@@ -735,7 +751,7 @@ const highlightRemovedDiffLines = (
   if (!covered) return null;
   const out = new Map<number, string>();
   for (let index = 0; index < removed.length; index++) {
-    const entry = covered[index];
+    const entry = covered[contextContents.length + index];
     if (entry && entry.raw === removed[index]!.content) out.set(removed[index]!.row, entry.ansi);
   }
   return out;
