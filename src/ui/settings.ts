@@ -1,9 +1,6 @@
-import {
-  DynamicBorder,
-  getAgentDir,
-  type ExtensionContext,
-  type Theme,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { resolveAgentDir } from "../core/agent-dir.js";
+import { DynamicBorder } from "./dynamic-border.js";
 import {
   Container,
   type Component,
@@ -1832,7 +1829,7 @@ export async function openFabricSettings(
   }
   await deps.state.ensure(context);
 
-  const agentDir = getAgentDir();
+  const agentDir = resolveAgentDir();
   const projectTrusted = context.isProjectTrusted();
   const configLocation = { cwd: context.cwd, agentDir, projectTrusted };
   let saveScope: FabricConfigScope = projectTrusted ? "project" : "global";
@@ -1881,7 +1878,7 @@ export async function openFabricSettings(
     "fabric_exec",
     ...deps.capturedTools.list().map((tool) => tool.name),
   ]);
-  const modelSource = buildModelSource(context.modelRegistry, getAgentDir());
+  const modelSource = buildModelSource(context.modelRegistry, resolveAgentDir());
   const configuredClaudeModel = deps.state.config.agents.claude.model;
   const claudeModelSource: ModelSource = {
     models: configuredClaudeModel

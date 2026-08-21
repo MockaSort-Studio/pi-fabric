@@ -1,11 +1,10 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  ExtensionRunner as ImportedExtensionRunner,
-  type ExtensionRunner,
-  type RegisteredTool,
-  type ToolDefinition,
+import type {
+  ExtensionRunner,
+  RegisteredTool,
+  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_FABRIC_CONFIG, type FabricToolCaptureConfig } from "../config.js";
 import { CapturedToolCatalog } from "./catalog.js";
@@ -110,7 +109,7 @@ const hostPackageRoot = (): string | undefined => {
 };
 
 const extensionRunnerConstructors = async (): Promise<ExtensionRunnerConstructor[]> => {
-  const constructors = new Set<ExtensionRunnerConstructor>([ImportedExtensionRunner]);
+  const constructors = new Set<ExtensionRunnerConstructor>();
   const packageRoots = new Set(
     [process.env.PI_PACKAGE_DIR, hostPackageRoot()].filter(
       (root): root is string => typeof root === "string" && Boolean(root),
@@ -124,6 +123,16 @@ const extensionRunnerConstructors = async (): Promise<ExtensionRunnerConstructor
       };
       if (hostModule.ExtensionRunner) constructors.add(hostModule.ExtensionRunner);
     } catch { /* host entry not importable; skip */ }
+  }
+  if (constructors.size === 0) {
+    // The host does not advertise its package directory (tests, embeds,
+    // future layouts): fall back to resolving it in this module realm.
+    try {
+      const hostModule = (await import("@earendil-works/pi-coding-agent")) as {
+        ExtensionRunner?: ExtensionRunnerConstructor;
+      };
+      if (hostModule.ExtensionRunner) constructors.add(hostModule.ExtensionRunner);
+    } catch { /* host unavailable in this realm; tool capture stays inert */ }
   }
   return [...constructors];
 };

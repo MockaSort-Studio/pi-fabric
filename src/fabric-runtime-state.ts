@@ -1,4 +1,5 @@
-import { getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { resolveAgentDir } from "./core/agent-dir.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -302,7 +303,7 @@ export class FabricRuntimeState {
     const projectTrusted = context.isProjectTrusted();
     this.#config = bootstrapConfig ?? loadFabricConfig({
       cwd: context.cwd,
-      agentDir: getAgentDir(),
+      agentDir: resolveAgentDir(),
       projectTrusted,
     });
     this.#registry = new ActionRegistry(
@@ -648,7 +649,7 @@ export class FabricRuntimeState {
         await this.#agentsProvider.deliverLifecycle(subscription, event);
       },
     );
-    this.#globalActors = new GlobalActorRegistry(getAgentDir(), this.#config.mesh.maxEventBytes);
+    this.#globalActors = new GlobalActorRegistry(resolveAgentDir(), this.#config.mesh.maxEventBytes);
     this.#residency = ownsPersistentActorRegistry
       ? new ResidencyClient({
           config: {
@@ -741,7 +742,7 @@ export class FabricRuntimeState {
     if (this.#config.memory.enabled) {
       const sessionFile = context.sessionManager.getSessionFile();
       const memoryContext: MemoryProviderContext = {
-        agentDir: getAgentDir(),
+        agentDir: resolveAgentDir(),
         cwd: context.cwd,
         config: this.#config.memory,
         sessionId,
@@ -835,7 +836,7 @@ export class FabricRuntimeState {
     if (!this.#config || !this.#cwd) return;
     const next = loadFabricConfig({
       cwd: context.cwd,
-      agentDir: getAgentDir(),
+      agentDir: resolveAgentDir(),
       projectTrusted: context.isProjectTrusted(),
     });
     next.schema.mode = this.#config.schema.mode;

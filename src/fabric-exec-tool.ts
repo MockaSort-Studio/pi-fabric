@@ -1,9 +1,15 @@
-import {
-  defineTool,
-  type Theme,
-  type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import type { Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { TSchema } from "@earendil-works/pi-ai";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
+
+type AnyToolDefinition = ToolDefinition<any, any, any>;
+
+// Local mirror of the host's defineTool declaration shape (pi 0.84.2):
+// identity at runtime, inference-preserving in the type system.
+const defineTool = <TParams extends TSchema, TDetails = unknown, TState = any>(
+  tool: ToolDefinition<TParams, TDetails, TState>,
+): ToolDefinition<TParams, TDetails, TState> & AnyToolDefinition =>
+  tool as ToolDefinition<TParams, TDetails, TState> & AnyToolDefinition;
 import { arcItemStyled } from "./ui/arc-group.js";
 import type { CodePreviewSettings } from "./ui/code-preview.js";
 import {

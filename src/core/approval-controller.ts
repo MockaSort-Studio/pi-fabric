@@ -1,8 +1,5 @@
-import {
-  DynamicBorder,
-  getSelectListTheme,
-  type ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder } from "../ui/dynamic-border.js";
 import {
   Container,
   SelectList,
@@ -11,6 +8,20 @@ import {
   type SelectItem,
 } from "@earendil-works/pi-tui";
 import { FabricTraceSafeError } from "../audit/trace.js";
+
+type ThemeColorApplicator = (name: string, text: string) => string;
+
+const selectListThemeFor = (theme: unknown) => {
+  const apply = (name: string, text: string): string =>
+    (theme as { fg: ThemeColorApplicator }).fg(name, text);
+  return {
+    selectedPrefix: (text: string) => apply("accent", text),
+    selectedText: (text: string) => apply("accent", text),
+    description: (text: string) => apply("muted", text),
+    scrollInfo: (text: string) => apply("muted", text),
+    noMatch: (text: string) => apply("muted", text),
+  };
+};
 import type { FabricApprovalConfig } from "../config.js";
 import type { FabricRisk } from "../protocol.js";
 import type { ResolvedFabricAction } from "./action-registry.js";
@@ -236,7 +247,7 @@ export class ApprovalController {
           description: "Block the requested action",
         },
       ];
-      const list = new SelectList(items, items.length, getSelectListTheme());
+      const list = new SelectList(items, items.length, selectListThemeFor(theme));
       list.onSelect = (item) => done(item.value as ApprovalChoice);
       list.onCancel = () => done("deny");
       container.addChild(list);
