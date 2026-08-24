@@ -15,13 +15,14 @@ const git = (cwd: string, ...args: string[]): string =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 // Git normalizes worktree paths its own way (forward slashes, Windows 8.3
-// short names resolved), while Node paths may keep the short form —
-// canonicalize both sides before comparing.
-const worktreePaths = (repository: string): string[] =>
+// short names resolved), while Node never expands the short form from
+// os.tmpdir(), so path text can never match there. Assert the worktree's
+// branch registration instead — that is what these checks mean.
+const worktreeBranches = (repository: string): string[] =>
   git(repository, "worktree", "list", "--porcelain")
     .split("\n")
-    .filter((line) => line.startsWith("worktree "))
-    .map((line) => fs.realpathSync(path.normalize(line.slice("worktree ".length))));
+    .filter((line) => line.startsWith("branch refs/heads/"))
+    .map((line) => line.slice("branch refs/heads/".length));
 
 const initRepository = (prefix: string, relativeDirectory?: string): string => {
   const repository = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -268,7 +269,7 @@ describe("one-shot agent cwd", () => {
       expect((result as unknown as { projectRoot: string }).projectRoot).toBe(parent);
       expect((result as unknown as { meshRoot: string }).meshRoot).toBe(path.join(root, "mesh"));
       expect(git(parent, "worktree", "list", "--porcelain")).toBe(parentWorktreesBefore);
-      expect(worktreePaths(target)).toContain(fs.realpathSync(worktree!));
+      expect(worktreeBranches(target)).toContain(result.branch!);
     } finally {
       if (result) await manager.cleanup(result.id, true);
     }

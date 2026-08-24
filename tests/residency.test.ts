@@ -35,13 +35,14 @@ const git = (cwd: string, ...args: string[]): string =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 // Git normalizes worktree paths its own way (forward slashes, Windows 8.3
-// short names resolved), while Node paths may keep the short form —
-// canonicalize both sides before comparing.
-const worktreePaths = (repository: string): string[] =>
+// short names resolved), while Node never expands the short form from
+// os.tmpdir(), so path text can never match there. Assert the worktree's
+// branch registration instead — that is what these checks mean.
+const worktreeBranches = (repository: string): string[] =>
   git(repository, "worktree", "list", "--porcelain")
     .split("\n")
-    .filter((line) => line.startsWith("worktree "))
-    .map((line) => fs.realpathSync(path.normalize(line.slice("worktree ".length))));
+    .filter((line) => line.startsWith("branch refs/heads/"))
+    .map((line) => line.slice("branch refs/heads/".length));
 
 const initRepository = (directory: string): void => {
   fs.mkdirSync(directory, { recursive: true });
@@ -568,7 +569,6 @@ describe.skipIf(!hasResidentHost)("durable participant residency", () => {
     const worktree = path.join(os.tmpdir(), "pi-fabric-worktrees", id);
     fs.mkdirSync(path.dirname(worktree), { recursive: true });
     git(source, "worktree", "add", "-q", "-b", branch, worktree, "HEAD");
-    const canonicalWorktree = fs.realpathSync(worktree);
     const runDirectory = path.join(state.config.residencyRoot, "runs", id);
     fs.mkdirSync(runDirectory, { recursive: true });
     fs.writeFileSync(path.join(runDirectory, "status.json"), JSON.stringify({
@@ -620,13 +620,13 @@ describe.skipIf(!hasResidentHost)("durable participant residency", () => {
 
     try {
       await expect(client.cleanupAgent(id, true)).rejects.toThrow(/not registered/);
-      expect(worktreePaths(source)).toContain(canonicalWorktree);
+      expect(worktreeBranches(source)).toContain(branch);
       expect(git(source, "branch", "--list", branch)).toContain(branch);
       expect(fs.existsSync(runDirectory)).toBe(true);
 
       fs.writeFileSync(metadataPath, JSON.stringify({ ...metadata, worktreeGitRoot: source }));
       await expect(client.cleanupAgent(id, true)).resolves.toEqual({ cleaned: true });
-      expect(worktreePaths(source)).not.toContain(canonicalWorktree);
+      expect(worktreeBranches(source)).not.toContain(branch);
       expect(git(source, "branch", "--list", branch)).toBe("");
       expect(fs.existsSync(runDirectory)).toBe(false);
     } finally {
