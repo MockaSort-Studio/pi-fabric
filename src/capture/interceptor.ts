@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
@@ -59,6 +59,44 @@ const clonePolicy = (config: FabricToolCaptureConfig): FabricToolCaptureConfig =
 
 type ExtensionRunnerConstructor = {
   prototype: ExtensionRunner;
+};
+
+const isExtensionRunnerConstructor = (value: unknown): value is ExtensionRunnerConstructor =>
+  typeof value === "function" &&
+  typeof (value as { prototype?: unknown }).prototype === "object" &&
+  typeof ((value as { prototype: Record<string, unknown> }).prototype).getAllRegisteredTools ===
+    "function";
+
+// pi >= 0.84.3 loads the CLI from dist/bundle/cli.js, whose rollup chunks carry
+// their own ExtensionRunner class identity — the library-level patch alone
+// never fires because the live host runner is an instance of the bundle's copy.
+// Importing each chunk inside the running CLI is a Node module-cache hit, so
+// scanning the bundle is free and yields the class the host actually runs.
+export const bundleExtensionRunnerConstructors = async (
+  bundleDir: string,
+): Promise<ExtensionRunnerConstructor[]> => {
+  const chunksDir = path.join(bundleDir, "chunks");
+  if (!existsSync(chunksDir)) return [];
+  let files: string[];
+  try {
+    files = readdirSync(chunksDir);
+  } catch {
+    return [];
+  }
+  const constructors = new Set<ExtensionRunnerConstructor>();
+  for (const file of files) {
+    if (!file.endsWith(".js")) continue;
+    try {
+      const module = (await import(pathToFileURL(path.join(chunksDir, file)).href)) as Record<
+        string,
+        unknown
+      >;
+      for (const exported of Object.values(module)) {
+        if (isExtensionRunnerConstructor(exported)) constructors.add(exported);
+      }
+    } catch { /* chunk not importable in this realm (worker entries, natives); skip */ }
+  }
+  return [...constructors];
 };
 
 const captureHub = (Runner: ExtensionRunnerConstructor): ToolCaptureHub => {
@@ -123,6 +161,11 @@ const extensionRunnerConstructors = async (): Promise<ExtensionRunnerConstructor
       };
       if (hostModule.ExtensionRunner) constructors.add(hostModule.ExtensionRunner);
     } catch { /* host entry not importable; skip */ }
+    for (const Runner of await bundleExtensionRunnerConstructors(
+      path.join(packageRoot, "dist", "bundle"),
+    )) {
+      constructors.add(Runner);
+    }
   }
   if (constructors.size === 0) {
     // The host does not advertise its package directory (tests, embeds,

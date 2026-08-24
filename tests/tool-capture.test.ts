@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   createSyntheticSourceInfo,
   defineTool,
@@ -8,6 +11,7 @@ import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import {
+  bundleExtensionRunnerConstructors,
   installRegisteredToolCapture,
   type RegisteredToolCaptureController,
 } from "../src/capture/interceptor.js";
@@ -197,5 +201,35 @@ describe("registered extension tool capture", () => {
     controller.dispose();
     runner.getAllRegisteredTools();
     expect(refreshes).toBe(2);
+  });
+
+  it("discovers the bundled runtime's distinct ExtensionRunner identity (pi >= 0.84.3)", async () => {
+    // The pi >= 0.84.3 CLI runs from dist/bundle chunks with their own
+    // ExtensionRunner class identity; capture must patch that copy or the live
+    // host runner's registrations are never observed.
+    const bundleDir = await mkdtemp(path.join(tmpdir(), "fabric-bundle-"));
+    try {
+      const chunksDir = path.join(bundleDir, "chunks");
+      await mkdir(chunksDir, { recursive: true });
+      await writeFile(
+        path.join(chunksDir, "chunk-fake.js"),
+        "export class ExtensionRunner { getAllRegisteredTools() { return []; } }\n",
+      );
+      await writeFile(path.join(chunksDir, "stats.json"), "{}");
+      const found = await bundleExtensionRunnerConstructors(bundleDir);
+      expect(found).toHaveLength(1);
+      const discovered = found[0]!;
+      expect(discovered).not.toBe(ExtensionRunner);
+      expect(typeof discovered.prototype.getAllRegisteredTools).toBe("function");
+      // Modular-layout installs (no dist/bundle) yield nothing.
+      const plainDir = await mkdtemp(path.join(tmpdir(), "fabric-nobundle-"));
+      try {
+        expect(await bundleExtensionRunnerConstructors(plainDir)).toEqual([]);
+      } finally {
+        await rm(plainDir, { recursive: true, force: true });
+      }
+    } finally {
+      await rm(bundleDir, { recursive: true, force: true });
+    }
   });
 });
