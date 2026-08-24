@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 424" width="1200" height="424">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 110 1200 310" width="1200" height="310">
   <title>pi-fabric — one checked TypeScript program weaving pi core tools, MCP servers, agents, and mesh into a single result</title>
   <defs>
     <pattern id="warp" width="36" height="36" patternUnits="userSpaceOnUse">
@@ -16,22 +16,8 @@
     </marker>
   </defs>
 
-  <rect width="1200" height="424" rx="16" fill="#0d1117"/>
-  <rect width="1200" height="424" rx="16" fill="url(#warp)" opacity="0.45"/>
-
-  <g opacity="0">
-    <animate attributeName="opacity" from="0" to="1" dur="0.6s" begin="0.1s" fill="freeze"/>
-    <animateTransform attributeName="transform" type="translate" from="0 6" to="0 0" dur="0.7s" begin="0.1s" fill="freeze"/>
-    <g stroke-linecap="round" fill="none" stroke-width="2.5">
-      <path d="M 489 53 Q 500 57 511 53" stroke="#f778ba"/>
-      <path d="M 488 58 Q 500 62 512 58" stroke="#3fb950"/>
-      <path d="M 489 63 Q 500 67 511 63" stroke="#e3b341"/>
-    </g>
-    <ellipse cx="500" cy="45" rx="13" ry="4" fill="#d2a8ff"/>
-    <ellipse cx="500" cy="71" rx="13" ry="4" fill="#58a6ff"/>
-    <text x="524" y="72" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="38" font-weight="700" fill="#e6edf3">pi-fabric</text>
-    <text x="600" y="98" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="15" fill="#8b949e">One checked TypeScript program composing core tools, MCP servers, agents, and mesh.</text>
-  </g>
+  <rect x="0" y="110" width="1200" height="310" rx="14" fill="#0d1117"/>
+  <rect x="0" y="110" width="1200" height="310" rx="14" fill="url(#warp)" opacity="0.45"/>
 
   <g opacity="0">
     <animate attributeName="opacity" from="0" to="1" dur="0.4s" begin="0.35s" fill="freeze"/>
@@ -56,11 +42,11 @@
   <text x="292" y="212" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c9d1d9" opacity="0">
     <animate attributeName="opacity" from="0" to="1" dur="0.01s" begin="0.85s" fill="freeze"/><tspan fill="#ff7b72">const</tspan><tspan> [man, srcs] = </tspan><tspan fill="#ff7b72">await</tspan><tspan> Promise.all([</tspan>
   </text>
-  <text x="292" y="236" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c9d1d9" opacity="0">
-    <animate attributeName="opacity" from="0" to="1" dur="0.01s" begin="1.17s" fill="freeze"/><tspan>  pi.read({ path: </tspan><tspan fill="#a5d6ff">"package.json"</tspan><tspan> }),</tspan>
+  <text x="308" y="236" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c9d1d9" opacity="0">
+    <animate attributeName="opacity" from="0" to="1" dur="0.01s" begin="1.17s" fill="freeze"/><tspan>pi.read({ path: </tspan><tspan fill="#a5d6ff">"package.json"</tspan><tspan> }),</tspan>
   </text>
-  <text x="292" y="260" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c9d1d9" opacity="0">
-    <animate attributeName="opacity" from="0" to="1" dur="0.01s" begin="1.49s" fill="freeze"/><tspan>  pi.find({ pattern: </tspan><tspan fill="#a5d6ff">"src/**/*.ts"</tspan><tspan> }),</tspan>
+  <text x="308" y="260" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c9d1d9" opacity="0">
+    <animate attributeName="opacity" from="0" to="1" dur="0.01s" begin="1.49s" fill="freeze"/><tspan>pi.find({ pattern: </tspan><tspan fill="#a5d6ff">"src/**/*.ts"</tspan><tspan> }),</tspan>
   </text>
   <text x="292" y="284" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c9d1d9" opacity="0">
     <animate attributeName="opacity" from="0" to="1" dur="0.01s" begin="1.81s" fill="freeze"/><tspan>]);</tspan>
