@@ -70,7 +70,7 @@
     "skills": [
       "./skills"
     ],
-    "image": "https://raw.githubusercontent.com/monotykamary/pi-fabric/main/media/cover.jpg"
+    "image": "https://raw.githubusercontent.com/monotykamary/pi-fabric/main/media/banner.svg"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.84.3",

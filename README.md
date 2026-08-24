@@ -7,7 +7,7 @@
 _One type-checked program for tools, MCP, agents, workflows, actors, mesh, councils, and recursion._
 
 <p>
-  <img src="https://raw.githubusercontent.com/monotykamary/pi-fabric/main/media/cover.jpg" alt="Pi Fabric composing tools and agents in the Pi TUI" width="1100">
+  <img src="https://raw.githubusercontent.com/monotykamary/pi-fabric/main/media/banner.svg" alt="Animated banner: one checked TypeScript program weaving pi core tools, MCP servers, agents, and mesh into a single result" width="100%">
 </p>
 
 [![npm version](https://img.shields.io/npm/v/pi-fabric?style=for-the-badge&logo=npm&color=cb3837)](https://www.npmjs.com/package/pi-fabric)
