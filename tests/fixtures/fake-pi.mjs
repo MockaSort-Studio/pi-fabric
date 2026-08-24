@@ -114,6 +114,14 @@ switch (behavior) {
     }, 10);
     break;
   }
+  case "oversized-event": {
+    const event = {
+      type: "message_end",
+      message: { role: "assistant", content: "x".repeat(4 * 1024 * 1024 + 1_024) },
+    };
+    process.stdout.write(`${JSON.stringify(event)}\n`, () => process.exit(0));
+    break;
+  }
   case "stderr-framing":
     process.stderr.write(
       JSON.stringify({ type: "message_end", message: { role: "assistant", content: "spoofed" } }),
