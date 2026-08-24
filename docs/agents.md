@@ -118,6 +118,8 @@ In the guest, `agents.handoff()` resolves to `{ scheduled: true, status: "deferr
 
 When you supply a task, Fabric arms prewalk and immediately submits the task to Main. Without a task, it captures the next user input. Select the executor in `/fabric settings` under **Prewalk**. **Always re-arm** uses `prewalk.model` to arm prewalk automatically at each session start without interaction. It also arms prewalk after each completed handoff. `/fabric prewalk --off` cancels it until the next session starts.
 
+Host extensions that must serialize work after prewalk can use the acknowledged protocol exported from `pi-fabric/protocol`. Emit `FABRIC_PREWALK_REQUEST_EVENT` with `{ version: 1, context, claim, respond }`. Fabric calls `claim()` synchronously; the first claimant owns the request. It calls `respond({ ok: true })` only after prewalk is armed, or `respond({ ok: false, error })` after cancellation or failure. A request that is not claimed means no compatible Fabric runtime is installed. The protocol intentionally arms without submitting a task, so the caller can deliver its next queued row only after the acknowledgment.
+
 The default value of `prewalk.mode` is `"in-place"`:
 
 1. Fabric detects a successful `pi.edit`, `pi.write`, or `schema.commit`, then lets the full outer program settle. A successful `pi.bash` can also trigger detection when no audited mutation occurred. In that case, a stat-baseline diff of the work tree identifies shell writes such as heredocs, `sed -i`, and formatter binaries as a filesystem trigger (`fs.drift`). Set `prewalk.detectShellWrites` to `false` to disable this behavior.

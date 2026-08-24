@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { describe, expect, it, vi } from "vitest";
 import type { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { registerFabricCommand } from "../src/commands/fabric.js";
+import { FABRIC_PREWALK_REQUEST_EVENT } from "../src/protocol.js";
 import {
   PREWALK_ARMED_MESSAGE_TYPE,
   prewalkArmedPrompt,
@@ -255,6 +256,68 @@ describe("/fabric command", () => {
       }),
       { deliverAs: "nextTurn" },
     );
+  });
+
+  it("acknowledges queued prewalk requests after the arm completes", async () => {
+    let requestHandler: ((value: unknown) => void) | undefined;
+    let shutdownHandler: (() => void) | undefined;
+    const unsubscribe = vi.fn();
+    const respond = vi.fn();
+    const sendMessage = vi.fn();
+    const pi = {
+      events: {
+        on: vi.fn((channel: string, handler: (value: unknown) => void) => {
+          expect(channel).toBe(FABRIC_PREWALK_REQUEST_EVENT);
+          requestHandler = handler;
+          return unsubscribe;
+        }),
+      },
+      on: vi.fn((name: string, handler: () => void) => {
+        if (name === "session_shutdown") shutdownHandler = handler;
+      }),
+      registerCommand: vi.fn(),
+      sendMessage,
+      sendUserMessage: vi.fn(),
+    } as unknown as ExtensionAPI;
+    const arm = vi.fn();
+    const state = {
+      ensure: vi.fn().mockResolvedValue(undefined),
+      config: {
+        fullCodeMode: true,
+        schema: { mode: "off" },
+        prewalk: { mode: "in-place", model: "anthropic/executor", alwaysRearm: false },
+        agents: { enabled: true },
+      },
+      prewalk: { arm, status: vi.fn(), cancel: vi.fn() },
+    } as unknown as FabricState;
+    const context = {
+      sessionManager: { getSessionId: () => "session-1", getBranch: () => [] },
+      ui: { setStatus: vi.fn(), notify: vi.fn() },
+    } as unknown as ExtensionContext;
+
+    registerFabricCommand(pi, {
+      state,
+      fabricUi: {} as FabricUiController,
+      capturedTools: {} as CapturedToolCatalog,
+      applyFabricMode: vi.fn(),
+      suspendToolCapture: vi.fn(),
+    });
+
+    const claim = vi.fn(() => true);
+    requestHandler?.({ version: 1, context, claim, respond });
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledWith({ ok: true }));
+
+    expect(claim).toHaveBeenCalledOnce();
+    expect(state.ensure).toHaveBeenCalledWith(context);
+    expect(arm).toHaveBeenCalledWith({
+      model: "anthropic/executor",
+      mode: "in-place",
+      sessionId: "session-1",
+      alwaysRearm: false,
+    });
+    expect(sendMessage).toHaveBeenCalled();
+    shutdownHandler?.();
+    expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
   it("skips the armed prompt when the identical one already persists", async () => {

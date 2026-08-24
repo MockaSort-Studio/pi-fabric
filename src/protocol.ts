@@ -4,6 +4,36 @@ export const FABRIC_PROVIDER_REGISTER_EVENT = "pi-fabric:provider:register:v1";
 export const FABRIC_PROVIDER_DISCOVER_EVENT = "pi-fabric:provider:discover:v1";
 export const FABRIC_COMPONENT_REGISTER_EVENT = "pi-fabric:component:register:v1";
 export const FABRIC_COMPONENT_DISCOVER_EVENT = "pi-fabric:component:discover:v1";
+export const FABRIC_PREWALK_REQUEST_EVENT = "pi-fabric:prewalk:request:v1";
+
+export type FabricPrewalkRequestResultV1 =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/** Host-local request used by queue extensions that need an acknowledged prewalk arm. */
+export interface FabricPrewalkRequestV1 {
+  version: 1;
+  context: ExtensionContext;
+  claim: () => boolean;
+  respond: (result: FabricPrewalkRequestResultV1) => void;
+}
+
+export const readFabricPrewalkRequestV1 = (
+  value: unknown,
+): FabricPrewalkRequestV1 | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    record.version !== 1 ||
+    typeof record.context !== "object" ||
+    record.context === null ||
+    typeof record.claim !== "function" ||
+    typeof record.respond !== "function"
+  ) {
+    return undefined;
+  }
+  return value as FabricPrewalkRequestV1;
+};
 
 /** Identifies host-side tool lifecycle events replayed for a nested Fabric call. */
 export const FABRIC_NESTED_TOOL_CALL_ID_PREFIX = "fabric_";
