@@ -23,6 +23,7 @@ const EVENT_LABELS: Record<FabricActorHostEvent, string> = {
   agent_settled: "host fully idle after a run",
   tool_error: "synthetic notification for a failed tool",
   session_compact: "context was compacted",
+  session_compact_failed: "context compaction failed or was aborted",
   resources_discover: "skills, prompts, and themes are discovered",
   session_start: "a session starts, reloads, or is restored",
   session_info_changed: "session metadata or name changed",

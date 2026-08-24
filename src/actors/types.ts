@@ -21,6 +21,7 @@ export const FABRIC_ACTOR_PI_HOST_EVENTS = defineFabricActorPiHostEvents([
   "session_before_fork",
   "session_before_compact",
   "session_compact",
+  "session_compact_failed",
   "session_shutdown",
   "session_before_tree",
   "session_tree",
