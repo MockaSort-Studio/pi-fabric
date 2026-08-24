@@ -1268,7 +1268,11 @@ export const saveFabricConfig = (
   const input = readJsonObjectFile(targetPath);
   const existing = migrateFabricConfigDocument(input?.document ?? {}).document;
   const merged = mergeObjects(existing, partial) as Record<string, unknown>;
-  merged.configVersion = CURRENT_FABRIC_CONFIG_VERSION;
+  // Never stamp down: preserve version markers written by newer builds.
+  merged.configVersion = Math.max(
+    typeof merged.configVersion === "number" ? merged.configVersion : 0,
+    CURRENT_FABRIC_CONFIG_VERSION,
+  );
   writeJsonAtomic(targetPath, merged, input?.source);
   return { scope, path: targetPath };
 };

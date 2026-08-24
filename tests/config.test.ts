@@ -591,6 +591,31 @@ describe("Fabric configuration", () => {
     expect(JSON.parse(fs.readFileSync(projectPath, "utf8"))).toEqual({ fullCodeMode: false });
   });
 
+  it("preserves a newer configuration version written by a future build", () => {
+    const root = temporaryDirectory();
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+    fs.mkdirSync(agentDir, { recursive: true });
+    const globalPath = path.join(agentDir, "fabric.json");
+    const future = { configVersion: 4, futureSection: { enabled: true } };
+    fs.writeFileSync(globalPath, JSON.stringify(future));
+
+    // Load path: forward-compatible docs are accepted as-is and never rewritten.
+    loadFabricConfig({ cwd, agentDir, projectTrusted: true });
+    expect(JSON.parse(fs.readFileSync(globalPath, "utf8"))).toEqual(future);
+
+    // Save path: version markers written by newer builds survive a save.
+    saveFabricConfig(
+      { cwd, agentDir, projectTrusted: true, scope: "global" },
+      { executor: { timeoutMs: 10_000 } },
+    );
+    expect(JSON.parse(fs.readFileSync(globalPath, "utf8"))).toEqual({
+      ...future,
+      executor: { timeoutMs: 10_000 },
+    });
+  });
+
   it("saves into the global fabric.json when the project is untrusted", () => {
     const root = temporaryDirectory();
     const cwd = path.join(root, "project");

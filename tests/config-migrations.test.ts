@@ -69,12 +69,24 @@ describe("Fabric configuration migrations", () => {
     ).toThrow(/malformed agents section/);
   });
 
-  it("rejects invalid, future, and legacy keys in current documents", () => {
+  it("rejects invalid and legacy keys in current documents", () => {
     expect(() => migrateFabricConfigDocument({ configVersion: -1 })).toThrow(/non-negative integer/);
-    expect(() => migrateFabricConfigDocument({ configVersion: 4 })).toThrow(/newer than supported/);
     expect(() =>
       migrateFabricConfigDocument({ configVersion: 1, subagents: {} }),
     ).toThrow(/removed key/);
+  });
+
+  it("accepts newer configuration versions as forward-compatible documents", () => {
+    // A config written by a newer build (schema only adds semantics) must not
+    // brick this extension: accept as-is, apply no migrations, never rewrite.
+    const input = { configVersion: 4, futureSection: { enabled: true } };
+    const result = migrateFabricConfigDocument(input);
+    expect(result.document).toEqual(input);
+    expect(result.fromVersion).toBe(4);
+    expect(result.toVersion).toBe(4);
+    expect(result.appliedVersions).toEqual([]);
+    expect(result.changed).toBe(false);
+    expect(result.forwardCompatible).toBe(true);
   });
 
   it("migrates each config layer before applying project precedence", () => {
