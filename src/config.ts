@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { renameAtomic } from "./core/atomic-write.js";
+import { normalizeModelAliases } from "./core/model-resolution.js";
 import { PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
 import {
   CURRENT_FABRIC_CONFIG_VERSION,
@@ -245,6 +246,11 @@ export interface FabricMemoryConfig {
   regexTimeoutMs?: number;
 }
 
+export interface FabricModelsConfig {
+  /** Alias name → ordered provider/model fallback chain, first available wins. */
+  aliases: Record<string, string[]>;
+}
+
 export interface FabricConfig {
   fullCodeMode: boolean;
   executor: FabricExecutorConfig;
@@ -252,6 +258,7 @@ export interface FabricConfig {
   mcp: FabricMcpConfig;
   prewalk: FabricPrewalkConfig;
   agents: FabricAgentConfig;
+  models: FabricModelsConfig;
   components: FabricComponentEntry[];
   capture: FabricToolCaptureConfig;
   ui: FabricUiConfig;
@@ -390,6 +397,9 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     actorQueueLimit: 32,
     eventContextChars: 40_000,
     actorContextEntries: 14,
+  },
+  models: {
+    aliases: {},
   },
   memory: {
     enabled: true,
@@ -589,6 +599,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const retention = objectValue(input.retention);
   const mesh = objectValue(input.mesh);
   const memory = objectValue(input.memory);
+  const modelsSection = objectValue(input.models);
   const schema = objectValue(input.schema);
   const schemaMode = schemaModeValue(schema.mode, DEFAULT_FABRIC_CONFIG.schema.mode);
   const configuredExecutorRuntime = executorRuntimeValue(
@@ -980,6 +991,9 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         1,
         100,
       ),
+    },
+    models: {
+      aliases: normalizeModelAliases(modelsSection.aliases),
     },
     memory: {
       enabled: booleanValue(memory.enabled, DEFAULT_FABRIC_CONFIG.memory.enabled),

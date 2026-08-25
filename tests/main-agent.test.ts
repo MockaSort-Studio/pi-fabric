@@ -177,3 +177,58 @@ describe("MainAgentController", () => {
     ).toThrow(/owned by another/);
   });
 });
+
+describe("MainAgentController.switchModel", () => {
+  const buildContext = (found: unknown): ExtensionContext =>
+    ({
+      modelRegistry: { find: vi.fn(() => found) },
+    }) as unknown as ExtensionContext;
+
+  it("switches through pi.setModel with the registry model", async () => {
+    const model = { provider: "google", id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" };
+    const setModel = vi.fn(async () => true);
+    const pi = { setModel } as unknown as ExtensionAPI;
+    const controller = new MainAgentController(pi, "session:root", true, "/tmp/project", "root");
+    const context = buildContext(model);
+
+    await expect(
+      controller.switchModel({ provider: "google", id: "gemini-2.5-flash" }, context),
+    ).resolves.toEqual({ ok: true });
+    expect(setModel).toHaveBeenCalledWith(model);
+  });
+
+  it("fails when the registry cannot resolve the model", async () => {
+    const setModel = vi.fn(async () => true);
+    const pi = { setModel } as unknown as ExtensionAPI;
+    const controller = new MainAgentController(pi, "session:root", true, "/tmp/project", "root");
+
+    await expect(
+      controller.switchModel({ provider: "cohere", id: "command-r" }, buildContext(undefined)),
+    ).resolves.toEqual({ ok: false, error: "Model is not available: cohere/command-r" });
+    expect(setModel).not.toHaveBeenCalled();
+  });
+
+  it("fails when the host rejects the switch for missing authentication", async () => {
+    const model = { provider: "google", id: "gemini-2.5-flash" };
+    const setModel = vi.fn(async () => false);
+    const pi = { setModel } as unknown as ExtensionAPI;
+    const controller = new MainAgentController(pi, "session:root", true, "/tmp/project", "root");
+
+    await expect(
+      controller.switchModel({ provider: "google", id: "gemini-2.5-flash" }, buildContext(model)),
+    ).resolves.toEqual({
+      ok: false,
+      error: "No authentication configured for model: google/gemini-2.5-flash",
+    });
+  });
+
+  it("refuses remote Main targets", async () => {
+    const pi = {} as unknown as ExtensionAPI;
+    const controller = new MainAgentController(pi, "session:peer", false, "/tmp/project", "peer");
+
+    await expect(
+      controller.switchModel({ provider: "google", id: "gemini-2.5-flash" }, buildContext(undefined)),
+    ).resolves.toMatchObject({ ok: false, error: expect.stringContaining("another Fabric process") });
+  });
+});
+

@@ -70,6 +70,12 @@ Treat `node-process` as an explicit escape hatch for trusted code. It offers no 
     "alwaysRearm": false,
     "detectShellWrites": true
   },
+  "models": {
+    "aliases": {
+      "cheap": "google/gemini-2.5-flash",
+      "budget": ["openai/gpt-5-mini", "google/gemini-2.5-flash"]
+    }
+  },
   "agents": {
     "enabled": true,
     "runner": "pi",
@@ -169,6 +175,21 @@ Unknown definitions stay visible as waiting. They do not fail the Fabric runtime
 `prewalk.compactOnReturn` defaults to `true`. When an in-place continuation settles, Fabric requests a compaction with the configured `compaction.engine` and commits it while the executor is still the active model. Main's restored model receives the compacted transcript. Set this option to `false` when Main must receive the complete transcript.
 
 Each in-place handoff captures Main's active model at the boundary and restores it when the continuation settles. Pi's public `setModel` extension API also updates Pi's default model setting, so the restore returns the configured default to Main's model as well. A session that ends mid-continuation keeps the executor selection persisted until the next settle.
+
+## Models
+
+`models.aliases` names model selectors for `agents.switchModel` (see [Agents](agents.md#switching-mains-session-model)). Each alias is either one `provider/model` target or an ordered fallback chain; switching walks the chain and uses the first authenticated target. Alias names match case-insensitively and take priority over bare model ids. Aliases live in normal Fabric configuration, so a project `.pi/fabric.json` can extend the agent-level `fabric.json`; entries with malformed names or targets are ignored at load.
+
+```json
+{
+  "models": {
+    "aliases": {
+      "cheap": "google/gemini-2.5-flash",
+      "budget": ["openai/gpt-5-mini", "google/gemini-2.5-flash"]
+    }
+  }
+}
+```
 
 ## Result formatting
 

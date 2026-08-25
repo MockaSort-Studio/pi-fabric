@@ -192,6 +192,19 @@ Each run gets an isolated `fabric-<run-id>` Veda session through `-S` and `--no-
 
 Veda children do not have recursive Fabric capabilities. Fabric rejects `recursive: true`. Veda does not support steering, so steer and follow-up calls throw when called. It also cannot run persistent actors because each invocation executes one headless prompt. Use `runner: "pi"` when you need recursive Fabric or persistent coordination.
 
+### Switching Main's session model
+
+`agents.switchModel` changes the live Pi session model in place and keeps it there:
+
+```ts
+await agents.switchModel({ model: "anthropic/claude-opus-4-5" });
+await agents.switchModel({ model: "cheap" });
+```
+
+The selector resolves in order: a `models.aliases` entry (a string alias is one target; an array is a fallback chain where the first authenticated target wins), an exact `provider/id`, an exact model id, then a single partial match against provider, id, or display name. An optional `provider` argument narrows every stage. Ambiguous partial matches and exhausted alias chains throw with the candidate list; the session model stays unchanged. `agents.models()` enumerates the authenticated registry entries this resolution runs against. The result reports the active model, the previous one, and the alias used; a call naming the active model returns `{ switched: false, reason: "already-active" }`. The switch applies to the next model turn and later, unlike `prewalk`, which temporarily installs an executor model at a mutation boundary and then restores the boundary model.
+
+This is the host-level equivalent of the `pi-model-switch` extension's `switch_model` tool, with aliases moved into Fabric configuration so project and agent scopes behave like every other Fabric section.
+
 ### Transports
 
 | Transport   | Operation                                                     | Command to attach            |

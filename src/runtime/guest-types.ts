@@ -594,6 +594,23 @@ interface FabricActorInfo {
   sessionFile?: string;
   logDir?: string;
 }
+interface FabricModelSwitchRequest {
+  /** provider/id, a models.aliases name, or a search term; resolution tries aliases first, then exact and single partial matches against authenticated models. */
+  model: string;
+  /** Optional provider filter applied before matching (e.g. "anthropic"). */
+  provider?: string;
+}
+interface FabricModelSwitchResult {
+  switched: boolean;
+  /** Active model as provider/id after the call (unchanged when reason is "already-active"). */
+  model: string;
+  name?: string;
+  /** Previously active provider/id when known. Absent for already-active results. */
+  previous?: string;
+  /** Set when the selector resolved through a configured models.aliases name. */
+  alias?: string;
+  reason?: "already-active";
+}
 interface FabricActorMessage {
   id: string;
   actorId: string;
@@ -637,6 +654,7 @@ interface FabricAgentsApi {
   cleanup(args: FabricAgentTargetArgs & { deleteBranch?: boolean; delete_branch?: boolean }): Promise<{ cleaned: boolean }>;
   create(args: FabricActorRequest): Promise<FabricActorInfo>;
   setModel(args: { id: string; model?: string; scope?: FabricActorBindingScope }): Promise<FabricActorInfo>;
+  switchModel(args: FabricModelSwitchRequest): Promise<FabricModelSwitchResult>;
   setThinking(args: { id: string; thinking?: FabricThinking; scope?: FabricActorBindingScope }): Promise<FabricActorInfo>;
   setTools(args: { id: string; tools: string[]; scope?: "project" | "global" }): Promise<FabricActorInfo>;
   setEvents(args: { id: string; events: FabricActorHostEvent[] }): Promise<FabricActorInfo>;

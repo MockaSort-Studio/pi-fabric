@@ -11,7 +11,7 @@ import type {
   FabricLifecycleEvent,
   FabricLifecycleSubscription,
 } from "../src/lifecycle/types.js";
-import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
+import { DEFAULT_FABRIC_CONFIG, type FabricModelsConfig } from "../src/config.js";
 import type {
   FabricMainAgentDeliveryRequest,
   FabricMainAgentTarget,
@@ -57,6 +57,10 @@ const setup = (
   peers: FabricPeerInfo[] = [],
   members: FabricParticipantInfo[] = [],
   control?: FabricControlPlane,
+  options?: {
+    switchModel?: FabricMainAgentTarget["switchModel"];
+    modelsConfig?: FabricModelsConfig;
+  },
 ) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-agents-provider-"));
   roots.push(root);
@@ -101,6 +105,7 @@ const setup = (
         routed: "main" as const,
       };
     },
+    ...(options?.switchModel ? { switchModel: options.switchModel } : {}),
   };
   const actors = new ActorManager("test", identity, mesh, meshConfig, agents, () => {}, {
     actorRoot: path.join(root, "actors"),
@@ -159,6 +164,10 @@ const setup = (
     participants,
     control,
     lifecycle,
+    undefined,
+    undefined,
+    undefined,
+    () => options?.modelsConfig ?? DEFAULT_FABRIC_CONFIG.models,
   );
   return { root, actors, globalActors, provider, mainDeliveries };
 };
@@ -1870,3 +1879,139 @@ describe("collectAgentToolPreviewNodes", () => {
     expect(nodes[0]).toMatchObject({ owner: "actor", name: "mailbox-bot" });
   });
 });
+
+describe("AgentsProvider switchModel", () => {
+  const registryModels = [
+    { provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus 4.5" },
+    { provider: "google", id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+    { provider: "google", id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+  ];
+
+  const modelContext = (current?: { provider: string; id: string }): FabricInvocationContext => ({
+    ...context,
+    extensionContext: {
+      modelRegistry: { getAvailable: () => registryModels },
+      ...(current ? { model: current } : {}),
+    } as unknown as ExtensionContext,
+  });
+
+  it("describes the action with a required model selector", async () => {
+    const { provider } = setup();
+    const descriptor = await provider.describe("switchModel", context);
+    expect(descriptor?.inputSchema).toMatchObject({ required: ["model"] });
+    expect(descriptor?.risk).toBe("agent");
+  });
+
+  it("switches an exact provider/id and reports the previous model", async () => {
+    const switchModel = vi.fn(async () => ({ ok: true }));
+    const { provider } = setup([], [], undefined, {
+      switchModel: switchModel as FabricMainAgentTarget["switchModel"],
+    });
+    const invocation = modelContext({ provider: "anthropic", id: "claude-opus-4-5" });
+    const result = await provider.invoke(
+      "switchModel",
+      { model: "google/gemini-2.5-flash" },
+      invocation,
+    );
+    expect(result).toEqual({
+      switched: true,
+      model: "google/gemini-2.5-flash",
+      name: "Gemini 2.5 Flash",
+      previous: "anthropic/claude-opus-4-5",
+    });
+    expect(switchModel).toHaveBeenCalledWith(
+      { provider: "google", id: "gemini-2.5-flash" },
+      invocation.extensionContext,
+    );
+  });
+
+  it("resolves aliases configured in models.aliases with fallback chains", async () => {
+    const switchModel = vi.fn(async () => ({ ok: true }));
+    const { provider } = setup([], [], undefined, {
+      switchModel: switchModel as FabricMainAgentTarget["switchModel"],
+      modelsConfig: { aliases: { budget: ["cohere/command-r", "google/gemini-2.5-pro"] } },
+    });
+    const result = await provider.invoke(
+      "switchModel",
+      { model: "Budget" },
+      modelContext(),
+    );
+    expect(result).toMatchObject({
+      switched: true,
+      model: "google/gemini-2.5-pro",
+      alias: "budget",
+    });
+  });
+
+  it("keeps the current model when the selector is already active", async () => {
+    const switchModel = vi.fn(async () => ({ ok: true }));
+    const { provider } = setup([], [], undefined, {
+      switchModel: switchModel as FabricMainAgentTarget["switchModel"],
+    });
+    const result = await provider.invoke(
+      "switchModel",
+      { model: "claude-opus" },
+      modelContext({ provider: "anthropic", id: "claude-opus-4-5" }),
+    );
+    expect(result).toEqual({
+      switched: false,
+      reason: "already-active",
+      model: "anthropic/claude-opus-4-5",
+      name: "Claude Opus 4.5",
+    });
+    expect(switchModel).not.toHaveBeenCalled();
+  });
+
+  it("rejects ambiguous partial matches with the candidate list", async () => {
+    const switchModel = vi.fn(async () => ({ ok: true }));
+    const { provider } = setup([], [], undefined, {
+      switchModel: switchModel as FabricMainAgentTarget["switchModel"],
+    });
+    await expect(
+      provider.invoke("switchModel", { model: "gemini" }, modelContext()),
+    ).rejects.toThrow(/matches multiple models: google\/gemini-2\.5-flash, google\/gemini-2\.5-pro/);
+    expect(switchModel).not.toHaveBeenCalled();
+  });
+
+  it("rejects unknown selectors and exhausted alias chains", async () => {
+    const { provider } = setup([], [], undefined, {
+      switchModel: vi.fn(async () => ({ ok: true })) as FabricMainAgentTarget["switchModel"],
+      modelsConfig: { aliases: { budget: ["cohere/command-r", "mistral/mistral-large"] } },
+    });
+    await expect(
+      provider.invoke("switchModel", { model: "cohere/command-r" }, modelContext()),
+    ).rejects.toThrow(/no available model matching "cohere\/command-r"/);
+    await expect(
+      provider.invoke("switchModel", { model: "budget" }, modelContext()),
+    ).rejects.toThrow(/Tried: cohere\/command-r, mistral\/mistral-large/);
+  });
+
+  it("surfaces host switch failures as errors", async () => {
+    const { provider } = setup([], [], undefined, {
+      switchModel: vi.fn(async () => ({
+        ok: false,
+        error: "No authentication configured for model: google/gemini-2.5-flash",
+      })) as FabricMainAgentTarget["switchModel"],
+    });
+    await expect(
+      provider.invoke("switchModel", { model: "google/gemini-2.5-flash" }, modelContext()),
+    ).rejects.toThrow(/No authentication configured/);
+  });
+
+  it("rejects when Main is not a local host with model control", async () => {
+    const { provider } = setup();
+    await expect(
+      provider.invoke("switchModel", { model: "google/gemini-2.5-flash" }, modelContext()),
+    ).rejects.toThrow(/requires a local Main session/);
+  });
+
+  it("requires a non-empty model selector", async () => {
+    const { provider } = setup([], [], undefined, {
+      switchModel: vi.fn(async () => ({ ok: true })) as FabricMainAgentTarget["switchModel"],
+    });
+    await expect(
+      provider.invoke("switchModel", { model: "  " }, modelContext()),
+    ).rejects.toThrow(/requires a model selector/);
+  });
+});
+

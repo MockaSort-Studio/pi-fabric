@@ -51,6 +51,8 @@ import type {
   AgentSessionSeed,
 } from "../agents/types.js";
 import type { ThinkingTransferInput } from "../agents/thinking-transfer.js";
+import { DEFAULT_FABRIC_CONFIG, type FabricModelsConfig } from "../config.js";
+import { resolveFabricModel, type FabricModelCandidate } from "../core/model-resolution.js";
 import { AGENTS_ACTION_DESCRIPTORS } from "./agents-actions.js";
 import { actionArgNormalizer } from "./arg-normalization.js";
 import { isFabricThinking } from "../thinking.js";
@@ -600,6 +602,7 @@ export class AgentsProvider implements FabricProvider {
     readonly agentToolPreviewEnabled: () => boolean = () => true,
     readonly residency?: ResidencyClient,
     readonly ownsRuntime = true,
+    readonly modelsConfig: () => FabricModelsConfig = () => DEFAULT_FABRIC_CONFIG.models,
   ) {}
 
   async list(
@@ -884,6 +887,87 @@ export class AgentsProvider implements FabricProvider {
         } catch {
           return [];
         }
+      }
+      case "switchModel": {
+        const query = typeof args.model === "string" ? args.model.trim() : "";
+        if (!query) {
+          throw new Error(
+            "agents.switchModel requires a model selector: provider/id, models.aliases name, or search term",
+          );
+        }
+        const registry = context.extensionContext.modelRegistry;
+        let available: FabricModelCandidate[] = [];
+        try {
+          available = registry.getAvailable().map((model) => ({
+            provider: String(model.provider),
+            id: String(model.id),
+            ...(typeof model.name === "string" ? { name: model.name } : {}),
+          }));
+        } catch {
+          available = [];
+        }
+        if (available.length === 0) {
+          throw new Error(
+            "agents.switchModel found no authenticated models; configure a provider key or check agents.models()",
+          );
+        }
+        const currentModel = context.extensionContext.model ?? undefined;
+        const resolution = resolveFabricModel(query, {
+          aliases: this.modelsConfig().aliases,
+          available,
+          ...(currentModel
+            ? { current: { provider: currentModel.provider, id: currentModel.id } }
+            : {}),
+          ...(typeof args.provider === "string" && args.provider.trim()
+            ? { provider: args.provider.trim() }
+            : {}),
+        });
+        if (resolution.kind === "already-active") {
+          return {
+            switched: false,
+            reason: "already-active",
+            model: `${resolution.model.provider}/${resolution.model.id}`,
+            ...(resolution.model.name ? { name: resolution.model.name } : {}),
+          };
+        }
+        if (resolution.kind === "ambiguous") {
+          throw new Error(
+            `agents.switchModel: "${query}" matches multiple models: ${resolution.candidates
+              .map((candidate) => `${candidate.provider}/${candidate.id}`)
+              .join(", ")}. Pass an exact provider/id.`,
+          );
+        }
+        if (resolution.kind === "not-found") {
+          throw new Error(
+            resolution.tried !== undefined
+              ? `agents.switchModel: alias "${query}" has no available target. Tried: ${resolution.tried.join(", ")}`
+              : `agents.switchModel: no available model matching "${query}"`,
+          );
+        }
+        if (typeof this.mainAgent.switchModel !== "function") {
+          throw new Error("agents.switchModel requires a local Main session");
+        }
+        const previous = currentModel
+          ? `${currentModel.provider}/${currentModel.id}`
+          : undefined;
+        const outcome = await this.mainAgent.switchModel(
+          { provider: resolution.model.provider, id: resolution.model.id },
+          context.extensionContext,
+        );
+        if (!outcome.ok) {
+          throw new Error(`agents.switchModel: ${outcome.error ?? "switch failed"}`);
+        }
+        context.activity?.({
+          type: "progress",
+          message: `Main model ${previous ? `${previous} → ` : ""}${resolution.model.provider}/${resolution.model.id}`,
+        });
+        return {
+          switched: true,
+          model: `${resolution.model.provider}/${resolution.model.id}`,
+          ...(resolution.model.name ? { name: resolution.model.name } : {}),
+          ...(previous ? { previous } : {}),
+          ...(resolution.via !== undefined ? { alias: resolution.via } : {}),
+        };
       }
       case "stop":
         return this.stopParticipant(String(args.id));

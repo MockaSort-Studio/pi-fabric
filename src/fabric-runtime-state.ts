@@ -31,6 +31,7 @@ import type {
   FabricComponentInfo,
 } from "./components/types.js";
 import {
+  DEFAULT_FABRIC_CONFIG,
   loadFabricConfig,
   type FabricConfig,
   type FabricResultFormat,
@@ -714,6 +715,7 @@ export class FabricRuntimeState {
       () => this.#config?.ui.showAgentToolPreview ?? true,
       this.#residency,
       false,
+      () => this.#config?.models ?? DEFAULT_FABRIC_CONFIG.models,
     );
     this.#agentsProvider = agentsProvider;
     this.#control.start((command, from, signal) =>

@@ -34,6 +34,26 @@ afterEach(() => {
 });
 
 describe("Fabric configuration", () => {
+  it("normalizes models.aliases into fallback chains", () => {
+    expect(DEFAULT_FABRIC_CONFIG.models.aliases).toEqual({});
+    expect(normalizeFabricConfig({}).models.aliases).toEqual({});
+    expect(
+      normalizeFabricConfig({
+        models: {
+          aliases: {
+            cheap: "google/gemini-2.5-flash",
+            budget: ["openai/gpt-5-mini", "google/gemini-2.5-flash"],
+            broken: "not-a-model",
+            empty: [],
+          },
+        },
+      }).models.aliases,
+    ).toEqual({
+      cheap: ["google/gemini-2.5-flash"],
+      budget: ["openai/gpt-5-mini", "google/gemini-2.5-flash"],
+    });
+  });
+
   it("normalizes declarative component entries", () => {
     expect(DEFAULT_FABRIC_CONFIG.components).toEqual([]);
     const config = normalizeFabricConfig({

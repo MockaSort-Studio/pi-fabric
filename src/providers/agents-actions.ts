@@ -273,6 +273,24 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
     risk: "execute",
   },
   {
+    name: "switchModel",
+    description:
+      "Switch Main's live Pi session model in place. The model selector accepts an exact provider/id, a configured models.aliases name (alias chains try each target in order until one is authenticated), an exact model id, or a search term with exactly one match.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        model: {
+          type: "string",
+          description: "provider/id, alias name, or search term",
+        },
+        provider: { type: "string" },
+      },
+      required: ["model"],
+      additionalProperties: false,
+    },
+    risk: "agent",
+  },
+  {
     name: "stop",
     description: "Stop a local or remotely owned agent or actor that advertises the stop capability",
     inputSchema: idSchema,

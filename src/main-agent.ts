@@ -37,12 +37,23 @@ export interface FabricAgentMessageResult {
   acknowledged?: boolean;
 }
 
+export interface FabricMainModelSwitchResult {
+  ok: boolean;
+  error?: string;
+}
+
 export interface FabricMainAgentTarget {
   readonly id: string;
   readonly local: boolean;
   matches(id: string): boolean;
   info(context?: ExtensionContext): FabricMainAgentInfo;
   deliverAgent(request: FabricMainAgentDeliveryRequest): FabricAgentMessageResult;
+  // Switch Main's live session model in place. Only local hosts hold the pi
+  // extension session required for the mutation, so remote targets omit it.
+  switchModel?(
+    target: { provider: string; id: string },
+    context: ExtensionContext,
+  ): Promise<FabricMainModelSwitchResult>;
 }
 
 export interface FabricIdentityResolution {
@@ -128,6 +139,21 @@ export class MainAgentController implements FabricMainAgentTarget {
       pendingMessages: this.local ? (context?.hasPendingMessages() ?? false) : false,
       local: this.local,
     };
+  }
+
+  async switchModel(
+    target: { provider: string; id: string },
+    context: ExtensionContext,
+  ): Promise<FabricMainModelSwitchResult> {
+    if (!this.local) {
+      return { ok: false, error: `Main agent ${this.id} is owned by another Fabric process` };
+    }
+    const key = `${target.provider}/${target.id}`;
+    const model = context.modelRegistry.find(target.provider, target.id);
+    if (!model) return { ok: false, error: `Model is not available: ${key}` };
+    const switched = await this.pi.setModel(model);
+    if (!switched) return { ok: false, error: `No authentication configured for model: ${key}` };
+    return { ok: true };
   }
 
   deliverUser(message: string, delivery: FabricAgentMessageDelivery): FabricAgentMessageResult {
