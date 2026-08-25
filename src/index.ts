@@ -480,6 +480,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   pi.on("turn_end", async (event, context) => {
     // Furnace feedback: did the just-fired advisory lead to captured tool use?
     capabilityAdvisor.endTurn();
+    // Speculation never crosses a turn boundary; registry.endInvocation already
+    // dropped entries for completed fabric_exec runs, this catches turns where
+    // the program never executed (type errors, aborts).
+    if (state.initialized) state.resetSpeculation();
     if (state.initialized) await state.publishHostLifecycle("pi.turn_end", event);
   });
 
@@ -516,6 +520,17 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     await state.compact.maybeCommit(context);
     await compactAtConfiguredThreshold(context, state.config);
     await state.publishHostLifecycle("pi.agent_settled", event);
+  });
+
+  // Speculative PTC: follow fabric_exec argument streaming and pre-launch
+  // literal-argument read calls so their latency hides behind generation.
+  pi.on("message_start", () => {
+    state.speculationTap?.reset();
+  });
+
+  pi.on("message_update", (event, context) => {
+    if (!state.initialized) return;
+    state.speculationTap?.handleMessageUpdate(event, context);
   });
 
   pi.on("tool_call", (event, context) =>

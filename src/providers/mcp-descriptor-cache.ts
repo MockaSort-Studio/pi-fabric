@@ -13,11 +13,19 @@ export interface McpConfigLayerStat {
   size: number;
 }
 
+interface CachedMcpToolAnnotations {
+  readOnlyHint?: boolean;
+  idempotentHint?: boolean;
+  destructiveHint?: boolean;
+  openWorldHint?: boolean;
+}
+
 interface CachedMcpTool {
   name: string;
   description?: string;
   inputSchema?: unknown;
   outputSchema?: unknown;
+  annotations?: CachedMcpToolAnnotations;
 }
 
 export interface CachedMcpServer {

@@ -39,11 +39,24 @@ import {
 import {
   ActionRegistry,
   type FabricCapabilityViewLease,
+  type ResolvedFabricAction,
 } from "./core/action-registry.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
 import { CompactController, type CompactLastCommit, type CompactPendingIntent } from "./core/compact-controller.js";
 import { FabricToolResultProxy } from "./core/tool-result-proxy.js";
 import { FabricExecutionService, type FabricExecutionResult } from "./execution-service.js";
+import {
+  isSpeculationEligible,
+  mcpAllowlistMatch,
+  TIER_A_SPECULATION_REFS,
+} from "./speculation/eligibility.js";
+import { createFreshnessChecker } from "./speculation/freshness.js";
+import { FabricSpeculationStore } from "./speculation/store.js";
+import { FabricSpeculationStreamTap } from "./speculation/stream-tap.js";
+import type {
+  FabricSpeculationCandidate,
+  FabricSpeculationReplay,
+} from "./speculation/types.js";
 import { MeshStore, type MeshIdentity } from "./mesh/store.js";
 import { LifecycleBroker } from "./lifecycle/broker.js";
 import type { FabricLifecycleEventType } from "./lifecycle/types.js";
@@ -89,6 +102,7 @@ import {
   FABRIC_PROVIDER_DISCOVER_EVENT,
   type FabricActionDescriptor,
   type FabricComponentDiscovery,
+  type FabricInvocationContext,
   type FabricProvider,
   type FabricProviderDiscovery,
 } from "./protocol.js";
@@ -129,6 +143,8 @@ export class FabricRuntimeState {
   #mcpProvider: McpProvider | undefined;
   #config: FabricConfig | undefined;
   #execution: FabricExecutionService | undefined;
+  #speculationStore: FabricSpeculationStore | undefined;
+  #speculationTap: FabricSpeculationStreamTap | undefined;
   #agents: AgentManager | undefined;
   #actors: ActorManager | undefined;
   #globalActors: GlobalActorRegistry | undefined;
@@ -198,6 +214,99 @@ export class FabricRuntimeState {
   get config(): FabricConfig {
     if (!this.#config) throw new Error("Pi Fabric has not initialized");
     return this.#config;
+  }
+
+  /** Stream tap for speculative PTC; undefined when speculation is disabled. */
+  get speculationTap(): FabricSpeculationStreamTap | undefined {
+    return this.#speculationTap;
+  }
+
+  /** Turn-boundary backstop: tap state and unserved entries never outlive a turn. */
+  resetSpeculation(): void {
+    this.#speculationTap?.reset();
+    this.#speculationStore?.reset();
+  }
+
+  // Speculative PTC: the store is the epoch-checked promise cache consumed by
+  // ActionRegistry.invoke; the tap watches fabric_exec argument streaming and
+  // launches literal-args Tier-A calls early (docs/speculation.md).
+  #wireSpeculation(): void {
+    const config = this.#config;
+    const registry = this.#registry;
+    if (!config || !registry || !config.speculation.enabled) return;
+    const { speculation } = config;
+    const store = new FabricSpeculationStore(speculation);
+    registry.setSpeculation(store, (action: ResolvedFabricAction) =>
+      isSpeculationEligible(
+        {
+          ref: action.ref,
+          provider: action.provider,
+          risk: action.risk,
+          effectKind: action.effect?.kind,
+          ...(action.annotations ? { annotations: action.annotations } : {}),
+        },
+        speculation.mcpAllowlist,
+      ));
+    this.#speculationStore = store;
+    this.#speculationTap = new FabricSpeculationStreamTap({
+      enabled: () => this.#config?.speculation.enabled === true,
+      maxBufferBytes: () => this.#config?.speculation.maxBufferBytes ?? 2 * 1024 * 1024,
+      isEligible: (ref) =>
+        TIER_A_SPECULATION_REFS.has(ref) ||
+        (ref.startsWith("mcp.") &&
+          mcpAllowlistMatch(
+            ref.slice("mcp.".length),
+            this.#config?.speculation.mcpAllowlist ?? [],
+          )),
+      launch: (toolCallId, candidate, extensionContext) => {
+        void this.#launchSpeculation(toolCallId, candidate, extensionContext).catch(
+          () => undefined,
+        );
+      },
+    });
+    // The scanner pulls in the TypeScript compiler; load it in the background
+    // so session startup never pays. Streams that open first are re-scanned in
+    // full once the factory lands (their extractors buffered the prefix).
+    void import("./speculation/scanner.js").then(
+      (module) => {
+        this.#speculationTap?.setScannerFactory(() => new module.LiteralCallScanner());
+      },
+      () => undefined,
+    );
+  }
+
+  async #launchSpeculation(
+    toolCallId: string,
+    candidate: FabricSpeculationCandidate,
+    context: ExtensionContext,
+  ): Promise<void> {
+    const registry = this.#registry;
+    const store = this.#speculationStore;
+    if (!registry || !store || this.#config?.speculation.enabled !== true) return;
+    const replay: FabricSpeculationReplay = {};
+    const lightContext: FabricInvocationContext = {
+      cwd: context.cwd,
+      signal: undefined,
+      parentToolCallId: toolCallId,
+      nestedToolCallId: "fabric-speculation",
+      extensionContext: context,
+      update() {},
+    };
+    const speculation = await registry.speculate(
+      candidate.ref,
+      candidate.args,
+      lightContext,
+      replay,
+    );
+    if (!speculation) return;
+    store.launch(
+      toolCallId,
+      candidate.ref,
+      speculation.preparedArgs,
+      speculation.execute,
+      createFreshnessChecker(candidate.ref, speculation.preparedArgs, context.cwd),
+      replay,
+    );
   }
 
   get registry(): ActionRegistry {
@@ -298,6 +407,10 @@ export class FabricRuntimeState {
     this.prewalk.cancel();
     this.prewalkDrift.clear();
     context.ui.setStatus("fabric-prewalk", undefined);
+    this.#speculationTap?.reset();
+    this.#speculationStore?.reset();
+    this.#speculationTap = undefined;
+    this.#speculationStore = undefined;
     this.activity.reset();
     this.sessionApprovals.approvedRisks.clear();
     this.#cwd = context.cwd;
@@ -310,6 +423,7 @@ export class FabricRuntimeState {
     this.#registry = new ActionRegistry(
       new FabricToolResultProxy(() => this.capturedTools.runner),
     );
+    this.#wireSpeculation();
     this.#unsubscribeCapturedCatalog = this.capturedTools.subscribe(() =>
       this.#registry?.notifyCatalogChanged("extensions"),
     );

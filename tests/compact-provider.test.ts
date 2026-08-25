@@ -26,7 +26,7 @@ const setup = (): { controller: CompactController; provider: CompactProvider } =
 };
 
 describe("CompactProvider", () => {
-  it("exposes request (write), status (read), and cancel (read) descriptors", async () => {
+  it("exposes request (write), status (read), and cancel (write) descriptors", async () => {
     const { provider } = setup();
     const listed = await provider.list({}, context);
     const names = listed.map((d) => d.name);
@@ -34,7 +34,7 @@ describe("CompactProvider", () => {
     const byName = new Map(listed.map((d) => [d.name, d]));
     expect(byName.get("request")?.risk).toBe("write");
     expect(byName.get("status")?.risk).toBe("read");
-    expect(byName.get("cancel")?.risk).toBe("read");
+    expect(byName.get("cancel")?.risk).toBe("write");
   });
 
   it("describe returns each action by name and undefined otherwise", async () => {

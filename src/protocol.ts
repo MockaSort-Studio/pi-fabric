@@ -169,6 +169,14 @@ export interface FabricActionEffect {
   resources?: string[];
   ordering?: FabricEffectOrdering;
 }
+
+/** MCP tool annotations (Model Context Protocol ToolAnnotations), cached when a runtime surfaces them. */
+export interface FabricToolAnnotations {
+  readOnlyHint?: boolean;
+  idempotentHint?: boolean;
+  destructiveHint?: boolean;
+  openWorldHint?: boolean;
+}
 export type FabricActivityEntityKind =
   | "agent"
   | "actor"
@@ -198,6 +206,7 @@ export interface FabricActionDescriptor {
   risk: FabricRisk;
   namespace?: string;
   effect?: FabricActionEffect;
+  annotations?: FabricToolAnnotations;
 }
 
 export interface FabricCapabilityActionHead {

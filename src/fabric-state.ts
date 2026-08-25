@@ -127,6 +127,12 @@ export class FabricState {
 
   get registry(): FabricRuntimeState["registry"] { return this.#required().registry; }
   get execution(): FabricRuntimeState["execution"] { return this.#required().execution; }
+
+  /** Speculative-PTC stream tap; undefined pre-init or when speculation is disabled. */
+  get speculationTap(): FabricRuntimeState["speculationTap"] { return this.#runtime?.speculationTap; }
+
+  /** Turn-boundary backstop for the speculation store; safe before initialization. */
+  resetSpeculation(): void { this.#runtime?.resetSpeculation(); }
   get agents(): FabricRuntimeState["agents"] { return this.#required().agents; }
   get actors(): FabricRuntimeState["actors"] { return this.#required().actors; }
   get globalActors(): FabricRuntimeState["globalActors"] { return this.#required().globalActors; }
