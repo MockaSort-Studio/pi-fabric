@@ -11,7 +11,11 @@ import type {
   FabricPeerInfo,
 } from "./types.js";
 
+import { peerLabelPrefix } from "./peer-settle.js";
+
 const PARTICIPANT_PREFIX = "topology/participants/";
+/** Project-scoped monotonic counter backing Linear-style peer labels. Never shrinks. */
+const PEER_SEQ_KEY = "topology/peer-seq";
 const HOST_PREFIX = "topology/hosts/";
 const LEGACY_SESSION_PREFIX = "sessions/";
 const LEGACY_ACTOR_PREFIX = "actors/";
@@ -110,7 +114,8 @@ const peerFromParticipant = (participant: FabricParticipantInfo): FabricPeerInfo
   }
   return {
     id: participant.id,
-    name: "Peer " + participant.sessionId.slice(0, 8),
+    name: participant.label ?? "Peer " + participant.sessionId.slice(0, 8),
+    ...(participant.label ? { label: participant.label } : {}),
     kind: "peer",
     status: participant.status,
     runner: "pi",
@@ -509,6 +514,8 @@ export class ParticipantDirectory implements FabricParticipantSource {
         desired.set(record.id, record);
       }
     }
+    // Mint before the local cache swap so self() exposes the label too.
+    await this.#ensurePeerLabels(desired);
     this.#localRecords.clear();
     for (const [id, record] of desired) this.#localRecords.set(id, record);
     if (!this.options.enabled) return;
@@ -543,7 +550,8 @@ export class ParticipantDirectory implements FabricParticipantSource {
         key: legacySessionKey,
         value: {
           id: root.id,
-          name: `Peer ${root.sessionId.slice(0, 8)}`,
+          name: root.label ?? `Peer ${root.sessionId.slice(0, 8)}`,
+          ...(root.label ? { label: root.label } : {}),
           kind: "peer",
           status: root.status === "running" ? "running" : "idle",
           runner: "pi",
@@ -621,6 +629,55 @@ export class ParticipantDirectory implements FabricParticipantSource {
       if (desired.has(participant.id)) continue;
       await this.mesh.delete({ key: entry.key, ifVersion: entry.version }).catch(() => undefined);
     }
+  }
+
+  /**
+   * Mint missing labels for this host's root participants. Labels persist in
+   * the peer's own participant record, so every session computes the same
+   * label and retired numbers are never reused even if a peer record dies.
+   */
+  async #ensurePeerLabels(desired: Map<string, FabricParticipantRecord>): Promise<void> {
+    if (!this.options.enabled) return;
+    for (const record of desired.values()) {
+      if (record.kind !== "root" || record.id !== this.options.rootId || record.label) continue;
+      const existingEntry = this.mesh.get(keyFor(PARTICIPANT_PREFIX, record.id));
+      const existing = existingEntry ? participantFromEntry(existingEntry) : undefined;
+      if (existing?.label) {
+        record.label = existing.label;
+        continue;
+      }
+      const seq = await this.#claimPeerSeq();
+      if (seq !== undefined) record.label = `${peerLabelPrefix(record.cwd)}-${seq}`;
+    }
+  }
+
+  /** CAS-claim the next project-wide peer sequence number. ifVersion 0 creates. */
+  async #claimPeerSeq(): Promise<number | undefined> {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const entry = this.mesh.get(PEER_SEQ_KEY);
+      const current =
+        entry && isObject(entry.value) &&
+        typeof entry.value.next === "number" &&
+        Number.isInteger(entry.value.next) &&
+        entry.value.next >= 1
+          ? entry.value.next
+          : 0;
+      try {
+        await this.mesh.put({
+          key: PEER_SEQ_KEY,
+          value: { format: 1, next: current + 1 },
+          identity: this.options.identity,
+          ifVersion: entry?.version ?? 0,
+        });
+        return current + 1;
+      } catch (error) {
+        // Only lost CAS races retry; offline/auth failures propagate.
+        if (!/compare-and-swap/.test(error instanceof Error ? error.message : String(error))) {
+          throw error;
+        }
+      }
+    }
+    return undefined;
   }
 
   #legacySessionKey(): string | undefined {

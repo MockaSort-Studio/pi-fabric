@@ -255,6 +255,17 @@ For Main and one-shot agents, `steer` arrives after the tool calls in the curren
 
 Local routing returns `"main"` or `"local"`. For cross-process `steer`, `followUp`, and `stop`, Fabric resolves the exact owner of the target. It sends a control command addressed to that owner and waits for an acknowledgement that matches the version, target, and owner identity. Success returns `routed: "mesh", acknowledged: true` after this verified acknowledgement. Unknown IDs, stale owners, rejection, and timeout throw an error. The dashboard actions `s`, `u`, and `x` use the same route. Set `mesh.enabled` to use cross-process control. See [`references/agents.md`](../skills/fabric-exec/references/agents.md).
 
+### Peer labels and queue gates
+
+Every root participant mints a project-scoped label such as `FAB-1` when it first publishes: the prefix derives from the project directory basename (initials for multi-word names, up to three letters for single-word names) and the number comes from a mesh-wide monotonic counter, so retired labels are never reused. Labels appear on participant records, peer projections, and the dashboard, giving other sessions' tooling a stable handle to show users in place of raw session ids.
+
+Two host-local, versioned events on `pi.events` let queue extensions coordinate with peers:
+
+- `pi-fabric:peers:cards:v1` claims and resolves with live peer cards (`{ id, label, status, model?, cwd?, startedAt, updatedAt, pendingMessages }`), sorted by creation time.
+- `pi-fabric:peer:await-settle:v1` claims and resolves once every watched peer (a `selector` label/id, or all peers when omitted) has been quiet for `settledForMs` (default 3s) since its last observed run. Peers that vanish from the mesh count as settled. The request accepts an `AbortSignal` for cancellation, and an optional `update` callback reports per-peer waiting status. Requests fail when the mesh is disabled.
+
+[pi-queue-steer](https://github.com/monotykamary/pi-queue-steer-factory) uses both: its `/fabric await LABEL` gate row holds queued rows until the target peers settle.
+
 ### Participant lifecycle subscriptions
 
 Use durable, source-qualified subscriptions when one participant must respond to the Pi or run lifecycle of another participant. Subscriptions differ from `agents.status()` because the host manages them across turns. The model does not need to poll.

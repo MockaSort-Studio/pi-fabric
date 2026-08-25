@@ -23,6 +23,11 @@ export interface FabricParticipantRecord {
   ownerIdentityId: string;
   parentId?: string;
   name: string;
+  /**
+   * Project-scoped Linear-style label (e.g. "PQS-2") minted once per root
+   * participant via the mesh peer sequence. Never reused after a peer leaves.
+   */
+  label?: string;
   status: string;
   residency?: FabricParticipantResidency;
   runner: FabricAgentRunner;
@@ -69,6 +74,8 @@ export interface FabricParticipantListOptions {
 export interface FabricPeerInfo {
   id: string;
   name: string;
+  /** Minted peer label when the owning host publishes one. */
+  label?: string;
   kind: "peer";
   status: "idle" | "running";
   runner: "pi";

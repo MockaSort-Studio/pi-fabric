@@ -137,7 +137,7 @@ describe("ParticipantDirectory", () => {
       "agent:grandchild",
     ]);
     expect(alpha.peers()).toMatchObject([
-      { id: "session:beta", name: "Peer beta", kind: "peer", local: false },
+      { id: "session:beta", name: "PRO-2", label: "PRO-2", kind: "peer", local: false },
     ]);
     expect(recursive.self()).toMatchObject({
       id: "agent:recursive",

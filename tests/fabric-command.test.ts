@@ -267,8 +267,7 @@ describe("/fabric command", () => {
     const pi = {
       events: {
         on: vi.fn((channel: string, handler: (value: unknown) => void) => {
-          expect(channel).toBe(FABRIC_PREWALK_REQUEST_EVENT);
-          requestHandler = handler;
+          if (channel === FABRIC_PREWALK_REQUEST_EVENT) requestHandler = handler;
           return unsubscribe;
         }),
       },
@@ -317,7 +316,9 @@ describe("/fabric command", () => {
     });
     expect(sendMessage).toHaveBeenCalled();
     shutdownHandler?.();
-    expect(unsubscribe).toHaveBeenCalledOnce();
+    // The mock keeps only the last session_shutdown handler: the peer
+    // protocol block that unsubscribes the cards and await listeners.
+    expect(unsubscribe).toHaveBeenCalledTimes(2);
   });
 
   it("skips the armed prompt when the identical one already persists", async () => {

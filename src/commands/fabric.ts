@@ -7,10 +7,15 @@ import { armFabricPrewalkSession } from "../prewalk/arm.js";
 import { truncateMiddle } from "../util.js";
 import type { FabricUiController } from "../ui/controller.js";
 import {
+  FABRIC_PEER_AWAIT_SETTLE_EVENT,
+  FABRIC_PEER_CARDS_EVENT,
   FABRIC_PREWALK_REQUEST_EVENT,
+  readFabricPeerAwaitSettleRequestV1,
+  readFabricPeerCardsRequestV1,
   readFabricPrewalkRequestV1,
   type FabricPrewalkRequestResultV1,
 } from "../protocol.js";
+import { awaitPeerSettle, buildPeerCards } from "../topology/peer-settle.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -162,6 +167,55 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
   });
   if (unsubscribePrewalkRequests) {
     pi.on("session_shutdown", () => unsubscribePrewalkRequests());
+  }
+
+  // Peer queuing protocol (used by pi-queue-steer): enumerate live peer root
+  // sessions and hold dispatch until they settle on the project mesh.
+  const unsubscribePeerCards = pi.events?.on?.(FABRIC_PEER_CARDS_EVENT, (value) => {
+    const request = readFabricPeerCardsRequestV1(value);
+    if (!request || !request.claim()) return;
+    void (async () => {
+      try {
+        await state.ensure(request.context);
+        request.respond({ ok: true, cards: buildPeerCards(state.peerInfos()) });
+      } catch (error) {
+        request.respond({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  });
+  const unsubscribePeerAwait = pi.events?.on?.(FABRIC_PEER_AWAIT_SETTLE_EVENT, (value) => {
+    const request = readFabricPeerAwaitSettleRequestV1(value);
+    if (!request || !request.claim()) return;
+    void (async () => {
+      try {
+        await state.ensure(request.context);
+        if (!state.config.mesh.enabled) {
+          request.respond({ ok: false, error: "Fabric mesh is disabled; peers cannot be observed" });
+          return;
+        }
+        request.respond(await awaitPeerSettle({
+          poll: () => state.peerInfos(),
+          ...(request.selector !== undefined ? { selector: request.selector } : {}),
+          ...(request.settledForMs !== undefined ? { settledForMs: request.settledForMs } : {}),
+          ...(request.signal ? { signal: request.signal } : {}),
+          ...(request.update ? { onUpdate: request.update } : {}),
+        }));
+      } catch (error) {
+        request.respond({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  });
+  if (unsubscribePeerCards || unsubscribePeerAwait) {
+    pi.on("session_shutdown", () => {
+      unsubscribePeerCards?.();
+      unsubscribePeerAwait?.();
+    });
   }
 
   pi.registerCommand("fabric", {
