@@ -1,7 +1,7 @@
 import type { FabricPeerInfo } from "./types.js";
 
 /** Quiet window after a peer's last observed activity before it counts as settled. */
-export const DEFAULT_PEER_SETTLED_FOR_MS = 3_000;
+const DEFAULT_PEER_SETTLED_FOR_MS = 3_000;
 const PEER_SETTLE_POLL_MS = 500;
 
 /**
@@ -48,7 +48,7 @@ export const buildPeerCards = (peers: readonly FabricPeerInfo[]): FabricPeerCard
 			pendingMessages: peer.pendingMessages,
 		}));
 
-export interface PeerSettleProgress {
+interface PeerSettleProgress {
 	waiting: Array<{ label: string; status: "idle" | "running" }>;
 }
 
