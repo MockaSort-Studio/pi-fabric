@@ -343,7 +343,7 @@ const summaryFor = (id: string, config: FabricConfig): string => {
     case "mcp":
       return config.mcp.enabled ? "enabled" : "disabled";
     case "prewalk":
-      return `${config.prewalk.mode} · ${config.prewalk.model || PREWALK_MODEL_UNSET_LABEL}${config.prewalk.thinking ? ` · ${thinkingLabel(config.prewalk.thinking)}` : ""}${config.prewalk.alwaysRearm ? " · repeat" : ""}`;
+      return `${config.prewalk.enabled === false ? "off · " : ""}${config.prewalk.mode} · ${config.prewalk.model || PREWALK_MODEL_UNSET_LABEL}${config.prewalk.thinking ? ` · ${thinkingLabel(config.prewalk.thinking)}` : ""}${config.prewalk.alwaysRearm ? " · repeat" : ""}`;
     case "agents":
       return `${config.agents.runner}/${config.agents.transport}`;
     case "capture":
@@ -1147,6 +1147,11 @@ export const buildFabricSettingsItems = (
         "Prewalk",
         "Automatic continuation at the completed outer fabric_exec boundary.",
         [
+          setting("prewalk.enabled", "Enabled", config.prewalk.enabled === false ? "false" : "true", {
+            description:
+              "Master switch for prewalk. When off, manual arming, session auto-arm, and boundary claims are all inert until re-enabled. Same effect as /fabric prewalk --disable and --enable; a live arm is cancelled on disable.",
+            values: BOOLEANS,
+          }),
           setting("prewalk.mode", "Mode", config.prewalk.mode, {
             description:
               "In-place temporarily switches Main to the executor, queues a hidden continuation, then returns to Main's previous model. Trajectory moves the session snapshot to a visible child executor, then queues a hidden verify-and-summarize continuation for Main when it finishes.",

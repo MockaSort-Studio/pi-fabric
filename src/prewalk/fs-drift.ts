@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { readdir, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -8,10 +9,12 @@ import { promisify } from "node:util";
 // file effects. While a session is armed, a bash-running boundary without an
 // audited mutation diffs the work tree against a per-session stat baseline
 // (size + mtimeMs per file, fovea-style); drift becomes a filesystem trigger
-// for the same claim pipeline. Content hashing is deliberately absent: stat
-// drift inside a single exec window is a strong enough trigger signal and
-// keeps baselines read-free; mtime-only churn inside that narrow window is
-// the accepted noise floor.
+// for the same claim pipeline. Baselines stay read-free; stat drift is
+// content-verified at evaluation time instead (fovea's capture/finish habit,
+// adapted): the first stat-drift window records each modified file's SHA-1,
+// and a later window whose content hash matches the recorded one is mtime-only
+// churn — formatter rewrites, touch — filtered out of the report. First
+// sightings still claim: at most one misfire per file per content state.
 //
 // Listing is git-index-backed when possible because `git ls-files -co
 // --exclude-standard` already honors every ignore layer, so build output in
@@ -25,11 +28,19 @@ const DEFAULT_MAX_TRACKED_FILES = 200_000;
 const MAX_REPORT_FILES = 100;
 const GIT_TIMEOUT_MS = 10_000;
 const STAT_CONCURRENCY = 32;
+// Content-verification budget: hash at most this many stat-modified files per
+// evaluation, and never a file larger than HASH_MAX_BYTES. Over-budget files
+// stay in the report unrecorded, failing open toward claiming.
+const MAX_HASH_FILES_PER_EVAL = 256;
+const HASH_MAX_BYTES = 16 << 20;
 const WALK_SKIP_DIRS = new Set([".git", "node_modules"]);
 
 interface FileStat {
   size: number;
   mtimeMs: number;
+  // Content SHA-1 recorded when a stat-drift window last hashed this file;
+  // used to filter later mtime-only churn. Absent until first drift.
+  sha1?: string;
 }
 
 interface DriftSnapshot {
@@ -46,6 +57,9 @@ export interface PrewalkFsDrift {
   added: number;
   modified: number;
   deleted: number;
+  // Stat-modified files excluded from the report because their content hash
+  // still matches the last recorded state (mtime-only churn).
+  unchanged: number;
 }
 
 const listGitFiles = async (
@@ -174,8 +188,9 @@ export class PrewalkDriftTracker {
     if (current.files.size === 0 && baseline.files.size > 0) return rebaseline();
     const files: string[] = [];
     let added = 0;
-    let modified = 0;
     let deleted = 0;
+    // Stat-modified files are only candidates until content-verified.
+    const candidates: Array<{ file: string; before: FileStat; entry: FileStat }> = [];
     for (const [file, now] of current.files) {
       const before = baseline.files.get(file);
       if (!before) {
@@ -184,8 +199,7 @@ export class PrewalkDriftTracker {
         continue;
       }
       if (before.size !== now.size || Math.abs(before.mtimeMs - now.mtimeMs) > 1e-6) {
-        modified += 1;
-        files.push(file);
+        candidates.push({ file, before, entry: now });
       }
     }
     for (const file of baseline.files.keys()) {
@@ -194,6 +208,8 @@ export class PrewalkDriftTracker {
         files.push(file);
       }
     }
+    const verified = await this.#verifyModified(current.root, candidates);
+    files.push(...verified.changed);
     this.#baselines.set(sessionId, current);
     if (files.length === 0) return undefined;
     const shown = files.slice(0, MAX_REPORT_FILES);
@@ -201,9 +217,56 @@ export class PrewalkDriftTracker {
       files: shown,
       truncated: files.length - shown.length,
       added,
-      modified,
+      modified: verified.changed.length,
       deleted,
+      unchanged: verified.unchanged,
     };
+  }
+
+  // Content-verify stat-modified files against the last hash this tracker
+  // recorded for them. The first stat-drift on a file teaches the fresh
+  // baseline its SHA-1 while still reporting the change; a later window whose
+  // recomputed hash matches the recorded one is mtime-only churn and leaves
+  // the report. Files past the per-evaluation hash budget or the per-file
+  // byte cap stay in the report unrecorded — baseline reads stay free and
+  // unverifiable drift fails open toward claiming.
+  async #verifyModified(
+    root: string,
+    candidates: Array<{ file: string; before: FileStat; entry: FileStat }>,
+  ): Promise<{ changed: string[]; unchanged: number }> {
+    const changed: string[] = [];
+    let unchanged = 0;
+    let hashBudget = MAX_HASH_FILES_PER_EVAL;
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < candidates.length) {
+        const candidate = candidates[cursor];
+        cursor += 1;
+        if (!candidate) continue;
+        const { file, before, entry } = candidate;
+        if (hashBudget <= 0 || entry.size > HASH_MAX_BYTES || before.size > HASH_MAX_BYTES) {
+          changed.push(file);
+          continue;
+        }
+        hashBudget -= 1;
+        let sha1: string;
+        try {
+          sha1 = createHash("sha1").update(await readFile(path.join(root, file))).digest("hex");
+        } catch {
+          // Vanished mid-window: fail open so churn is never silently swallowed.
+          changed.push(file);
+          continue;
+        }
+        entry.sha1 = sha1;
+        if (before.sha1 === sha1) {
+          unchanged += 1;
+          continue;
+        }
+        changed.push(file);
+      }
+    };
+    await Promise.all(Array.from({ length: STAT_CONCURRENCY }, () => worker()));
+    return { changed, unchanged };
   }
 
   drop(sessionId: string): void {

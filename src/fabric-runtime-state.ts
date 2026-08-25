@@ -958,6 +958,14 @@ export class FabricRuntimeState {
     next.schema.mode = this.#config.schema.mode;
     const previousComponents = structuredClone(this.#config.components);
     deepAssign(this.#config as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>);
+    // The persisted master switch wins over any live arm: disabling prewalk
+    // via /fabric settings (or an external config edit followed by a reload)
+    // cancels the arm so no later boundary can claim behind the user's back.
+    if (next.prewalk.enabled === false && this.prewalk.status().state !== "idle") {
+      this.prewalk.cancel();
+      this.prewalkDrift.drop(context.sessionManager.getSessionId());
+      if (context.hasUI) context.ui.setStatus("fabric-prewalk", undefined);
+    }
     void this.#componentLoader?.reconcile(next.components).catch((error) => {
       if (this.#config) this.#config.components = previousComponents;
       const detail = error instanceof Error ? error.message : String(error);
@@ -971,6 +979,9 @@ export class FabricRuntimeState {
     resultFormat: FabricResultFormat,
     outerToolCallId: string,
   ): Promise<PendingFabricHandoff | undefined> {
+    // Defense in depth behind cancel-at-disable: an arm that predates a
+    // config edit must never claim once the master switch is off.
+    if (this.#config?.prewalk.enabled === false) return undefined;
     let pending = claimFabricHandoff(this.prewalk, execution, sessionId, resultFormat);
     if (!pending && this.#config?.prewalk.detectShellWrites) {
       pending = await this.#claimShellWriteHandoff(execution, sessionId, resultFormat);

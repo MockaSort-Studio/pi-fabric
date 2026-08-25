@@ -3,6 +3,8 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import type { CapturedToolCatalog } from "../capture/catalog.js";
 import type { FabricActorHostEvent } from "../actors/types.js";
 import type { FabricState } from "../fabric-state.js";
+import { resolveAgentDir } from "../core/agent-dir.js";
+import { saveFabricConfig } from "../config.js";
 import { armFabricPrewalkSession } from "../prewalk/arm.js";
 import { truncateMiddle } from "../util.js";
 import type { FabricUiController } from "../ui/controller.js";
@@ -117,6 +119,11 @@ const armPrewalk = async (
   pi: ExtensionAPI,
   task = "",
 ): Promise<FabricPrewalkRequestResultV1> => {
+  if (state.config.prewalk.enabled === false) {
+    const error = "Fabric prewalk is disabled; re-enable with /fabric prewalk --enable or /fabric settings.";
+    context.ui.notify(error, "error");
+    return { ok: false, error };
+  }
   if (!state.config.fullCodeMode || state.config.schema.mode === "enforce") {
     const error = "Fabric prewalk requires full code mode and Schema enforce mode disabled.";
     context.ui.notify(error, "error");
@@ -361,6 +368,41 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
       }
       if (command === "prewalk") {
         const option = argumentsList[0];
+        if (option === "--disable" || option === "--enable") {
+          // Persistent master switch: saves prewalk.enabled to the same scope
+          // the settings UI writes (project when trusted), reloads config so
+          // the rest of the session agrees, and when disabling also cancels
+          // the live arm so nothing claims mid-change.
+          const enabled = option === "--enable";
+          try {
+            const projectTrusted = context.isProjectTrusted();
+            const saved = saveFabricConfig(
+              {
+                cwd: context.cwd,
+                agentDir: resolveAgentDir(),
+                projectTrusted,
+                scope: projectTrusted ? "project" : "global",
+              },
+              { prewalk: { enabled } },
+            );
+            state.reloadConfig(context);
+            if (!enabled) {
+              state.prewalk.cancel();
+              state.prewalkDrift.drop(context.sessionManager.getSessionId());
+              context.ui.setStatus("fabric-prewalk", undefined);
+            }
+            context.ui.notify(
+              `Fabric prewalk ${enabled ? "enabled" : "disabled"} (${saved.scope}: ${saved.path})`,
+              "info",
+            );
+          } catch (error) {
+            context.ui.notify(
+              `Failed to update Fabric prewalk setting: ${error instanceof Error ? error.message : String(error)}`,
+              "error",
+            );
+          }
+          return;
+        }
         if (option === "--off" || option === "--cancel") {
           state.prewalk.cancel();
           state.prewalkDrift.drop(context.sessionManager.getSessionId());
@@ -731,7 +773,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
       }
       if (command !== "status") {
         context.ui.notify(
-          "Usage: /fabric [status|dashboard|prewalk [task]|prewalk --off|reload|providers|agents|actors|global|import <name> [as <new>]|export <id> [--overwrite]|messages <id>|clear-messages <id>|events <id> [event...]|log <id>|export-log <id>|attach <id>|stop <id>|remove <id>|kill <id>]",
+          "Usage: /fabric [status|dashboard|prewalk [task]|prewalk --off|--disable|--enable|reload|providers|agents|actors|global|import <name> [as <new>]|export <id> [--overwrite]|messages <id>|clear-messages <id>|events <id> [event...]|log <id>|export-log <id>|attach <id>|stop <id>|remove <id>|kill <id>]",
           "warning",
         );
         return;

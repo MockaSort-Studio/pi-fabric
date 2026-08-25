@@ -180,6 +180,12 @@ describe("Fabric configuration", () => {
     );
   });
 
+  it("parses the prewalk master switch only as an explicit disable", () => {
+    expect(normalizeFabricConfig({}).prewalk.enabled).toBeUndefined();
+    expect(normalizeFabricConfig({ prewalk: { enabled: true } }).prewalk.enabled).toBeUndefined();
+    expect(normalizeFabricConfig({ prewalk: { enabled: false } }).prewalk.enabled).toBe(false);
+  });
+
   it("keeps a valid prewalk thinking level and drops invalid or empty ones", () => {
     expect(normalizeFabricConfig({ prewalk: { thinking: "high" } }).prewalk.thinking).toBe(
       "high",

@@ -89,6 +89,7 @@ const prewalkTriggerField = (
   pending: PendingFabricHandoff,
 ): Record<string, unknown> => ({
   ref: pending.triggerRef,
+  ...(pending.triggerSeq !== undefined ? { seq: pending.triggerSeq } : {}),
   ...(pending.triggerFiles && pending.triggerFiles.length > 0
     ? {
         files: pending.triggerFiles,
@@ -139,7 +140,7 @@ export const prewalkArmedPrompt = (mode: FabricPrewalkMode, model: string): stri
         ? "the executor takes over the implementation there, and a hidden follow-up asks you to verify its work and summarize when it finishes."
         : `this session switches to ${model} and keeps working.`
     }`,
-    "Reads never fire it; for multi-step work, restate the remaining steps before your first edit.",
+    "Reads never fire it; trigger reports mark the handoff moment only — the workspace is the source of truth, so verify file state with reads before continuing. For multi-step work, restate the remaining steps before your first edit.",
   ].join("\n");
 
 const customMessageText = (content: unknown): string | undefined => {
@@ -189,6 +190,9 @@ export interface PendingFabricHandoff {
   audit: FabricCallAudit;
   resultFormat: FabricResultFormat;
   triggerRef?: string;
+  // Session-monotonic claim order from the controller; rides result trigger
+  // fields so follow-ups and audit surfaces can reference the Nth claim.
+  triggerSeq?: number;
   // Filesystem-drift trigger evidence, bounded by the drift tracker's report
   // cap; absent for audited mutation triggers.
   triggerFiles?: string[];
@@ -294,7 +298,7 @@ const buildPrewalkPending = (
     startedAt: Date.now(),
     tool: inPlace ? "prewalk" : "handoff",
     provider: inPlace ? "fabric" : "agents",
-    args,
+    args: { ...args, seq: claim.seq },
   };
   return {
     kind: inPlace ? "prewalk-in-place" : "prewalk-trajectory",
@@ -302,6 +306,7 @@ const buildPrewalkPending = (
     audit,
     resultFormat,
     triggerRef: claim.mutation.ref,
+    triggerSeq: claim.seq,
   };
 };
 

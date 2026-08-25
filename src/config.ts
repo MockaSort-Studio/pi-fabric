@@ -98,6 +98,10 @@ interface FabricVedaRunnerConfig {
 }
 
 interface FabricPrewalkConfig {
+  // Master switch, persisted by /fabric prewalk --disable|--enable or the
+  // settings UI (absent means enabled). Manual arming, session auto-arm, and
+  // boundary claims all gate on it.
+  enabled?: boolean;
   mode: FabricPrewalkMode;
   model?: string;
   alwaysRearm: boolean;
@@ -804,6 +808,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       advisory: booleanValue(mcp.advisory, DEFAULT_FABRIC_CONFIG.mcp.advisory),
     },
     prewalk: {
+      ...(prewalk.enabled === false ? { enabled: false } : {}),
       mode: prewalkModeValue(prewalk.mode, DEFAULT_FABRIC_CONFIG.prewalk.mode),
       ...(prewalkModel ? { model: prewalkModel } : {}),
       ...(prewalkThinking ? { thinking: prewalkThinking } : {}),
