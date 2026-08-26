@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { FabricActivityStore } from "./activity/store.js";
 import { ActorManager } from "./actors/manager.js";
+import { resolvePiBinary } from "./agents/pi-binary.js";
 import { GlobalActorRegistry } from "./actors/global-registry.js";
 import { buildActorContext } from "./actors/context.js";
 import { actorDeliveryNotice } from "./actors/delivery-policy.js";
@@ -782,7 +783,7 @@ export class FabricRuntimeState {
             retention: structuredClone(this.#config.retention),
             workerPath: this.#paths?.worker ?? fileURLToPath(new URL("./worker.js", import.meta.url)),
             fabricExtensionPath: this.#paths?.extension ?? fileURLToPath(new URL("./index.js", import.meta.url)),
-            piBinary: process.env.PI_FABRIC_PI_BINARY ?? "pi",
+            piBinary: resolvePiBinary(),
             claudeBinary:
               process.env.PI_FABRIC_CLAUDE_BINARY ?? this.#config.agents.claude.binary,
             vedaBinary:
