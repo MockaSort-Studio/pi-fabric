@@ -1,10 +1,22 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FabricState } from "../src/fabric-state.js";
 import { createFabricPersistedExecutionDetails } from "../src/audit/index.js";
 import { createFabricExecTool } from "../src/fabric-exec-tool.js";
 import { defaultCodePreviewSettings } from "../src/ui/code-preview.js";
 import { FabricToolDisplayController } from "../src/ui/tool-display.js";
+
+// Partial cards stamp running activity rows with spinnerFrame(Date.now()).
+// Serial renders that straddle a 250ms spinner tick (GC pauses under
+// full-suite load) observed different glyphs and broke cross-render
+// comparisons, so the whole file renders at one pinned instant.
+beforeEach(() => {
+  vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00Z") });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const plainTheme = {
   fg: (_color: string, text: string) => text,
@@ -721,6 +733,10 @@ describe("registered fabric_exec compact transcript rendering", () => {
   });
 
   it("invalidates completed cards so their current display preference redraws immediately", async () => {
+    // This test awaits real event-loop turns for the refresh drain, so it
+    // opts out of the file-wide fake timers (its assertions never compare
+    // spinner frames across renders).
+    vi.useRealTimers();
     const flushDrainTurns = async (turns: number): Promise<void> => {
       for (let index = 0; index < turns; index++) {
         await new Promise<void>((resolve) => setImmediate(resolve));
