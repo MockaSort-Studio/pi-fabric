@@ -949,13 +949,13 @@ export class FabricRuntimeState {
     if (!this.initialized || this.#cwd !== context.cwd) await this.initialize(context);
   }
 
-  reloadConfig(context: ExtensionContext): void {
+  // Accepts the config FabricState just loaded so a /fabric settings save
+  // costs one loadFabricConfig instead of two. The runtime still stamps
+  // schema.mode from its own previous config, preserving the existing
+  // in-memory override chain (state and runtime share the same preserved
+  // mode by construction: the runtime's config originates from FabricState).
+  reloadConfig(context: ExtensionContext, next: FabricConfig): void {
     if (!this.#config || !this.#cwd) return;
-    const next = loadFabricConfig({
-      cwd: context.cwd,
-      agentDir: resolveAgentDir(),
-      projectTrusted: context.isProjectTrusted(),
-    });
     next.schema.mode = this.#config.schema.mode;
     const previousComponents = structuredClone(this.#config.components);
     deepAssign(this.#config as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>);

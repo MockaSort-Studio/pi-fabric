@@ -319,6 +319,7 @@ export function languageFromPath(filePath: string | undefined): string | undefin
 /** Configure highlighting without loading Shiki until the first code preview needs it. */
 export function configureHighlighting(themePreferenceValue: string, syntaxEnabled = true): void {
   const preference = themePreferenceValue.trim() || "auto";
+  const wasEnabled = enabled;
   enabled = syntaxEnabled;
   if (!enabled) {
     themePreference = preference;
@@ -339,7 +340,13 @@ export function configureHighlighting(themePreferenceValue: string, syntaxEnable
     return;
   }
   const themeChanged = syncEffectiveTheme(preference, observedVariant);
-  if (!themeChanged && (highlighter || initializingTheme)) {
+  // syncEffectiveTheme already rebuilds eagerly on a real theme swap and
+  // highlightCode's requestInit lazily covers a never-initialized highlighter;
+  // the only remaining case that needs an explicit init is re-enabling after
+  // a disable disposed the highlighter. Rebuilding unconditionally here cost
+  // a full 10-grammar shiki init (~80-260ms of main-thread work) on every
+  // /fabric settings save even when nothing display-related had changed.
+  if (!themeChanged && !wasEnabled && !highlighter && !initializingTheme) {
     void initHighlighting(currentTheme, syntaxEnabled);
   }
 }

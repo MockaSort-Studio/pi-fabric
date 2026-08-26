@@ -720,7 +720,12 @@ describe("registered fabric_exec compact transcript rendering", () => {
     expect(failedFallback).toContain("TypeScript");
   });
 
-  it("invalidates completed cards so their current display preference redraws immediately", () => {
+  it("invalidates completed cards so their current display preference redraws immediately", async () => {
+    const flushDrainTurns = async (turns: number): Promise<void> => {
+      for (let index = 0; index < turns; index++) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    };
     const state = stateFor("full");
     const display = new FabricToolDisplayController();
     const tool = toolFor(state, display);
@@ -749,10 +754,14 @@ describe("registered fabric_exec compact transcript rendering", () => {
       resultContext as never,
     ).render(120).join("\n");
 
+    // refresh() drains asynchronously and invalidates once per card: both
+    // kinds resolve to the same host component, whose invalidate() re-renders
+    // call and result together, so firing both would double the render work.
+    await flushDrainTurns(2);
     expect(full).toContain("currentPresentation");
     expect(fullResult).toContain("Fabric");
-    expect(context.invalidate).toHaveBeenCalledOnce();
     expect(resultContext.invalidate).toHaveBeenCalledOnce();
+    expect(context.invalidate).not.toHaveBeenCalled();
     expect(compact).not.toContain("currentPresentation");
     expect(compactResult).toContain("Evaluated");
 
@@ -760,6 +769,7 @@ describe("registered fabric_exec compact transcript rendering", () => {
     // the TypeScript presentation for both the call and the result component.
     (state.config.ui as { toolDisplay: "full" | "compact" }).toolDisplay = "full";
     display.refresh();
+    await flushDrainTurns(2);
     const fullAgain = tool.renderCall!(args as never, plainTheme, context as never).render(120).join("\n");
     const fullResultAgain = tool.renderResult!(
       result as never,
@@ -768,8 +778,8 @@ describe("registered fabric_exec compact transcript rendering", () => {
       resultContext as never,
     ).render(120).join("\n");
 
-    expect(context.invalidate).toHaveBeenCalledTimes(2);
     expect(resultContext.invalidate).toHaveBeenCalledTimes(2);
+    expect(context.invalidate).not.toHaveBeenCalled();
     expect(fullAgain).toContain("currentPresentation");
     expect(fullResultAgain).toContain("Fabric");
     expect(fullResultAgain).not.toContain("Evaluated");

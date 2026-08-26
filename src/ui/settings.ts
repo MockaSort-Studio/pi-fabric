@@ -1821,7 +1821,7 @@ export interface FabricSettingsDeps {
   state: FabricState;
   applyFabricMode: () => void;
   capturedTools: CapturedToolCatalog;
-  onConfigApplied?: () => void;
+  onConfigApplied?: (id: string) => void;
 }
 
 export async function openFabricSettings(
@@ -1864,8 +1864,17 @@ export async function openFabricSettings(
       return;
     }
     deps.state.reloadConfig(context);
-    Object.assign(settingsConfig, loadFabricConfigForScope(configLocation, saveScope));
-    deps.onConfigApplied?.();
+    // The project-scope view is exactly the merged config reloadConfig just
+    // produced; reuse it instead of reading both fabric.json files a third
+    // time. Global scope differs (it excludes project overrides) and still
+    // needs its own load.
+    Object.assign(
+      settingsConfig,
+      saveScope === "project"
+        ? deps.state.config
+        : loadFabricConfigForScope(configLocation, saveScope),
+    );
+    deps.onConfigApplied?.(id);
     dirty = true;
     changedSections.add(id.split(".")[0] ?? id);
     const list = rootComponent?.settingsList;

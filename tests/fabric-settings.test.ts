@@ -822,6 +822,9 @@ describe("FabricSettingsComponent", () => {
         .toMatchObject({ ui: { toolDisplay: "full" } });
       expect(config.ui.toolDisplay).toBe("full");
       expect(onConfigApplied).toHaveBeenCalledOnce();
+      // The saved setting id flows through so consumers can gate downstream
+      // refresh work (transcript re-render) on display-affecting sections.
+      expect(onConfigApplied).toHaveBeenCalledWith("ui.toolDisplay");
       expect(applyFabricMode).toHaveBeenCalledOnce();
     } finally {
       if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
