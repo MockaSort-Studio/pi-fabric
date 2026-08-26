@@ -595,7 +595,7 @@ interface FabricActorInfo {
   logDir?: string;
 }
 interface FabricModelSwitchRequest {
-  /** provider/id, a models.aliases name, or a search term; resolution tries aliases first, then exact and single partial matches against authenticated models. */
+  /** provider/id, a models.aliases name, or a search term; resolution tries aliases first, then exact matches, then the closest fuzzy match (recency from pi-model-sort breaks ties) against authenticated models. */
   model: string;
   /** Optional provider filter applied before matching (e.g. "anthropic"). */
   provider?: string;
@@ -609,6 +609,8 @@ interface FabricModelSwitchResult {
   previous?: string;
   /** Set when the selector resolved through a configured models.aliases name. */
   alias?: string;
+  /** How the selector resolved: the alias name, or one of closest/recent/latest for inexact picks. Absent for exact provider/id or bare-id matches. */
+  via?: string;
   reason?: "already-active";
 }
 interface FabricActorMessage {

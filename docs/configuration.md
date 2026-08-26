@@ -182,7 +182,7 @@ Each in-place handoff captures Main's active model at the boundary and restores 
 
 ## Models
 
-`models.aliases` names model selectors for `agents.switchModel` (see [Agents](agents.md#switching-mains-session-model)). Each alias is either one `provider/model` target or an ordered fallback chain; switching walks the chain and uses the first authenticated target. Alias names match case-insensitively and take priority over bare model ids. Aliases live in normal Fabric configuration, so a project `.pi/fabric.json` can extend the agent-level `fabric.json`; entries with malformed names or targets are ignored at load.
+`models.aliases` names model selectors for `agents.switchModel` and for Pi-runner `model` arguments on `agents.run`, `agents.spawn`, `agents.create`, and `agents.handoff` (see [Agents](agents.md#switching-mains-session-model)). Each alias is either one `provider/model` target or an ordered fallback chain; resolution walks the chain and uses the first authenticated target. Alias names match case-insensitively and take priority over bare model ids and fuzzy matching. Aliases live in normal Fabric configuration, so a project `.pi/fabric.json` can extend the agent-level `fabric.json`; entries with malformed names or targets are ignored at load.
 
 ```json
 {

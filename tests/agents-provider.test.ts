@@ -169,7 +169,7 @@ const setup = (
     undefined,
     () => options?.modelsConfig ?? DEFAULT_FABRIC_CONFIG.models,
   );
-  return { root, actors, globalActors, provider, mainDeliveries };
+  return { root, actors, agents, globalActors, provider, mainDeliveries };
 };
 
 afterEach(async () => {
@@ -1962,15 +1962,53 @@ describe("AgentsProvider switchModel", () => {
     expect(switchModel).not.toHaveBeenCalled();
   });
 
-  it("rejects ambiguous partial matches with the candidate list", async () => {
+  it("resolves inexact selectors to the closest match and reports the pick", async () => {
     const switchModel = vi.fn(async () => ({ ok: true }));
     const { provider } = setup([], [], undefined, {
       switchModel: switchModel as FabricMainAgentTarget["switchModel"],
     });
-    await expect(
-      provider.invoke("switchModel", { model: "gemini" }, modelContext()),
-    ).rejects.toThrow(/matches multiple models: google\/gemini-2\.5-flash, google\/gemini-2\.5-pro/);
-    expect(switchModel).not.toHaveBeenCalled();
+    const result = await provider.invoke(
+      "switchModel",
+      { model: "gemini" },
+      modelContext(),
+    );
+    expect(result).toMatchObject({
+      switched: true,
+      model: "google/gemini-2.5-pro",
+      via: "closest",
+    });
+    expect(switchModel).toHaveBeenCalledWith(
+      { provider: "google", id: "gemini-2.5-pro" },
+      expect.anything(),
+    );
+  });
+
+  it("resolves inexact run models to the canonical provider/id before spawning", async () => {
+    const { provider, agents } = setup();
+    const spawn = vi.spyOn(agents, "spawn");
+    await provider.invoke(
+      "run",
+      { task: "return a short result", model: "gemini" },
+      modelContext(),
+    );
+    expect(spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "google/gemini-2.5-pro" }),
+      undefined,
+    );
+  });
+
+  it("passes unresolvable run models through verbatim for the child runtime", async () => {
+    const { provider, agents } = setup();
+    const spawn = vi.spyOn(agents, "spawn");
+    await provider.invoke(
+      "run",
+      { task: "return a short result", model: "opencode/ox-alpha" },
+      modelContext(),
+    );
+    expect(spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "opencode/ox-alpha" }),
+      undefined,
+    );
   });
 
   it("rejects unknown selectors and exhausted alias chains", async () => {
