@@ -42,15 +42,30 @@ describe("resolvePiBashCwd", () => {
     expect(resolvePiBashCwd(nested, "../..")).toBe(root);
   });
 
-  // Worktree paths are frequently symlinks. Canonicalizing them would change
-  // what `pwd` reports inside the command and break tooling that keys on the
-  // worktree path, so the resolver stays lexical.
+  // Worktree paths are frequently symlinks. Keep the requested lexical path
+  // available to Fabric's audit/approval surfaces; the spawned shell may still
+  // report the physical target from `pwd`, so this is not a logical-PWD guarantee.
   it("preserves a symlinked directory instead of canonicalizing it", () => {
     const { root, nested } = makeTree();
     const link = path.join(root, "worktree-link");
     fs.symlinkSync(nested, link, "dir");
     expect(resolvePiBashCwd(root, "worktree-link")).toBe(link);
     expect(resolvePiBashCwd(root, "worktree-link")).not.toBe(nested);
+  });
+
+  it("executes through a symlink without promising the shell's pwd spelling", async () => {
+    const { root, nested } = makeTree();
+    const link = path.join(root, "worktree-link");
+    fs.symlinkSync(nested, link, "dir");
+    const result = await new BashCwdDefinitions().get(link).execute(
+      "pi-bash-cwd-symlink-test",
+      { command: "pwd" },
+      undefined,
+      () => {},
+      undefined as never,
+    );
+    const reported = (result.content[0] as { text: string }).text.trim();
+    expect(fs.realpathSync(reported)).toBe(fs.realpathSync(link));
   });
 
   it("names the resolved path when the directory is missing", () => {
