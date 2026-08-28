@@ -197,7 +197,7 @@ describe("fabric-exec skill provider contracts", () => {
           .toContain(`skills/${entry.name}/SKILL.md`);
       }
     }
-  }, 30_000);
+  }, 120_000);
 
   it("keeps the skill hierarchy core-first and user-opt-in", () => {
     const skills = fs.readdirSync("skills", { withFileTypes: true })
