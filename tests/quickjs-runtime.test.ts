@@ -495,8 +495,62 @@ await Promise.all([
       async () => undefined,
       { ...options, strings: { content: "hello" } },
     );
-    expect(failed.error).toContain("π.previewFile is not defined");
-    expect(failed.error).toContain("provided: content");
+    expect(failed.error).toContain("Pre-execution check: π.previewFile is referenced");
+    expect(failed.error).toContain("(provided: content)");
+
+    const dynamic = await new QuickJsRuntime().execute(
+      `const k = "previewFile"; return π[k];`,
+      async () => undefined,
+      { ...options, strings: { content: "hello" } },
+    );
+    expect(dynamic.error).toContain("π.previewFile is not defined");
+    expect(dynamic.error).toContain("provided: content");
+  });
+
+  it("rejects π references to missing strings keys before execution (#68)", async () => {
+    const failed = await new QuickJsRuntime().execute(
+      'await pi.write({ path: "x.md", text: π.body });',
+      async () => {
+        throw new Error("host call must not run");
+      },
+      { ...options, strings: { other: "hello" } },
+    );
+    expect(failed.terminationReason).toBe("runtime_error");
+    expect(failed.error).toContain("Pre-execution check: π.body is referenced");
+    expect(failed.error).toContain("(provided: other)");
+    expect(failed.error).toContain("Add strings: { body: '...' }");
+
+    const none = await new QuickJsRuntime().execute(
+      'return π.summary;',
+      async () => {
+        throw new Error("host call must not run");
+      },
+      { ...options },
+    );
+    expect(none.error).toContain("(none provided)");
+
+    const multiple = await new QuickJsRuntime().execute(
+      'const a = π.alpha; const b = π.alpha; const c = π.beta;',
+      async () => undefined,
+      { ...options, strings: {} },
+    );
+    expect(multiple.error).toContain("π.alpha, π.beta are referenced");
+
+    const provided = await new QuickJsRuntime().execute(
+      'await pi.write({ path: "x.md", text: π.body }); return "ok";',
+      async () => undefined,
+      { ...options, strings: { body: "content" } },
+    );
+    expect(provided.terminationReason).toBe("completed");
+  });
+
+  it("does not flag bracket access or bare π on dynamic keys", async () => {
+    const result = await new QuickJsRuntime().execute(
+      'const key = "k"; return Object.keys(π).length + (π[key] === undefined ? 0 : 1);',
+      async () => undefined,
+      { ...options, strings: { k: "v" } },
+    );
+    expect(result.terminationReason).toBe("completed");
   });
 
   it("bridges tools.models() to the fabric.$models host call", async () => {
