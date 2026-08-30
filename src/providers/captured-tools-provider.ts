@@ -2,6 +2,7 @@ import path from "node:path";
 import { runAbortable, throwIfAborted } from "../async-settlement.js";
 import type { AgentToolResult, SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CapturedToolCatalog, type CapturedToolEntry } from "../capture/catalog.js";
+import { classifyPiBashError, piBashResultError } from "../core/pi-bash-error.js";
 import type {
   FabricActionDescriptor,
   FabricInvocationContext,
@@ -171,6 +172,7 @@ export class CapturedToolsProvider implements FabricProvider {
     let result: AgentToolResult<unknown>;
     let isError = false;
     let thrown: unknown;
+    let executionStarted = false;
     let updateTail: Promise<void> = Promise.resolve();
     try {
       const preflight = await runAbortable(context.signal, () => runner.emitToolCall({
@@ -183,6 +185,7 @@ export class CapturedToolsProvider implements FabricProvider {
       if (preflight?.block) {
         throw new Error(preflight.reason || `Captured tool ${entry.name} was blocked`);
       }
+      executionStarted = true;
       result = await runAbortable(context.signal, () =>
         wrappedTool.execute(toolCallId, args, context.signal, (partialResult) => {
         const progress = textFromContent(partialResult.content).trim();
@@ -201,7 +204,7 @@ export class CapturedToolsProvider implements FabricProvider {
         }),
       );
     } catch (error) {
-      thrown = error;
+      thrown = entry.name === "bash" && executionStarted ? classifyPiBashError(error) : error;
       isError = true;
       result = {
         content: [
@@ -243,6 +246,7 @@ export class CapturedToolsProvider implements FabricProvider {
     }));
 
     if (isError) {
+      if (entry.name === "bash") throw piBashResultError(thrown, textFromContent(result.content));
       const text = textFromContent(result.content).trim();
       throw new Error(
         text || (thrown instanceof Error ? thrown.message : `Captured tool ${entry.name} failed`),

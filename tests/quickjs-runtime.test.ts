@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { QuickJsRuntime } from "../src/runtime/quickjs-runtime.js";
+import { classifyPiBashError } from "../src/core/pi-bash-error.js";
 import { transpileFabricCodeWithSourceMap } from "../src/runtime/type-checker.js";
 
 const options = {
@@ -1058,7 +1059,7 @@ return "never";
 
   it("guards settled bash envelopes and still exposes ok/exitCode/output reads", async () => {
     const hostCall = vi.fn(async () => {
-      throw new Error("sync-spawn\n\nCommand exited with code 3");
+      throw classifyPiBashError(new Error("sync-spawn\n\nCommand exited with code 3"));
     });
     const reads = await new QuickJsRuntime().execute(
       `
@@ -1155,4 +1156,3 @@ describe("QuickJsRuntime guest stack remapping", () => {
     expect(result.error).toContain("pi-fabric-guest.js");
   });
 });
-

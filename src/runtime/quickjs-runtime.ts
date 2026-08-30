@@ -1,6 +1,7 @@
 import releaseSyncVariant from "@jitl/quickjs-singlefile-mjs-release-sync";
 import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
 import { runAbortable, settleWithin } from "../async-settlement.js";
+import { piBashExitMetadata } from "../core/pi-bash-error.js";
 import { createGuestStackMap, remapGuestErrorText } from "./guest-stack-map.js";
 import { transpileFabricCodeWithSourceMap } from "./type-checker.js";
 
@@ -390,14 +391,16 @@ globalThis.pi = new Proxy({}, {
         typeof args === "object" && args !== null && args.settle === true;
       const call = __call("pi." + name, __normalizePiArgs(name, args));
       const promise = settle ? call.catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        const match = /(?:^|\\n\\n)Command exited with code (\\d+)$/.exec(message);
-        if (!match) throw error;
+        // node-process bridge errors originate in a different VM realm.
+        const message = typeof error?.message === "string" ? error.message : String(error);
+        const exit = error?.__fabricBashExit;
+        if (!exit || !Number.isSafeInteger(exit.exitCode) || exit.exitCode <= 0 ||
+            typeof exit.output !== "string") throw error;
         return {
           ok: false,
-          output: message.slice(0, match.index),
+          output: exit.output,
           details: null,
-          exitCode: Number(match[1]),
+          exitCode: exit.exitCode,
           error: message,
         };
       }) : call;
@@ -971,6 +974,12 @@ export class QuickJsRuntime {
               const errorHandle = context.newError(
                 error instanceof Error ? error.message : String(error),
               );
+              const exit = reference === "pi.bash" ? piBashExitMetadata(error) : undefined;
+              if (exit) {
+                const metadata = jsonHandle(context, jsonObject, jsonParse, exit);
+                context.setProp(errorHandle, "__fabricBashExit", metadata);
+                metadata.dispose();
+              }
               promise.reject(errorHandle);
               errorHandle.dispose();
             })

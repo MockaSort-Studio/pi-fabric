@@ -72,6 +72,27 @@ For provider-level corruption, or for sessions that expose Pi tools directly, in
 
 The provider owns the Anthropic strict tool use setting. When enabled, strict mode stops the server from sampling keys that are absent from the schema. Anthropic limits the complexity of strict tool definitions.
 
+## Bash exit status and result middleware
+
+`pi.bash(..., { settle: true })` converts an ordinary native nonzero exit into
+`{ ok: false, exitCode, output, details, error }`. Fabric classifies that exit
+before `tool_result` middleware runs and transports the status separately from
+display text in both runtimes. Trimming, redaction, newline changes, or replacing
+the display text cannot erase the exit status. `output` and `error` use the final
+middleware text; they never restore text removed by a middleware. Native status
+line removal is best-effort display cleanup; ambiguous text is preserved.
+
+Timeout, cancellation, approval and preflight failures remain exceptions. A
+middleware failure after a successful command also remains an exception, and
+middleware recovery through `isError: false` remains effective. Pi's
+`emitToolResult` returns the **effective** `isError`, without identifying whether
+a handler introduced a new failure. After a native nonzero exit, Fabric cannot
+distinguish an annotation/redaction from an additional middleware veto expressed
+only through text and `isError: true`. Such a veto needs a separate explicit
+provenance contract; this limitation is not solved by bash settlement. For now,
+checks that must prevent command execution belong in approval or `tool_call`
+preflight, and callers requiring all final errors to throw should omit `settle`.
+
 ## Model-context economy
 
 Fabric caps final `fabric_exec` output at 50,000 characters by default, which matches Pi's built-in 50KB tool ceiling. Failed executions get a tighter 20,000-character visible ceiling, and the complete output stays in the same private artifact. An oversized structured return shares that budget across every multiline section and preserves both ends with explicit omission markers. Unstructured output keeps its global beginning and end. Fabric writes the complete output to a mode-`0600` temporary artifact and includes the artifact path inside the visible ceiling. The model can then retrieve a targeted range without carrying the entire result. Type-check diagnostics use the same ceiling. Models should still filter noisy commands and return only useful evidence, because source-side projection preserves more relevant information than post-format truncation. When a later nested call fails after earlier calls completed, the error adds a bounded list of completed refs and paths. The model can inspect that list before repeating side effects. Nested outputs the guest did not return are never exposed.
