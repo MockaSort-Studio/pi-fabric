@@ -117,6 +117,7 @@ const __piArgAliases = {
   bash: {
     cmd: "command", shell: "command", cmdline: "command", script: "command",
     commandLine: "command",
+    workdir: "cwd", directory: "cwd", workingDirectory: "cwd",
   },
   find: {
     query: "pattern", regex: "pattern", search: "pattern", name: "pattern",
