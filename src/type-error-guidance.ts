@@ -31,6 +31,12 @@ const PROPERTY_NOTES: Readonly<Record<string, string>> = {
   timeout: "`timeout` is measured in seconds; `timeoutMs` is converted from milliseconds.",
 };
 
+// pi.bash options that stay unsupported (cwd is honored per call since #71).
+const BASH_OPTION_NOTES: Readonly<Record<string, string>> = {
+  stdin:
+    "`pi.bash` does not accept `stdin`. Write the content with `pi.write(path, content)`, then pass that path to the command or redirect the file into it.",
+};
+
 const isCoreToolName = (name: string): name is (typeof CORE_TOOL_NAMES)[number] =>
   (CORE_TOOL_NAMES as readonly string[]).includes(name);
 
@@ -76,6 +82,10 @@ const unknownPropertyHint = (
   tool: string | undefined,
 ): string | undefined => {
   if (tool === undefined) return undefined;
+  if (tool === "bash") {
+    const bashNote = BASH_OPTION_NOTES[property];
+    if (bashNote !== undefined) return `Recovery hint: ${bashNote}`;
+  }
   const envelopeNote = FABRIC_EXEC_ARGUMENT_NOTES[property];
   if (envelopeNote !== undefined) {
     return `Recovery hint: \`${property}\` is a \`fabric_exec\` argument, not a \`pi.${tool}\` property. ${envelopeNote}`;
