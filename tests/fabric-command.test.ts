@@ -1,7 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { registerFabricCommand } from "../src/commands/fabric.js";
+import { FABRIC_PREWALK_REQUEST_EVENT } from "../src/protocol.js";
 import {
   PREWALK_ARMED_MESSAGE_TYPE,
   prewalkArmedPrompt,
@@ -257,6 +261,69 @@ describe("/fabric command", () => {
     );
   });
 
+  it("acknowledges queued prewalk requests after the arm completes", async () => {
+    let requestHandler: ((value: unknown) => void) | undefined;
+    let shutdownHandler: (() => void) | undefined;
+    const unsubscribe = vi.fn();
+    const respond = vi.fn();
+    const sendMessage = vi.fn();
+    const pi = {
+      events: {
+        on: vi.fn((channel: string, handler: (value: unknown) => void) => {
+          if (channel === FABRIC_PREWALK_REQUEST_EVENT) requestHandler = handler;
+          return unsubscribe;
+        }),
+      },
+      on: vi.fn((name: string, handler: () => void) => {
+        if (name === "session_shutdown") shutdownHandler = handler;
+      }),
+      registerCommand: vi.fn(),
+      sendMessage,
+      sendUserMessage: vi.fn(),
+    } as unknown as ExtensionAPI;
+    const arm = vi.fn();
+    const state = {
+      ensure: vi.fn().mockResolvedValue(undefined),
+      config: {
+        fullCodeMode: true,
+        schema: { mode: "off" },
+        prewalk: { mode: "in-place", model: "anthropic/executor", alwaysRearm: false },
+        agents: { enabled: true },
+      },
+      prewalk: { arm, status: vi.fn(), cancel: vi.fn() },
+    } as unknown as FabricState;
+    const context = {
+      sessionManager: { getSessionId: () => "session-1", getBranch: () => [] },
+      ui: { setStatus: vi.fn(), notify: vi.fn() },
+    } as unknown as ExtensionContext;
+
+    registerFabricCommand(pi, {
+      state,
+      fabricUi: {} as FabricUiController,
+      capturedTools: {} as CapturedToolCatalog,
+      applyFabricMode: vi.fn(),
+      suspendToolCapture: vi.fn(),
+    });
+
+    const claim = vi.fn(() => true);
+    requestHandler?.({ version: 1, context, claim, respond });
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledWith({ ok: true }));
+
+    expect(claim).toHaveBeenCalledOnce();
+    expect(state.ensure).toHaveBeenCalledWith(context);
+    expect(arm).toHaveBeenCalledWith({
+      model: "anthropic/executor",
+      mode: "in-place",
+      sessionId: "session-1",
+      alwaysRearm: false,
+    });
+    expect(sendMessage).toHaveBeenCalled();
+    shutdownHandler?.();
+    // The mock keeps only the last session_shutdown handler: the peer
+    // protocol block that unsubscribes the cards and await listeners.
+    expect(unsubscribe).toHaveBeenCalledTimes(2);
+  });
+
   it("skips the armed prompt when the identical one already persists", async () => {
     let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
     const sendMessage = vi.fn();
@@ -350,6 +417,118 @@ describe("/fabric command", () => {
     );
     expect(state.reloadConfig).not.toHaveBeenCalled();
     expect(refreshToolDisplay).not.toHaveBeenCalled();
+  });
+
+  it("persists --disable to project config, cancels the arm, and reloads", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "fabric-command-prewalk-"));
+    try {
+      let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
+      const pi = {
+        registerCommand: vi.fn((_name: string, definition: { handler: typeof handler }) => {
+          handler = definition.handler;
+        }),
+      } as unknown as ExtensionAPI;
+      const cancel = vi.fn();
+      const drop = vi.fn();
+      const reloadConfig = vi.fn();
+      const notify = vi.fn();
+      const setStatus = vi.fn();
+      const state = {
+        ensure: vi.fn().mockResolvedValue(undefined),
+        config: {
+          fullCodeMode: true,
+          schema: { mode: "off" },
+          prewalk: { mode: "in-place", model: "anthropic/executor" },
+          agents: { enabled: true },
+        },
+        prewalk: { cancel, status: vi.fn(), arm: vi.fn() },
+        prewalkDrift: { drop },
+        reloadConfig,
+      } as unknown as FabricState;
+      const context = {
+        cwd: root,
+        isProjectTrusted: () => true,
+        sessionManager: { getSessionId: () => "session-1" },
+        ui: { notify, setStatus },
+      } as unknown as ExtensionContext;
+
+      registerFabricCommand(pi, {
+        state,
+        fabricUi: {} as FabricUiController,
+        capturedTools: {} as CapturedToolCatalog,
+        applyFabricMode: vi.fn(),
+        suspendToolCapture: vi.fn(),
+        autoArmPrewalk: vi.fn(async () => {}),
+      });
+      await handler!("prewalk --disable", context);
+
+      const saved = JSON.parse(
+        await readFile(path.join(root, ".pi", "fabric.json"), "utf8"),
+      ) as { prewalk?: { enabled?: boolean } };
+      expect(saved.prewalk?.enabled).toBe(false);
+      expect(reloadConfig).toHaveBeenCalledWith(context);
+      expect(cancel).toHaveBeenCalled();
+      expect(drop).toHaveBeenCalledWith("session-1");
+      expect(setStatus).toHaveBeenCalledWith("fabric-prewalk", undefined);
+      expect(notify).toHaveBeenCalledWith(
+        expect.stringContaining("Fabric prewalk disabled"),
+        "info",
+      );
+
+      // --enable flips the flag back without touching the live controller.
+      await handler!("prewalk --enable", context);
+      const enabled = JSON.parse(
+        await readFile(path.join(root, ".pi", "fabric.json"), "utf8"),
+      ) as { prewalk?: { enabled?: boolean } };
+      expect(enabled.prewalk?.enabled).toBe(true);
+      expect(notify).toHaveBeenCalledWith(
+        expect.stringContaining("Fabric prewalk enabled"),
+        "info",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects arming while the prewalk master switch is disabled", async () => {
+    let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
+    const sendUserMessage = vi.fn();
+    const pi = {
+      sendUserMessage,
+      registerCommand: vi.fn((_name: string, definition: { handler: typeof handler }) => {
+        handler = definition.handler;
+      }),
+    } as unknown as ExtensionAPI;
+    const arm = vi.fn();
+    const notify = vi.fn();
+    const state = {
+      ensure: vi.fn().mockResolvedValue(undefined),
+      config: {
+        fullCodeMode: true,
+        schema: { mode: "off" },
+        prewalk: { enabled: false, mode: "in-place", model: "anthropic/executor" },
+        agents: { enabled: true },
+      },
+      prewalk: { arm, status: vi.fn(), cancel: vi.fn() },
+    } as unknown as FabricState;
+    const context = {
+      sessionManager: { getSessionId: () => "session-1" },
+      ui: { notify },
+    } as unknown as ExtensionContext;
+
+    registerFabricCommand(pi, {
+      state,
+      fabricUi: {} as FabricUiController,
+      capturedTools: {} as CapturedToolCatalog,
+      applyFabricMode: vi.fn(),
+      suspendToolCapture: vi.fn(),
+      autoArmPrewalk: vi.fn(async () => {}),
+    });
+    await handler!("prewalk Implement the token guard", context);
+
+    expect(arm).not.toHaveBeenCalled();
+    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("prewalk is disabled"), "error");
   });
 
 });

@@ -60,6 +60,8 @@ interface FabricAgentRequest {
   timeoutMs?: number;
   extensions?: boolean;
   recursive?: boolean;
+  /** Filesystem execution directory; relative paths resolve from the parent agent cwd. */
+  cwd?: string;
   worktree?: boolean;
   schema?: Record<string, unknown>;
   prompt?: string;
@@ -446,7 +448,15 @@ type PiFindPatternArgument = { pattern?: string; query?: string; regex?: string;
 // aliases belong here (max/start/ctx/ic/...), never primary-field aliases —
 // the primary field comes from the positional string.
 type PiReadOptions = { offset?: number; limit?: number; start?: number; max?: number };
-type PiBashOptions = { timeout?: number; timeoutMs?: number; settle?: boolean };
+// cwd is honored per call by the pi provider, which binds the command to a
+// bash definition rooted there; relative paths resolve from the session cwd.
+// The alias spellings mirror __piArgAliases.bash in quickjs-runtime.ts: the
+// runtime repairs them, so the checker has to accept the same spellings or a
+// repairable call is rejected before it ever reaches the sandbox.
+type PiBashOptions = {
+  timeout?: number; timeoutMs?: number; settle?: boolean;
+  cwd?: string; workdir?: string; directory?: string; workingDirectory?: string;
+};
 type PiGrepOptions = { path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number };
 type PiFindOptions = { path?: string; limit?: number; max?: number };
 type PiLsOptions = { limit?: number; max?: number };
@@ -592,6 +602,25 @@ interface FabricActorInfo {
   sessionFile?: string;
   logDir?: string;
 }
+interface FabricModelSwitchRequest {
+  /** provider/id, a models.aliases name, or a search term; resolution tries aliases first, then exact matches, then the closest fuzzy match (recency from pi-model-sort breaks ties) against authenticated models. */
+  model: string;
+  /** Optional provider filter applied before matching (e.g. "anthropic"). */
+  provider?: string;
+}
+interface FabricModelSwitchResult {
+  switched: boolean;
+  /** Active model as provider/id after the call (unchanged when reason is "already-active"). */
+  model: string;
+  name?: string;
+  /** Previously active provider/id when known. Absent for already-active results. */
+  previous?: string;
+  /** Set when the selector resolved through a configured models.aliases name. */
+  alias?: string;
+  /** How the selector resolved: the alias name, or one of closest/recent/latest for inexact picks. Absent for exact provider/id or bare-id matches. */
+  via?: string;
+  reason?: "already-active";
+}
 interface FabricActorMessage {
   id: string;
   actorId: string;
@@ -635,6 +664,7 @@ interface FabricAgentsApi {
   cleanup(args: FabricAgentTargetArgs & { deleteBranch?: boolean; delete_branch?: boolean }): Promise<{ cleaned: boolean }>;
   create(args: FabricActorRequest): Promise<FabricActorInfo>;
   setModel(args: { id: string; model?: string; scope?: FabricActorBindingScope }): Promise<FabricActorInfo>;
+  switchModel(args: FabricModelSwitchRequest): Promise<FabricModelSwitchResult>;
   setThinking(args: { id: string; thinking?: FabricThinking; scope?: FabricActorBindingScope }): Promise<FabricActorInfo>;
   setTools(args: { id: string; tools: string[]; scope?: "project" | "global" }): Promise<FabricActorInfo>;
   setEvents(args: { id: string; events: FabricActorHostEvent[] }): Promise<FabricActorInfo>;
@@ -712,6 +742,8 @@ interface FabricCouncilRunOptions {
   thinking?: FabricThinking;
   tools?: string[];
   timeoutMs?: number;
+  /** Filesystem execution directory; relative paths resolve from the parent agent cwd. */
+  cwd?: string;
   worktree?: boolean;
 }
 interface FabricCouncilApi {
@@ -1151,7 +1183,7 @@ declare function phase(name: string, options?: FabricWorkflowPhaseOptions): Prom
 declare function phase(input: FabricWorkflowPhaseInput): Promise<{ name: string; index: number; id?: string }>;
 declare function log(...values: unknown[]): void;
 declare const budget: FabricWorkflowApi["budget"];
-type FabricRlmRequest = Omit<FabricAgentRequest, "runner" | "recursive"> & { runner?: "pi" };
+type FabricRlmRequest = Omit<FabricAgentRequest, "runner" | "recursive" | "cwd"> & { runner?: "pi" };
 declare const rlm: { query(args: FabricRlmRequest): Promise<FabricAgentResult> };
 interface FabricConsole {
   log(...args: unknown[]): void;

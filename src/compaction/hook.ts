@@ -1,9 +1,4 @@
 import {
-  buildSessionContext,
-  calculateContextTokens,
-  DEFAULT_COMPACTION_SETTINGS,
-  estimateTokens,
-  sessionEntryToContextMessages,
   type CompactionResult,
   type ExtensionAPI,
   type ExtensionContext,
@@ -11,6 +6,8 @@ import {
   type SessionBeforeTreeEvent,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { calculateContextTokens, DEFAULT_COMPACTION_SETTINGS, estimateTokens } from "../core/token-math.js";
+import { buildSessionContext, sessionEntryToContextMessages } from "../core/session-context.js";
 import { clipUtf8, MAX_SUMMARY_BYTES } from "./bounds.js";
 import { modelCompactionKey } from "./threshold.js";
 import { NO_BUILTIN_ENRICHERS, runEnrichers, type CompactionEnricher } from "./enrichers.js";

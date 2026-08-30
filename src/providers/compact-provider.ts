@@ -101,7 +101,10 @@ const descriptors: FabricActionDescriptor[] = [
     name: "cancel",
     description: "Clear a pending compaction intent before the host commits it",
     inputSchema: emptySchema,
-    risk: "read",
+    // Cancel mutates the compaction controller; it is not a read. The "read"
+    // label predates effect tracking and would have let speculative PTC
+    // pre-fire a control action that may never execute in the real program.
+    risk: "write",
   },
 ];
 

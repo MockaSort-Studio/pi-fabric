@@ -40,6 +40,7 @@ import type {
 import {
   effectiveAgentTimeoutMs,
   AgentManager,
+  validateAgentCwdRequest,
 } from "../agents/manager.js";
 import { checkedHandoffCompaction } from "../agents/handoff.js";
 import type {
@@ -50,12 +51,17 @@ import type {
   AgentSessionSeed,
 } from "../agents/types.js";
 import type { ThinkingTransferInput } from "../agents/thinking-transfer.js";
+import { DEFAULT_FABRIC_CONFIG, type FabricModelsConfig } from "../config.js";
+import {
+  FUZZY_RESOLUTION_MARKERS,
+  resolveFabricModel,
+  type FabricModelCandidate,
+} from "../core/model-resolution.js";
+import { loadModelUsage } from "../core/model-usage.js";
 import { AGENTS_ACTION_DESCRIPTORS } from "./agents-actions.js";
 import { actionArgNormalizer } from "./arg-normalization.js";
 import { isFabricThinking } from "../thinking.js";
 import { ResidencyClient } from "../residency/client.js";
-
-const REMOTE_ASK_ACK_GRACE_MS = 30_000;
 import {
   AgentTranscriptReader,
   recentTranscriptTools,
@@ -63,6 +69,20 @@ import {
   type FabricAgentToolPreviewNode,
   type FabricTranscriptEntry,
 } from "../ui/transcript.js";
+
+const REMOTE_ASK_ACK_GRACE_MS = 30_000;
+const MAX_ACTIVITY_CWD_CHARS = 240;
+
+const displaySafeCwd = (cwd: string): string => {
+  const safe = cwd.replace(/[\u0000-\u001f\u007f]/g, (character) =>
+    `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
+  );
+  if (safe.length <= MAX_ACTIVITY_CWD_CHARS) return safe;
+  return `…${safe.slice(-(MAX_ACTIVITY_CWD_CHARS - 1))}`;
+};
+
+const agentStartedMessage = (handle: AgentHandleInfo): string =>
+  `Agent ${handle.name} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""} · cwd ${displaySafeCwd(handle.cwd)}`;
 
 // Resolve source and executor reasoning channels for the trajectory handoff
 // boundary. The executor model must be registered to transfer at all; an
@@ -142,6 +162,7 @@ const runRequest = (
   args: Record<string, unknown>,
   context: FabricInvocationContext,
   manager: AgentManager,
+  options: { allowCwd?: boolean } = {},
 ): AgentRunRequest => {
   const transport =
     args.transport === "auto" ||
@@ -181,6 +202,7 @@ const runRequest = (
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(typeof args.extensions === "boolean" ? { extensions: args.extensions } : {}),
     ...(typeof args.recursive === "boolean" ? { recursive: args.recursive } : {}),
+    ...(options.allowCwd !== false && typeof args.cwd === "string" ? { cwd: args.cwd } : {}),
     ...(typeof args.worktree === "boolean" ? { worktree: args.worktree } : {}),
     ...(args.residency === "session" || args.residency === "durable"
       ? { residency: args.residency }
@@ -585,7 +607,47 @@ export class AgentsProvider implements FabricProvider {
     readonly agentToolPreviewEnabled: () => boolean = () => true,
     readonly residency?: ResidencyClient,
     readonly ownsRuntime = true,
+    readonly modelsConfig: () => FabricModelsConfig = () => DEFAULT_FABRIC_CONFIG.models,
   ) {}
+
+  /**
+   * Resolve an explicit Pi-runner model selector against the authenticated
+   * registry, honoring models.aliases and pi-model-sort recency for inexact
+   * terms. Unresolvable selectors pass through verbatim: the child Pi runtime
+   * resolves catalog refresh state and custom ids itself and reports its own
+   * error when nothing matches.
+   */
+  #resolvePiModelArgs(
+    args: Record<string, unknown>,
+    context: FabricInvocationContext,
+  ): Record<string, unknown> {
+    const runner =
+      args.runner === "pi" || args.runner === "claude" || args.runner === "veda"
+        ? args.runner
+        : this.manager.config.runner;
+    if (runner !== "pi") return args;
+    const model = typeof args.model === "string" ? args.model.trim() : "";
+    if (!model) return args;
+    let available: FabricModelCandidate[] = [];
+    try {
+      available = context.extensionContext.modelRegistry.getAvailable().map((candidate) => ({
+        provider: String(candidate.provider),
+        id: String(candidate.id),
+        ...(typeof candidate.name === "string" ? { name: candidate.name } : {}),
+      }));
+    } catch {
+      available = [];
+    }
+    if (available.length === 0) return args;
+    const resolution = resolveFabricModel(model, {
+      aliases: this.modelsConfig().aliases,
+      available,
+      lastUsed: loadModelUsage(),
+    });
+    if (resolution.kind !== "resolved" && resolution.kind !== "already-active") return args;
+    const key = `${resolution.model.provider}/${resolution.model.id}`;
+    return key === model ? args : { ...args, model: key };
+  }
 
   async list(
     request: FabricProviderListRequest,
@@ -625,7 +687,9 @@ export class AgentsProvider implements FabricProvider {
         "agents.handoff must be scheduled from inside fabric_exec and completed at its outer result boundary",
       );
     }
-    return context.deferHandoff({ ...args, model });
+    const handoffArgs = { ...args };
+    delete handoffArgs.cwd;
+    return context.deferHandoff({ ...handoffArgs, model });
   }
 
   async executeHandoff(
@@ -636,18 +700,22 @@ export class AgentsProvider implements FabricProvider {
     const model = typeof args.model === "string" ? args.model.trim() : "";
     if (!model) throw new Error("agents.handoff requires an explicit Pi target model");
     const request = runRequest(
-      {
-        ...args,
-        task: handoffTask(args),
-        name:
-          typeof args.name === "string" && args.name.trim()
-            ? args.name
-            : "Trajectory handoff",
-        runner: "pi",
-        model,
-      },
+      this.#resolvePiModelArgs(
+        {
+          ...args,
+          task: handoffTask(args),
+          name:
+            typeof args.name === "string" && args.name.trim()
+              ? args.name
+              : "Trajectory handoff",
+          runner: "pi",
+          model,
+        },
+        context,
+      ),
       context,
       this.manager,
+      { allowCwd: false },
     );
     request.runner = "pi";
     request.sessionSeed = sessionSeed;
@@ -691,7 +759,7 @@ export class AgentsProvider implements FabricProvider {
     switch (actionName) {
       case "run": {
         const handle = await this.manager.spawn(
-          runRequest(args, context, this.manager),
+          runRequest(this.#resolvePiModelArgs(args, context), context, this.manager),
           context.signal,
         );
         this.participants.scheduleRefresh();
@@ -701,9 +769,7 @@ export class AgentsProvider implements FabricProvider {
           kind: "agent",
           name: handle.name,
         });
-        context.update(
-          `Agent ${handle.name} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""}`,
-        );
+        context.update(agentStartedMessage(handle));
         return waitWithProgress(
           this.manager,
           this.#transcripts,
@@ -715,10 +781,14 @@ export class AgentsProvider implements FabricProvider {
       case "handoff":
         return this.handoff(args, context);
       case "spawn": {
-        const request = runRequest(args, context, this.manager);
-        const handle = request.residency === "durable"
-          ? await this.#resident().spawnAgent(request, context.signal)
-          : await this.manager.spawn(request, context.signal);
+        const request = runRequest(this.#resolvePiModelArgs(args, context), context, this.manager);
+        validateAgentCwdRequest(request);
+        const durableRequest = request.residency === "durable" && request.cwd !== undefined
+          ? { ...request, cwd: this.manager.resolveCwd(request.cwd) }
+          : request;
+        const handle = durableRequest.residency === "durable"
+          ? await this.#resident().spawnAgent(durableRequest, context.signal)
+          : await this.manager.spawn(durableRequest, context.signal);
         if (request.residency !== "durable") this.manager.detachSignal(handle.id);
         this.participants.scheduleRefresh();
         context.activity?.({
@@ -727,9 +797,7 @@ export class AgentsProvider implements FabricProvider {
           kind: "agent",
           name: handle.name,
         });
-        context.update(
-          `Agent ${handle.name} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""}`,
-        );
+        context.update(agentStartedMessage(handle));
         return handle;
       }
       case "wait": {
@@ -867,6 +935,92 @@ export class AgentsProvider implements FabricProvider {
           return [];
         }
       }
+      case "switchModel": {
+        const query = typeof args.model === "string" ? args.model.trim() : "";
+        if (!query) {
+          throw new Error(
+            "agents.switchModel requires a model selector: provider/id, models.aliases name, or search term",
+          );
+        }
+        const registry = context.extensionContext.modelRegistry;
+        let available: FabricModelCandidate[] = [];
+        try {
+          available = registry.getAvailable().map((model) => ({
+            provider: String(model.provider),
+            id: String(model.id),
+            ...(typeof model.name === "string" ? { name: model.name } : {}),
+          }));
+        } catch {
+          available = [];
+        }
+        if (available.length === 0) {
+          throw new Error(
+            "agents.switchModel found no authenticated models; configure a provider key or check agents.models()",
+          );
+        }
+        const currentModel = context.extensionContext.model ?? undefined;
+        const resolution = resolveFabricModel(query, {
+          aliases: this.modelsConfig().aliases,
+          available,
+          lastUsed: loadModelUsage(),
+          ...(currentModel
+            ? { current: { provider: currentModel.provider, id: currentModel.id } }
+            : {}),
+          ...(typeof args.provider === "string" && args.provider.trim()
+            ? { provider: args.provider.trim() }
+            : {}),
+        });
+        if (resolution.kind === "already-active") {
+          return {
+            switched: false,
+            reason: "already-active",
+            model: `${resolution.model.provider}/${resolution.model.id}`,
+            ...(resolution.model.name ? { name: resolution.model.name } : {}),
+          };
+        }
+        if (resolution.kind === "ambiguous") {
+          throw new Error(
+            `agents.switchModel: "${query}" matches multiple models: ${resolution.candidates
+              .map((candidate) => `${candidate.provider}/${candidate.id}`)
+              .join(", ")}. Pass an exact provider/id.`,
+          );
+        }
+        if (resolution.kind === "not-found") {
+          throw new Error(
+            resolution.tried !== undefined
+              ? `agents.switchModel: alias "${query}" has no available target. Tried: ${resolution.tried.join(", ")}`
+              : `agents.switchModel: no available model matching "${query}"`,
+          );
+        }
+        if (typeof this.mainAgent.switchModel !== "function") {
+          throw new Error("agents.switchModel requires a local Main session");
+        }
+        const previous = currentModel
+          ? `${currentModel.provider}/${currentModel.id}`
+          : undefined;
+        const outcome = await this.mainAgent.switchModel(
+          { provider: resolution.model.provider, id: resolution.model.id },
+          context.extensionContext,
+        );
+        if (!outcome.ok) {
+          throw new Error(`agents.switchModel: ${outcome.error ?? "switch failed"}`);
+        }
+        context.activity?.({
+          type: "progress",
+          message: `Main model ${previous ? `${previous} → ` : ""}${resolution.model.provider}/${resolution.model.id}`,
+        });
+        return {
+          switched: true,
+          model: `${resolution.model.provider}/${resolution.model.id}`,
+          ...(resolution.model.name ? { name: resolution.model.name } : {}),
+          ...(previous ? { previous } : {}),
+          ...(resolution.via !== undefined ? { via: resolution.via } : {}),
+          ...(resolution.via !== undefined &&
+          !(FUZZY_RESOLUTION_MARKERS as readonly string[]).includes(resolution.via)
+            ? { alias: resolution.via }
+            : {}),
+        };
+      }
       case "stop":
         return this.stopParticipant(String(args.id));
       case "cleanup": {
@@ -876,10 +1030,11 @@ export class AgentsProvider implements FabricProvider {
           : this.manager.cleanup(id, args.deleteBranch === true);
       }
       case "create": {
-        if (args.scope === "global") {
-          return this.globalActors.create(actorRequest(args, context, this.manager, false));
+        const createArgs = this.#resolvePiModelArgs(args, context);
+        if (createArgs.scope === "global") {
+          return this.globalActors.create(actorRequest(createArgs, context, this.manager, false));
         }
-        const request = actorRequest(args, context, this.manager);
+        const request = actorRequest(createArgs, context, this.manager);
         if (request.residency === "durable") await this.#resident().ensureHost();
         const actor = await this.actorManager.create(request);
         if (actor.residency === "durable") await this.#activateDurableActor(actor);

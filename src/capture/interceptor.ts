@@ -1,11 +1,10 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  ExtensionRunner as ImportedExtensionRunner,
-  type ExtensionRunner,
-  type RegisteredTool,
-  type ToolDefinition,
+import type {
+  ExtensionRunner,
+  RegisteredTool,
+  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_FABRIC_CONFIG, type FabricToolCaptureConfig } from "../config.js";
 import { CapturedToolCatalog } from "./catalog.js";
@@ -62,6 +61,44 @@ type ExtensionRunnerConstructor = {
   prototype: ExtensionRunner;
 };
 
+const isExtensionRunnerConstructor = (value: unknown): value is ExtensionRunnerConstructor =>
+  typeof value === "function" &&
+  typeof (value as { prototype?: unknown }).prototype === "object" &&
+  typeof ((value as { prototype: Record<string, unknown> }).prototype).getAllRegisteredTools ===
+    "function";
+
+// pi >= 0.84.3 loads the CLI from dist/bundle/cli.js, whose rollup chunks carry
+// their own ExtensionRunner class identity — the library-level patch alone
+// never fires because the live host runner is an instance of the bundle's copy.
+// Importing each chunk inside the running CLI is a Node module-cache hit, so
+// scanning the bundle is free and yields the class the host actually runs.
+export const bundleExtensionRunnerConstructors = async (
+  bundleDir: string,
+): Promise<ExtensionRunnerConstructor[]> => {
+  const chunksDir = path.join(bundleDir, "chunks");
+  if (!existsSync(chunksDir)) return [];
+  let files: string[];
+  try {
+    files = readdirSync(chunksDir);
+  } catch {
+    return [];
+  }
+  const constructors = new Set<ExtensionRunnerConstructor>();
+  for (const file of files) {
+    if (!file.endsWith(".js")) continue;
+    try {
+      const module = (await import(pathToFileURL(path.join(chunksDir, file)).href)) as Record<
+        string,
+        unknown
+      >;
+      for (const exported of Object.values(module)) {
+        if (isExtensionRunnerConstructor(exported)) constructors.add(exported);
+      }
+    } catch { /* chunk not importable in this realm (worker entries, natives); skip */ }
+  }
+  return [...constructors];
+};
+
 const captureHub = (Runner: ExtensionRunnerConstructor): ToolCaptureHub => {
   const prototype = Runner.prototype as ExtensionRunner & Record<PropertyKey, unknown>;
   const existing = prototype[HUB_SYMBOL] as ToolCaptureHub | undefined;
@@ -110,7 +147,7 @@ const hostPackageRoot = (): string | undefined => {
 };
 
 const extensionRunnerConstructors = async (): Promise<ExtensionRunnerConstructor[]> => {
-  const constructors = new Set<ExtensionRunnerConstructor>([ImportedExtensionRunner]);
+  const constructors = new Set<ExtensionRunnerConstructor>();
   const packageRoots = new Set(
     [process.env.PI_PACKAGE_DIR, hostPackageRoot()].filter(
       (root): root is string => typeof root === "string" && Boolean(root),
@@ -124,6 +161,21 @@ const extensionRunnerConstructors = async (): Promise<ExtensionRunnerConstructor
       };
       if (hostModule.ExtensionRunner) constructors.add(hostModule.ExtensionRunner);
     } catch { /* host entry not importable; skip */ }
+    for (const Runner of await bundleExtensionRunnerConstructors(
+      path.join(packageRoot, "dist", "bundle"),
+    )) {
+      constructors.add(Runner);
+    }
+  }
+  if (constructors.size === 0) {
+    // The host does not advertise its package directory (tests, embeds,
+    // future layouts): fall back to resolving it in this module realm.
+    try {
+      const hostModule = (await import("@earendil-works/pi-coding-agent")) as {
+        ExtensionRunner?: ExtensionRunnerConstructor;
+      };
+      if (hostModule.ExtensionRunner) constructors.add(hostModule.ExtensionRunner);
+    } catch { /* host unavailable in this realm; tool capture stays inert */ }
   }
   return [...constructors];
 };

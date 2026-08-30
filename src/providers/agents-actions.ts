@@ -21,7 +21,8 @@ const runProperties = {
   },
   model: {
     type: "string",
-    description: "Pi provider/id, Claude runtime value, or a Veda backend model/alias; for Veda this is forwarded to the configured backend.",
+    description:
+      "Pi provider/id, a configured models.aliases name, or a search term resolved to the closest authenticated model (recency from pi-model-sort breaks ties); Claude runtime value or Veda backend model/alias are forwarded verbatim.",
   },
   persona: {
     type: "string",
@@ -39,6 +40,10 @@ const runProperties = {
   },
   extensions: { type: "boolean" },
   recursive: { type: "boolean" },
+  cwd: {
+    type: "string",
+    description: "Filesystem execution directory; relative paths resolve from the parent Fabric agent cwd.",
+  },
   worktree: { type: "boolean" },
   schema: { type: "object", description: "Optional JSON Schema for validated structured output" },
 };
@@ -267,6 +272,24 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
       additionalProperties: false,
     },
     risk: "execute",
+  },
+  {
+    name: "switchModel",
+    description:
+      "Switch Main's live Pi session model in place. The model selector accepts an exact provider/id, a configured models.aliases name (alias chains try each target in order until one is authenticated), an exact model id, or a search term; inexact terms resolve to the closest match, preferring recently used models (via pi-model-sort usage, when present).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        model: {
+          type: "string",
+          description: "provider/id, alias name, or search term",
+        },
+        provider: { type: "string" },
+      },
+      required: ["model"],
+      additionalProperties: false,
+    },
+    risk: "agent",
   },
   {
     name: "stop",

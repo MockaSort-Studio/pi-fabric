@@ -134,6 +134,26 @@ describe("PrewalkController", () => {
     expect(controller.status()).toEqual({ state: "idle" });
   });
 
+  it("orders claims with a session-monotonic seq that survives re-arms and cancels", () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      alwaysRearm: true,
+    });
+
+    expect(controller.claim([audit("pi.edit", true)], "session-1")?.seq).toBe(1);
+    expect(controller.completeTask()).toMatchObject({ state: "armed" });
+
+    expect(controller.claimFsDrift("session-1", ["a.ts"])?.seq).toBe(2);
+    controller.cancel();
+    controller.arm({ model: "anthropic/executor", sessionId: "session-1" });
+    expect(controller.claim([audit("pi.write", true)], "session-1")?.seq).toBe(3);
+    // Other sessions start their own sequence.
+    controller.arm({ model: "anthropic/executor", sessionId: "session-2" });
+    expect(controller.claimFsDrift("session-2", ["b.ts"])?.seq).toBe(1);
+  });
+
   it("claims filesystem drift with a synthesized fs.drift mutation audit", () => {
     const controller = new PrewalkController();
     controller.arm({ model: "anthropic/executor", sessionId: "session-1", task: "Implement" });

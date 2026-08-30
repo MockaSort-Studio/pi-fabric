@@ -3,9 +3,21 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import type { CapturedToolCatalog } from "../capture/catalog.js";
 import type { FabricActorHostEvent } from "../actors/types.js";
 import type { FabricState } from "../fabric-state.js";
+import { resolveAgentDir } from "../core/agent-dir.js";
+import { saveFabricConfig } from "../config.js";
 import { armFabricPrewalkSession } from "../prewalk/arm.js";
 import { truncateMiddle } from "../util.js";
 import type { FabricUiController } from "../ui/controller.js";
+import {
+  FABRIC_PEER_AWAIT_SETTLE_EVENT,
+  FABRIC_PEER_CARDS_EVENT,
+  FABRIC_PREWALK_REQUEST_EVENT,
+  readFabricPeerAwaitSettleRequestV1,
+  readFabricPeerCardsRequestV1,
+  readFabricPrewalkRequestV1,
+  type FabricPrewalkRequestResultV1,
+} from "../protocol.js";
+import { awaitPeerSettle, buildPeerCards } from "../topology/peer-settle.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -101,8 +113,118 @@ const resolvePrewalkModel = async (
   return context.ui.select("Prewalk executor model", keys);
 };
 
+const armPrewalk = async (
+  state: FabricState,
+  context: ExtensionContext,
+  pi: ExtensionAPI,
+  task = "",
+): Promise<FabricPrewalkRequestResultV1> => {
+  if (state.config.prewalk.enabled === false) {
+    const error = "Fabric prewalk is disabled; re-enable with /fabric prewalk --enable or /fabric settings.";
+    context.ui.notify(error, "error");
+    return { ok: false, error };
+  }
+  if (!state.config.fullCodeMode || state.config.schema.mode === "enforce") {
+    const error = "Fabric prewalk requires full code mode and Schema enforce mode disabled.";
+    context.ui.notify(error, "error");
+    return { ok: false, error };
+  }
+  if (state.config.prewalk.mode === "trajectory" && !state.config.agents.enabled) {
+    const error = "Trajectory prewalk requires enabled agents. Choose in-place mode or enable agents.";
+    context.ui.notify(error, "error");
+    return { ok: false, error };
+  }
+  const model = await resolvePrewalkModel(state, context);
+  if (!model) return { ok: false, error: "Fabric prewalk was not armed." };
+
+  await armFabricPrewalkSession(state, context, pi, {
+    model,
+    ...(task ? { task } : {}),
+  });
+  const modeLabel =
+    state.config.prewalk.mode === "in-place"
+      ? "Main will continue in place"
+      : "the trajectory will move to a visible child executor";
+  context.ui.notify(
+    task
+      ? `Fabric prewalk armed for the next matching Fabric boundary; ${modeLabel} with ${model}${state.config.prewalk.alwaysRearm ? "; always re-arm enabled" : ""}`
+      : `Fabric prewalk armed for the next task; ${modeLabel} with ${model}${state.config.prewalk.alwaysRearm ? "; always re-arm enabled" : ""}`,
+    "info",
+  );
+  if (task) pi.sendUserMessage(task);
+  return { ok: true };
+};
+
 export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps): void {
   const { state, fabricUi, capturedTools, applyFabricMode, suspendToolCapture } = deps;
+  const unsubscribePrewalkRequests = pi.events?.on?.(FABRIC_PREWALK_REQUEST_EVENT, (value) => {
+    const request = readFabricPrewalkRequestV1(value);
+    if (!request || !request.claim()) return;
+    void (async () => {
+      try {
+        await state.ensure(request.context);
+        request.respond(await armPrewalk(state, request.context, pi));
+      } catch (error) {
+        request.respond({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  });
+  if (unsubscribePrewalkRequests) {
+    pi.on("session_shutdown", () => unsubscribePrewalkRequests());
+  }
+
+  // Peer queuing protocol (used by pi-queue-steer): enumerate live peer root
+  // sessions and hold dispatch until they settle on the project mesh.
+  const unsubscribePeerCards = pi.events?.on?.(FABRIC_PEER_CARDS_EVENT, (value) => {
+    const request = readFabricPeerCardsRequestV1(value);
+    if (!request || !request.claim()) return;
+    void (async () => {
+      try {
+        await state.ensure(request.context);
+        request.respond({ ok: true, cards: buildPeerCards(state.peerInfos()) });
+      } catch (error) {
+        request.respond({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  });
+  const unsubscribePeerAwait = pi.events?.on?.(FABRIC_PEER_AWAIT_SETTLE_EVENT, (value) => {
+    const request = readFabricPeerAwaitSettleRequestV1(value);
+    if (!request || !request.claim()) return;
+    void (async () => {
+      try {
+        await state.ensure(request.context);
+        if (!state.config.mesh.enabled) {
+          request.respond({ ok: false, error: "Fabric mesh is disabled; peers cannot be observed" });
+          return;
+        }
+        request.respond(await awaitPeerSettle({
+          poll: () => state.peerInfos(),
+          ...(request.selector !== undefined ? { selector: request.selector } : {}),
+          ...(request.settledForMs !== undefined ? { settledForMs: request.settledForMs } : {}),
+          ...(request.signal ? { signal: request.signal } : {}),
+          ...(request.update ? { onUpdate: request.update } : {}),
+        }));
+      } catch (error) {
+        request.respond({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  });
+  if (unsubscribePeerCards || unsubscribePeerAwait) {
+    pi.on("session_shutdown", () => {
+      unsubscribePeerCards?.();
+      unsubscribePeerAwait?.();
+    });
+  }
+
   pi.registerCommand("fabric", {
     description: "Open Fabric, arm prewalk, reload, or manage agents and actors",
     getArgumentCompletions: (argumentPrefix: string): AutocompleteItem[] | null => {
@@ -237,15 +359,57 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           state,
           applyFabricMode,
           capturedTools,
-          onConfigApplied: () => {
-            deps.refreshCodePreviewSettings?.();
-            deps.refreshToolDisplay?.();
+          // Only card-affecting preferences pay for a transcript refresh:
+          // refreshToolDisplay re-renders every fabric_exec card, so gating it
+          // on the display sections keeps unrelated saves off the transcript.
+          onConfigApplied: (id) => {
+            if (id.startsWith("codePreview.")) {
+              deps.refreshCodePreviewSettings?.();
+              deps.refreshToolDisplay?.();
+            } else if (id === "ui.toolDisplay" || id === "ui.showAgentToolPreview") {
+              deps.refreshToolDisplay?.();
+            }
           },
         });
         return;
       }
       if (command === "prewalk") {
         const option = argumentsList[0];
+        if (option === "--disable" || option === "--enable") {
+          // Persistent master switch: saves prewalk.enabled to the same scope
+          // the settings UI writes (project when trusted), reloads config so
+          // the rest of the session agrees, and when disabling also cancels
+          // the live arm so nothing claims mid-change.
+          const enabled = option === "--enable";
+          try {
+            const projectTrusted = context.isProjectTrusted();
+            const saved = saveFabricConfig(
+              {
+                cwd: context.cwd,
+                agentDir: resolveAgentDir(),
+                projectTrusted,
+                scope: projectTrusted ? "project" : "global",
+              },
+              { prewalk: { enabled } },
+            );
+            state.reloadConfig(context);
+            if (!enabled) {
+              state.prewalk.cancel();
+              state.prewalkDrift.drop(context.sessionManager.getSessionId());
+              context.ui.setStatus("fabric-prewalk", undefined);
+            }
+            context.ui.notify(
+              `Fabric prewalk ${enabled ? "enabled" : "disabled"} (${saved.scope}: ${saved.path})`,
+              "info",
+            );
+          } catch (error) {
+            context.ui.notify(
+              `Failed to update Fabric prewalk setting: ${error instanceof Error ? error.message : String(error)}`,
+              "error",
+            );
+          }
+          return;
+        }
         if (option === "--off" || option === "--cancel") {
           state.prewalk.cancel();
           state.prewalkDrift.drop(context.sessionManager.getSessionId());
@@ -263,38 +427,8 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           );
           return;
         }
-        if (!state.config.fullCodeMode || state.config.schema.mode === "enforce") {
-          context.ui.notify(
-            "Fabric prewalk requires full code mode and Schema enforce mode disabled.",
-            "error",
-          );
-          return;
-        }
-        if (state.config.prewalk.mode === "trajectory" && !state.config.agents.enabled) {
-          context.ui.notify(
-            "Trajectory prewalk requires enabled agents. Choose in-place mode or enable agents.",
-            "error",
-          );
-          return;
-        }
-        const model = await resolvePrewalkModel(state, context);
-        if (!model) return;
         const task = argumentsText.trim().slice(command.length).trim();
-        await armFabricPrewalkSession(state, context, pi, {
-          model,
-          ...(task ? { task } : {}),
-        });
-        const modeLabel =
-          state.config.prewalk.mode === "in-place"
-            ? "Main will continue in place"
-            : "the trajectory will move to a visible child executor";
-        context.ui.notify(
-          task
-            ? `Fabric prewalk armed for the next matching Fabric boundary; ${modeLabel} with ${model}${state.config.prewalk.alwaysRearm ? "; always re-arm enabled" : ""}`
-            : `Fabric prewalk armed for the next task; ${modeLabel} with ${model}${state.config.prewalk.alwaysRearm ? "; always re-arm enabled" : ""}`,
-          "info",
-        );
-        if (task) pi.sendUserMessage(task);
+        await armPrewalk(state, context, pi, task);
         return;
       }
       if (command === "dashboard" || command === "ui") {
@@ -646,7 +780,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
       }
       if (command !== "status") {
         context.ui.notify(
-          "Usage: /fabric [status|dashboard|prewalk [task]|prewalk --off|reload|providers|agents|actors|global|import <name> [as <new>]|export <id> [--overwrite]|messages <id>|clear-messages <id>|events <id> [event...]|log <id>|export-log <id>|attach <id>|stop <id>|remove <id>|kill <id>]",
+          "Usage: /fabric [status|dashboard|prewalk [task]|prewalk --off|--disable|--enable|reload|providers|agents|actors|global|import <name> [as <new>]|export <id> [--overwrite]|messages <id>|clear-messages <id>|events <id> [event...]|log <id>|export-log <id>|attach <id>|stop <id>|remove <id>|kill <id>]",
           "warning",
         );
         return;

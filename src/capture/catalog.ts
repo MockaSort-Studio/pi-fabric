@@ -1,10 +1,5 @@
-import {
-  wrapRegisteredTool,
-  type ExtensionRunner,
-  type RegisteredTool,
-  type SourceInfo,
-  type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionRunner, RegisteredTool, SourceInfo, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { wrapRegisteredToolForCapture } from "./wrapper.js";
 import type { FabricToolCaptureConfig } from "../config.js";
 import type { FabricRisk } from "../protocol.js";
 
@@ -14,7 +9,7 @@ export interface CapturedToolEntry {
   registeredTool: RegisteredTool;
   sourceInfo: SourceInfo;
   runner: ExtensionRunner;
-  wrappedTool: ReturnType<typeof wrapRegisteredTool>;
+  wrappedTool: ReturnType<typeof wrapRegisteredToolForCapture>;
   risk: FabricRisk;
 }
 
@@ -55,7 +50,7 @@ export class CapturedToolCatalog {
         registeredTool,
         sourceInfo,
         runner,
-        wrappedTool: wrapRegisteredTool(registeredTool, runner),
+        wrappedTool: wrapRegisteredToolForCapture(registeredTool, runner),
         risk: config.risks[definition.name] ?? config.defaultRisk,
       });
     }

@@ -10,6 +10,7 @@ import type {
   FabricInvocationContext,
   FabricProvider,
   FabricProviderListRequest,
+  FabricToolAnnotations,
 } from "../protocol.js";
 import { sanitizeMcpRefPart } from "../ref-names.js";
 import {
@@ -704,12 +705,16 @@ export class McpProvider implements FabricProvider {
         description: entry.description,
         fetchedAt: entry.fetchedAt,
         stale: entry.stale,
-        tools: entry.tools.map((tool) => ({
-          name: tool.name,
-          ...(tool.description !== undefined ? { description: tool.description } : {}),
-          ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
-          ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
-        })),
+        tools: entry.tools.map((tool) => {
+          const annotations = (tool as { annotations?: FabricToolAnnotations }).annotations;
+          return {
+            name: tool.name,
+            ...(tool.description !== undefined ? { description: tool.description } : {}),
+            ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
+            ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
+            ...(annotations !== undefined ? { annotations: { ...annotations } } : {}),
+          };
+        }),
       };
     }
     return this.#store.save({
@@ -852,6 +857,9 @@ export class McpProvider implements FabricProvider {
   }
 
   #toolDescriptor(server: string, tool: ServerToolInfo): FabricActionDescriptor {
+    // mcporter's ServerToolInfo does not declare annotations yet; read them
+    // structurally so a runtime that surfaces them flows straight through.
+    const annotations = (tool as { annotations?: FabricToolAnnotations }).annotations;
     return {
       name: `${server}.${tool.name}`,
       description: tool.description ?? `${tool.name} on MCP server ${server}`,
@@ -859,6 +867,7 @@ export class McpProvider implements FabricProvider {
       ...(tool.outputSchema ? { outputSchema: normalizeSchema(tool.outputSchema) } : {}),
       risk: "network",
       namespace: server,
+      ...(annotations ? { annotations: { ...annotations } } : {}),
     };
   }
 

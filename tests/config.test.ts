@@ -34,6 +34,26 @@ afterEach(() => {
 });
 
 describe("Fabric configuration", () => {
+  it("normalizes models.aliases into fallback chains", () => {
+    expect(DEFAULT_FABRIC_CONFIG.models.aliases).toEqual({});
+    expect(normalizeFabricConfig({}).models.aliases).toEqual({});
+    expect(
+      normalizeFabricConfig({
+        models: {
+          aliases: {
+            cheap: "google/gemini-2.5-flash",
+            budget: ["openai/gpt-5-mini", "google/gemini-2.5-flash"],
+            broken: "not-a-model",
+            empty: [],
+          },
+        },
+      }).models.aliases,
+    ).toEqual({
+      cheap: ["google/gemini-2.5-flash"],
+      budget: ["openai/gpt-5-mini", "google/gemini-2.5-flash"],
+    });
+  });
+
   it("normalizes declarative component entries", () => {
     expect(DEFAULT_FABRIC_CONFIG.components).toEqual([]);
     const config = normalizeFabricConfig({
@@ -158,6 +178,12 @@ describe("Fabric configuration", () => {
     expect(normalizeFabricConfig({ prewalk: { mode: "child" } }).prewalk.mode).toBe(
       "in-place",
     );
+  });
+
+  it("parses the prewalk master switch only as an explicit disable", () => {
+    expect(normalizeFabricConfig({}).prewalk.enabled).toBeUndefined();
+    expect(normalizeFabricConfig({ prewalk: { enabled: true } }).prewalk.enabled).toBeUndefined();
+    expect(normalizeFabricConfig({ prewalk: { enabled: false } }).prewalk.enabled).toBe(false);
   });
 
   it("keeps a valid prewalk thinking level and drops invalid or empty ones", () => {
@@ -589,6 +615,31 @@ describe("Fabric configuration", () => {
       executor: { timeoutMs: 45_000 },
     });
     expect(JSON.parse(fs.readFileSync(projectPath, "utf8"))).toEqual({ fullCodeMode: false });
+  });
+
+  it("preserves a newer configuration version written by a future build", () => {
+    const root = temporaryDirectory();
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+    fs.mkdirSync(agentDir, { recursive: true });
+    const globalPath = path.join(agentDir, "fabric.json");
+    const future = { configVersion: 4, futureSection: { enabled: true } };
+    fs.writeFileSync(globalPath, JSON.stringify(future));
+
+    // Load path: forward-compatible docs are accepted as-is and never rewritten.
+    loadFabricConfig({ cwd, agentDir, projectTrusted: true });
+    expect(JSON.parse(fs.readFileSync(globalPath, "utf8"))).toEqual(future);
+
+    // Save path: version markers written by newer builds survive a save.
+    saveFabricConfig(
+      { cwd, agentDir, projectTrusted: true, scope: "global" },
+      { executor: { timeoutMs: 10_000 } },
+    );
+    expect(JSON.parse(fs.readFileSync(globalPath, "utf8"))).toEqual({
+      ...future,
+      executor: { timeoutMs: 10_000 },
+    });
   });
 
   it("saves into the global fabric.json when the project is untrusted", () => {

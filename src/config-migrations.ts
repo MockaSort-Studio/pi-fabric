@@ -6,6 +6,10 @@ export interface FabricConfigMigrationResult {
   toVersion: number;
   appliedVersions: number[];
   changed: boolean;
+  // True when the document was written by a newer pi-fabric build. The document
+  // is accepted as-is (newer builds only add semantics older builds can safely
+  // ignore) and is never rewritten or version-stamped down.
+  forwardCompatible: boolean;
 }
 
 interface FabricConfigMigration {
@@ -93,11 +97,6 @@ const configVersion = (document: Readonly<Record<string, unknown>>): number => {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     throw new Error("Fabric configuration configVersion must be a non-negative integer");
   }
-  if (value > CURRENT_FABRIC_CONFIG_VERSION) {
-    throw new Error(
-      `Fabric configuration version ${value} is newer than supported version ${CURRENT_FABRIC_CONFIG_VERSION}`,
-    );
-  }
   return value;
 };
 
@@ -105,6 +104,19 @@ export const migrateFabricConfigDocument = (
   input: Readonly<Record<string, unknown>>,
 ): FabricConfigMigrationResult => {
   const fromVersion = configVersion(input);
+  if (fromVersion > CURRENT_FABRIC_CONFIG_VERSION) {
+    // Written by a newer build: accept as-is instead of bricking the
+    // extension. Legacy-shape checks (e.g. the removed subagents key) apply to
+    // supported versions only — newer semantics are unknown here.
+    return {
+      document: structuredClone(input) as Record<string, unknown>,
+      fromVersion,
+      toVersion: fromVersion,
+      appliedVersions: [],
+      changed: false,
+      forwardCompatible: true,
+    };
+  }
   let version = fromVersion;
   let document = structuredClone(input) as Record<string, unknown>;
   const appliedVersions: number[] = [];
@@ -130,5 +142,6 @@ export const migrateFabricConfigDocument = (
     toVersion: version,
     appliedVersions,
     changed: appliedVersions.length > 0,
+    forwardCompatible: false,
   };
 };

@@ -4,6 +4,129 @@ export const FABRIC_PROVIDER_REGISTER_EVENT = "pi-fabric:provider:register:v1";
 export const FABRIC_PROVIDER_DISCOVER_EVENT = "pi-fabric:provider:discover:v1";
 export const FABRIC_COMPONENT_REGISTER_EVENT = "pi-fabric:component:register:v1";
 export const FABRIC_COMPONENT_DISCOVER_EVENT = "pi-fabric:component:discover:v1";
+export const FABRIC_PREWALK_REQUEST_EVENT = "pi-fabric:prewalk:request:v1";
+
+export type FabricPrewalkRequestResultV1 =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/** Host-local request used by queue extensions that need an acknowledged prewalk arm. */
+export interface FabricPrewalkRequestV1 {
+  version: 1;
+  context: ExtensionContext;
+  claim: () => boolean;
+  respond: (result: FabricPrewalkRequestResultV1) => void;
+}
+
+export const readFabricPrewalkRequestV1 = (
+  value: unknown,
+): FabricPrewalkRequestV1 | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    record.version !== 1 ||
+    typeof record.context !== "object" ||
+    record.context === null ||
+    typeof record.claim !== "function" ||
+    typeof record.respond !== "function"
+  ) {
+    return undefined;
+  }
+  return value as FabricPrewalkRequestV1;
+};
+
+export const FABRIC_PEER_CARDS_EVENT = "pi-fabric:peers:cards:v1";
+export const FABRIC_PEER_AWAIT_SETTLE_EVENT = "pi-fabric:peer:await-settle:v1";
+
+/** One root peer session on the project mesh, for pickers and status lines. */
+export interface FabricPeerCardV1 {
+  id: string;
+  /** Linear-style project label (e.g. "PQS-2") minted by the owning host. */
+  label: string;
+  status: "idle" | "running";
+  model?: string;
+  cwd?: string;
+  startedAt: number;
+  updatedAt: number;
+  pendingMessages: boolean;
+}
+
+export type FabricPeerCardsResultV1 =
+  | { ok: true; cards: FabricPeerCardV1[] }
+  | { ok: false; error: string };
+
+/** Host-local request used by queue extensions to enumerate live peer sessions. */
+export interface FabricPeerCardsRequestV1 {
+  version: 1;
+  context: ExtensionContext;
+  claim: () => boolean;
+  respond: (result: FabricPeerCardsResultV1) => void;
+}
+
+export const readFabricPeerCardsRequestV1 = (
+  value: unknown,
+): FabricPeerCardsRequestV1 | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    record.version !== 1 ||
+    typeof record.context !== "object" ||
+    record.context === null ||
+    typeof record.claim !== "function" ||
+    typeof record.respond !== "function"
+  ) {
+    return undefined;
+  }
+  return value as FabricPeerCardsRequestV1;
+};
+
+export interface FabricPeerSettleProgressV1 {
+  waiting: Array<{ label: string; status: "idle" | "running" }>;
+}
+
+export type FabricPeerAwaitSettleResultV1 =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/**
+ * Host-local request used by queue extensions to hold dispatch until peer
+ * sessions settle. A peer counts as settled once it has been quiet
+ * (status-wide) for settledForMs; peers that vanish from the mesh count as
+ * settled since they can no longer conflict. Selector matches a peer label
+ * (case-insensitive) or exact participant id; omitted waits on all peers.
+ */
+export interface FabricPeerAwaitSettleRequestV1 {
+  version: 1;
+  context: ExtensionContext;
+  selector?: string;
+  settledForMs?: number;
+  signal?: AbortSignal;
+  update?: (progress: FabricPeerSettleProgressV1) => void;
+  claim: () => boolean;
+  respond: (result: FabricPeerAwaitSettleResultV1) => void;
+}
+
+export const readFabricPeerAwaitSettleRequestV1 = (
+  value: unknown,
+): FabricPeerAwaitSettleRequestV1 | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const signal = record.signal as AbortSignal | undefined;
+  if (
+    record.version !== 1 ||
+    typeof record.context !== "object" ||
+    record.context === null ||
+    typeof record.claim !== "function" ||
+    typeof record.respond !== "function" ||
+    (record.selector !== undefined && typeof record.selector !== "string") ||
+    (record.settledForMs !== undefined && typeof record.settledForMs !== "number") ||
+    (signal !== undefined && typeof signal.aborted !== "boolean") ||
+    (record.update !== undefined && typeof record.update !== "function")
+  ) {
+    return undefined;
+  }
+  return value as FabricPeerAwaitSettleRequestV1;
+};
 
 /** Identifies host-side tool lifecycle events replayed for a nested Fabric call. */
 export const FABRIC_NESTED_TOOL_CALL_ID_PREFIX = "fabric_";
@@ -46,6 +169,14 @@ export interface FabricActionEffect {
   resources?: string[];
   ordering?: FabricEffectOrdering;
 }
+
+/** MCP tool annotations (Model Context Protocol ToolAnnotations), cached when a runtime surfaces them. */
+export interface FabricToolAnnotations {
+  readOnlyHint?: boolean;
+  idempotentHint?: boolean;
+  destructiveHint?: boolean;
+  openWorldHint?: boolean;
+}
 export type FabricActivityEntityKind =
   | "agent"
   | "actor"
@@ -75,6 +206,7 @@ export interface FabricActionDescriptor {
   risk: FabricRisk;
   namespace?: string;
   effect?: FabricActionEffect;
+  annotations?: FabricToolAnnotations;
 }
 
 export interface FabricCapabilityActionHead {

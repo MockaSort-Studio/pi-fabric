@@ -1,4 +1,5 @@
-import { completeSimple, Type, type Usage } from "@earendil-works/pi-ai/compat";
+import type { Usage } from "@earendil-works/pi-ai/compat";
+import { Type } from "typebox";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { FabricRisk } from "../protocol.js";
 import type { ResolvedFabricAction } from "./action-registry.js";
@@ -87,14 +88,22 @@ const transcriptEvidence = (context: ExtensionContext): string => {
     : joined.slice(joined.length - MAX_TRANSCRIPT_CHARS);
 };
 
-type CompleteSimpleArgs = Parameters<typeof completeSimple>;
+type CompleteSimpleFn = typeof import("@earendil-works/pi-ai/compat").completeSimple;
+type CompleteSimpleArgs = Parameters<CompleteSimpleFn>;
+
+let completeSimpleLoader: Promise<CompleteSimpleFn> | undefined;
+const loadCompleteSimple = (): Promise<CompleteSimpleFn> => {
+  completeSimpleLoader ??= import("@earendil-works/pi-ai/compat")
+    .then((module) => module.completeSimple);
+  return completeSimpleLoader;
+};
 
 interface NativeClassifierProvider {
   streamSimple(
     model: CompleteSimpleArgs[0],
     context: CompleteSimpleArgs[1],
     options: CompleteSimpleArgs[2],
-  ): { result(): ReturnType<typeof completeSimple> };
+  ): { result(): ReturnType<CompleteSimpleFn> };
 }
 
 // Newer Pi runtimes expose their effective provider directly. Older supported
@@ -109,16 +118,16 @@ const nativeProvider = (
   return registry.getProvider?.(providerId);
 };
 
-const completeWithPiProvider = (
+const completeWithPiProvider = async (
   context: ExtensionContext,
   model: CompleteSimpleArgs[0],
   request: CompleteSimpleArgs[1],
   options: CompleteSimpleArgs[2],
 ) => {
   const provider = nativeProvider(context, model.provider);
-  return provider
-    ? provider.streamSimple(model, request, options).result()
-    : completeSimple(model, request, options);
+  if (provider) return provider.streamSimple(model, request, options).result();
+  const completeSimple = await loadCompleteSimple();
+  return completeSimple(model, request, options);
 };
 
 const configuredModel = (context: ExtensionContext, modelKey?: string) => {

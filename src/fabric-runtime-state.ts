@@ -1,9 +1,11 @@
-import { getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { resolveAgentDir } from "./core/agent-dir.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { FabricActivityStore } from "./activity/store.js";
 import { ActorManager } from "./actors/manager.js";
+import { resolvePiBinary } from "./agents/pi-binary.js";
 import { GlobalActorRegistry } from "./actors/global-registry.js";
 import { buildActorContext } from "./actors/context.js";
 import { actorDeliveryNotice } from "./actors/delivery-policy.js";
@@ -30,6 +32,7 @@ import type {
   FabricComponentInfo,
 } from "./components/types.js";
 import {
+  DEFAULT_FABRIC_CONFIG,
   loadFabricConfig,
   type FabricConfig,
   type FabricResultFormat,
@@ -37,11 +40,24 @@ import {
 import {
   ActionRegistry,
   type FabricCapabilityViewLease,
+  type ResolvedFabricAction,
 } from "./core/action-registry.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
 import { CompactController, type CompactLastCommit, type CompactPendingIntent } from "./core/compact-controller.js";
 import { FabricToolResultProxy } from "./core/tool-result-proxy.js";
 import { FabricExecutionService, type FabricExecutionResult } from "./execution-service.js";
+import {
+  isSpeculationEligible,
+  mcpAllowlistMatch,
+  TIER_A_SPECULATION_REFS,
+} from "./speculation/eligibility.js";
+import { createFreshnessChecker } from "./speculation/freshness.js";
+import { FabricSpeculationStore } from "./speculation/store.js";
+import { FabricSpeculationStreamTap } from "./speculation/stream-tap.js";
+import type {
+  FabricSpeculationCandidate,
+  FabricSpeculationReplay,
+} from "./speculation/types.js";
 import { MeshStore, type MeshIdentity } from "./mesh/store.js";
 import { LifecycleBroker } from "./lifecycle/broker.js";
 import type { FabricLifecycleEventType } from "./lifecycle/types.js";
@@ -87,6 +103,7 @@ import {
   FABRIC_PROVIDER_DISCOVER_EVENT,
   type FabricActionDescriptor,
   type FabricComponentDiscovery,
+  type FabricInvocationContext,
   type FabricProvider,
   type FabricProviderDiscovery,
 } from "./protocol.js";
@@ -127,6 +144,8 @@ export class FabricRuntimeState {
   #mcpProvider: McpProvider | undefined;
   #config: FabricConfig | undefined;
   #execution: FabricExecutionService | undefined;
+  #speculationStore: FabricSpeculationStore | undefined;
+  #speculationTap: FabricSpeculationStreamTap | undefined;
   #agents: AgentManager | undefined;
   #actors: ActorManager | undefined;
   #globalActors: GlobalActorRegistry | undefined;
@@ -196,6 +215,99 @@ export class FabricRuntimeState {
   get config(): FabricConfig {
     if (!this.#config) throw new Error("Pi Fabric has not initialized");
     return this.#config;
+  }
+
+  /** Stream tap for speculative PTC; undefined when speculation is disabled. */
+  get speculationTap(): FabricSpeculationStreamTap | undefined {
+    return this.#speculationTap;
+  }
+
+  /** Turn-boundary backstop: tap state and unserved entries never outlive a turn. */
+  resetSpeculation(): void {
+    this.#speculationTap?.reset();
+    this.#speculationStore?.reset();
+  }
+
+  // Speculative PTC: the store is the epoch-checked promise cache consumed by
+  // ActionRegistry.invoke; the tap watches fabric_exec argument streaming and
+  // launches literal-args Tier-A calls early (docs/speculation.md).
+  #wireSpeculation(): void {
+    const config = this.#config;
+    const registry = this.#registry;
+    if (!config || !registry || !config.speculation.enabled) return;
+    const { speculation } = config;
+    const store = new FabricSpeculationStore(speculation);
+    registry.setSpeculation(store, (action: ResolvedFabricAction) =>
+      isSpeculationEligible(
+        {
+          ref: action.ref,
+          provider: action.provider,
+          risk: action.risk,
+          effectKind: action.effect?.kind,
+          ...(action.annotations ? { annotations: action.annotations } : {}),
+        },
+        speculation.mcpAllowlist,
+      ));
+    this.#speculationStore = store;
+    this.#speculationTap = new FabricSpeculationStreamTap({
+      enabled: () => this.#config?.speculation.enabled === true,
+      maxBufferBytes: () => this.#config?.speculation.maxBufferBytes ?? 2 * 1024 * 1024,
+      isEligible: (ref) =>
+        TIER_A_SPECULATION_REFS.has(ref) ||
+        (ref.startsWith("mcp.") &&
+          mcpAllowlistMatch(
+            ref.slice("mcp.".length),
+            this.#config?.speculation.mcpAllowlist ?? [],
+          )),
+      launch: (toolCallId, candidate, extensionContext) => {
+        void this.#launchSpeculation(toolCallId, candidate, extensionContext).catch(
+          () => undefined,
+        );
+      },
+    });
+    // The scanner pulls in the TypeScript compiler; load it in the background
+    // so session startup never pays. Streams that open first are re-scanned in
+    // full once the factory lands (their extractors buffered the prefix).
+    void import("./speculation/scanner.js").then(
+      (module) => {
+        this.#speculationTap?.setScannerFactory(() => new module.LiteralCallScanner());
+      },
+      () => undefined,
+    );
+  }
+
+  async #launchSpeculation(
+    toolCallId: string,
+    candidate: FabricSpeculationCandidate,
+    context: ExtensionContext,
+  ): Promise<void> {
+    const registry = this.#registry;
+    const store = this.#speculationStore;
+    if (!registry || !store || this.#config?.speculation.enabled !== true) return;
+    const replay: FabricSpeculationReplay = {};
+    const lightContext: FabricInvocationContext = {
+      cwd: context.cwd,
+      signal: undefined,
+      parentToolCallId: toolCallId,
+      nestedToolCallId: "fabric-speculation",
+      extensionContext: context,
+      update() {},
+    };
+    const speculation = await registry.speculate(
+      candidate.ref,
+      candidate.args,
+      lightContext,
+      replay,
+    );
+    if (!speculation) return;
+    store.launch(
+      toolCallId,
+      candidate.ref,
+      speculation.preparedArgs,
+      speculation.execute,
+      createFreshnessChecker(candidate.ref, speculation.preparedArgs, context.cwd),
+      replay,
+    );
   }
 
   get registry(): ActionRegistry {
@@ -296,18 +408,23 @@ export class FabricRuntimeState {
     this.prewalk.cancel();
     this.prewalkDrift.clear();
     context.ui.setStatus("fabric-prewalk", undefined);
+    this.#speculationTap?.reset();
+    this.#speculationStore?.reset();
+    this.#speculationTap = undefined;
+    this.#speculationStore = undefined;
     this.activity.reset();
     this.sessionApprovals.approvedRisks.clear();
     this.#cwd = context.cwd;
     const projectTrusted = context.isProjectTrusted();
     this.#config = bootstrapConfig ?? loadFabricConfig({
       cwd: context.cwd,
-      agentDir: getAgentDir(),
+      agentDir: resolveAgentDir(),
       projectTrusted,
     });
     this.#registry = new ActionRegistry(
       new FabricToolResultProxy(() => this.capturedTools.runner),
     );
+    this.#wireSpeculation();
     this.#unsubscribeCapturedCatalog = this.capturedTools.subscribe(() =>
       this.#registry?.notifyCatalogChanged("extensions"),
     );
@@ -648,7 +765,7 @@ export class FabricRuntimeState {
         await this.#agentsProvider.deliverLifecycle(subscription, event);
       },
     );
-    this.#globalActors = new GlobalActorRegistry(getAgentDir(), this.#config.mesh.maxEventBytes);
+    this.#globalActors = new GlobalActorRegistry(resolveAgentDir(), this.#config.mesh.maxEventBytes);
     this.#residency = ownsPersistentActorRegistry
       ? new ResidencyClient({
           config: {
@@ -666,7 +783,7 @@ export class FabricRuntimeState {
             retention: structuredClone(this.#config.retention),
             workerPath: this.#paths?.worker ?? fileURLToPath(new URL("./worker.js", import.meta.url)),
             fabricExtensionPath: this.#paths?.extension ?? fileURLToPath(new URL("./index.js", import.meta.url)),
-            piBinary: process.env.PI_FABRIC_PI_BINARY ?? "pi",
+            piBinary: resolvePiBinary(),
             claudeBinary:
               process.env.PI_FABRIC_CLAUDE_BINARY ?? this.#config.agents.claude.binary,
             vedaBinary:
@@ -713,6 +830,7 @@ export class FabricRuntimeState {
       () => this.#config?.ui.showAgentToolPreview ?? true,
       this.#residency,
       false,
+      () => this.#config?.models ?? DEFAULT_FABRIC_CONFIG.models,
     );
     this.#agentsProvider = agentsProvider;
     this.#control.start((command, from, signal) =>
@@ -741,7 +859,7 @@ export class FabricRuntimeState {
     if (this.#config.memory.enabled) {
       const sessionFile = context.sessionManager.getSessionFile();
       const memoryContext: MemoryProviderContext = {
-        agentDir: getAgentDir(),
+        agentDir: resolveAgentDir(),
         cwd: context.cwd,
         config: this.#config.memory,
         sessionId,
@@ -831,16 +949,24 @@ export class FabricRuntimeState {
     if (!this.initialized || this.#cwd !== context.cwd) await this.initialize(context);
   }
 
-  reloadConfig(context: ExtensionContext): void {
+  // Accepts the config FabricState just loaded so a /fabric settings save
+  // costs one loadFabricConfig instead of two. The runtime still stamps
+  // schema.mode from its own previous config, preserving the existing
+  // in-memory override chain (state and runtime share the same preserved
+  // mode by construction: the runtime's config originates from FabricState).
+  reloadConfig(context: ExtensionContext, next: FabricConfig): void {
     if (!this.#config || !this.#cwd) return;
-    const next = loadFabricConfig({
-      cwd: context.cwd,
-      agentDir: getAgentDir(),
-      projectTrusted: context.isProjectTrusted(),
-    });
     next.schema.mode = this.#config.schema.mode;
     const previousComponents = structuredClone(this.#config.components);
     deepAssign(this.#config as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>);
+    // The persisted master switch wins over any live arm: disabling prewalk
+    // via /fabric settings (or an external config edit followed by a reload)
+    // cancels the arm so no later boundary can claim behind the user's back.
+    if (next.prewalk.enabled === false && this.prewalk.status().state !== "idle") {
+      this.prewalk.cancel();
+      this.prewalkDrift.drop(context.sessionManager.getSessionId());
+      if (context.hasUI) context.ui.setStatus("fabric-prewalk", undefined);
+    }
     void this.#componentLoader?.reconcile(next.components).catch((error) => {
       if (this.#config) this.#config.components = previousComponents;
       const detail = error instanceof Error ? error.message : String(error);
@@ -854,6 +980,9 @@ export class FabricRuntimeState {
     resultFormat: FabricResultFormat,
     outerToolCallId: string,
   ): Promise<PendingFabricHandoff | undefined> {
+    // Defense in depth behind cancel-at-disable: an arm that predates a
+    // config edit must never claim once the master switch is off.
+    if (this.#config?.prewalk.enabled === false) return undefined;
     let pending = claimFabricHandoff(this.prewalk, execution, sessionId, resultFormat);
     if (!pending && this.#config?.prewalk.detectShellWrites) {
       pending = await this.#claimShellWriteHandoff(execution, sessionId, resultFormat);

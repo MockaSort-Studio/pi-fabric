@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeJsonAtomic } from "../core/atomic-write.js";
 import type { FabricAgentLog, AgentHandleInfo, AgentRunRecord, AgentRunRequest, AgentRunResult } from "../agents/types.js";
+import { resolveAgentCwd, validateAgentCwdRequest } from "../agents/manager.js";
 import { executeFile, processIsAlive, spawnDetached } from "../agents/transports/process-utils.js";
 import { readJsonlPage } from "../log-tail.js";
 import type { FabricOwnedModelGuidance } from "../components/model-guidance.js";
@@ -45,6 +46,39 @@ const readJson = <T>(filePath: string): T | undefined => {
 
 const terminal = (status: string): status is AgentRunResult["status"] =>
   status === "completed" || status === "failed" || status === "stopped" || status === "timed_out";
+
+const samePath = (left: string, right: string): boolean => {
+  try {
+    return path.relative(fs.realpathSync.native(left), fs.realpathSync.native(right)) === "";
+  } catch {
+    return false;
+  }
+};
+
+/** Refuse cleanup unless the selected repository still owns this worktree. */
+const registeredWorktree = async (gitRoot: string, worktreePath: string): Promise<string> => {
+  let output: string;
+  try {
+    output = (await executeFile("git", ["worktree", "list", "--porcelain"], {
+      cwd: gitRoot,
+      timeoutMs: 30_000,
+    })).stdout;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot validate durable worktree ${JSON.stringify(worktreePath)}: ${reason}`);
+  }
+  const registered = output
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => line.slice("worktree ".length));
+  const match = registered.find((candidate) => samePath(candidate, worktreePath));
+  if (!match) {
+    throw new Error(
+      `Refusing durable worktree cleanup: ${JSON.stringify(worktreePath)} is not registered by ${JSON.stringify(gitRoot)}`,
+    );
+  }
+  return match;
+};
 
 export interface ResidencyClientOptions {
   config: ResidentHostConfig;
@@ -139,6 +173,10 @@ export class ResidencyClient {
   }
 
   async spawnAgent(request: AgentRunRequest, signal?: AbortSignal): Promise<AgentHandleInfo> {
+    validateAgentCwdRequest(request);
+    const resolvedRequest = request.cwd === undefined
+      ? request
+      : { ...request, cwd: resolveAgentCwd(this.options.config.cwd, request.cwd) };
     await this.ensureHost();
     const response = await this.#command(
       {
@@ -146,7 +184,7 @@ export class ResidencyClient {
         operation: "spawn",
         requestId: randomUUID(),
         rootId: this.options.config.rootId,
-        request: { ...request, residency: "durable" },
+        request: { ...resolvedRequest, residency: "durable" },
         createdAt: Date.now(),
       },
       signal,
@@ -167,6 +205,7 @@ export class ResidencyClient {
     if (!record || record.id !== metadata.id) return structuredClone(metadata.handle);
     return {
       ...record,
+      cwd: metadata.handle.cwd,
       residency: "durable",
       logFile: path.join(metadata.runDirectory, "events.jsonl"),
       ...(metadata.handle.sessionId ? { sessionId: metadata.handle.sessionId } : {}),
@@ -221,7 +260,7 @@ export class ResidencyClient {
       id,
       runDirectory: metadata.runDirectory,
       logFile,
-      ...(status ? { status: { ...status, residency: "durable" } } : {}),
+      ...(status ? { status: { ...status, cwd: metadata.handle.cwd, residency: "durable" } } : {}),
       events: page.lines,
       hasMore: page.hasMore,
       ...(page.before !== undefined ? { before: page.before } : {}),
@@ -275,16 +314,18 @@ export class ResidencyClient {
       throw new Error(`Cannot clean up running durable Fabric agent ${metadata.id}`);
     }
     if (metadata.handle.worktree) {
+      const gitRoot = metadata.worktreeGitRoot ?? this.options.config.projectRoot;
+      const worktree = await registeredWorktree(gitRoot, metadata.handle.worktree);
       await executeFile(
         "git",
-        ["worktree", "remove", "--force", metadata.handle.worktree],
-        { cwd: this.options.config.projectRoot, timeoutMs: 60_000 },
+        ["worktree", "remove", "--force", worktree],
+        { cwd: gitRoot, timeoutMs: 60_000 },
       );
       if (deleteBranch && metadata.handle.branch) {
         await executeFile(
           "git",
           ["branch", "-D", metadata.handle.branch],
-          { cwd: this.options.config.projectRoot, timeoutMs: 30_000 },
+          { cwd: gitRoot, timeoutMs: 30_000 },
         );
       }
     } else if (deleteBranch) {
@@ -343,6 +384,7 @@ export class ResidencyClient {
       metadata.rootId !== this.options.config.rootId ||
       metadata.id !== id ||
       metadata.handle.id !== id ||
+      (metadata.worktreeGitRoot !== undefined && typeof metadata.worktreeGitRoot !== "string") ||
       path.resolve(metadata.runDirectory) !==
         path.resolve(this.options.config.residencyRoot, "runs", id)
     ) {

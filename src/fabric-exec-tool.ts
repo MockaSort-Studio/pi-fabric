@@ -1,9 +1,15 @@
-import {
-  defineTool,
-  type Theme,
-  type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import type { Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { TSchema } from "@earendil-works/pi-ai";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
+
+type AnyToolDefinition = ToolDefinition<any, any, any>;
+
+// Local mirror of the host's defineTool declaration shape (pi 0.84.2):
+// identity at runtime, inference-preserving in the type system.
+const defineTool = <TParams extends TSchema, TDetails = unknown, TState = any>(
+  tool: ToolDefinition<TParams, TDetails, TState>,
+): ToolDefinition<TParams, TDetails, TState> & AnyToolDefinition =>
+  tool as ToolDefinition<TParams, TDetails, TState> & AnyToolDefinition;
 import { arcItemStyled } from "./ui/arc-group.js";
 import type { CodePreviewSettings } from "./ui/code-preview.js";
 import {
@@ -135,7 +141,7 @@ export const createFabricExecTool = (
       "Search before reading: use `pi.grep`/`pi.find` to locate relevant lines, then `pi.read({path, offset, limit})` that range. Escape regex metacharacters, or use `literal:true` for exact punctuated text. Keep fan-out search limits small and widen only on misses. An unbounded `pi.read` returns at most 2000 lines or 50KB and, when truncated, ends with a `Use offset=…` continuation notice; reserve whole-file reads for small files you will use in full.",
       "For coding tasks, keep an acceptance ledger: turn the request into concrete checks, trace the relevant execution path before editing, implement end to end, then run targeted tests and direct behavioral probes. Mechanically confirm requested public symbols, registrations, and configuration entries. Use the smallest checks that cover the ledger, escalating only for failures or cross-cutting risk; inspect failures and iterate instead of rerunning unchanged passing checks. A build alone is not completion.",
       "Amortize round trips without inflating context: batch only independent, bounded work. Keep search→read and edit→verify sequential when an output determines the next action. Use `settle:true` for tests or probes whose nonzero result is evidence rather than an exceptional stop; for a known long suite, set `pi.bash` `timeout` in seconds once instead of retrying a timed-out call. Filter or summarize noisy command output inside the program and return decisions, failures, and evidence—not raw logs or unused intermediate results.",
-      "For multiline edits/writes, pass payloads through top-level `strings` and use `π.key`; prefer `pi.edit`/`pi.write`. `pi.bash`: no cwd/stdin.",
+      "For multiline edits/writes, pass payloads through top-level `strings` and use `π.key`; prefer `pi.edit`/`pi.write`. `pi.bash`: no stdin.",
       "Use `display.name` and objective `display.description`; Fabric pairs them with verified outcomes in deterministic compaction.",
     ],
     // The model-facing schema is intentionally flat: one large `code` string

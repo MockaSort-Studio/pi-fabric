@@ -5,7 +5,7 @@ Pi Fabric reads configuration from two JSON files. Project values override globa
 1. `~/.pi/agent/fabric.json`: global defaults.
 2. `<project>/.pi/fabric.json`: project overrides, only for **trusted** projects.
 
-`/fabric settings` opens at project scope in trusted projects and at global scope in untrusted sessions. In a trusted project, press **Ctrl+G** anywhere in the settings view to move both the displayed values and the save destination between `<project>/.pi/fabric.json` and the global `~/.pi/agent/fabric.json`. The global view shows global defaults even when a project override stays effective in the current session, and the scope banner marks that precedence. Untrusted sessions remain global-only.
+`/fabric settings` opens at project scope in trusted projects and at global scope in untrusted sessions. In a trusted project, press **Ctrl+G** anywhere in the settings view to move both the displayed values and the save destination between `<project>/.pi/fabric.json` and the global `~/.pi/agent/fabric.json`. The global view shows global defaults even when a project override stays effective in the current session, and the scope banner marks that precedence. Untrusted sessions remain global-only. RPC hosts expose the same nested settings through standard select/input dialogs and provide a root save-scope action, so no terminal keybinding is required.
 
 `configVersion` versions each configuration document. Fabric migrates each applicable file independently before it applies global/project precedence, then rewrites migrated files atomically. Version 0, the historical unversioned format, renames `subagents` to `agents`. When both sections exist, `agents` wins conflicts and non-conflicting values survive. Fabric migrates trusted project files, and it never reads or rewrites untrusted project files. Add future schema changes as sequential migrations. Avoid runtime aliases.
 
@@ -69,6 +69,12 @@ Treat `node-process` as an explicit escape hatch for trusted code. It offers no 
     "mode": "in-place",
     "alwaysRearm": false,
     "detectShellWrites": true
+  },
+  "models": {
+    "aliases": {
+      "cheap": "google/gemini-2.5-flash",
+      "budget": ["openai/gpt-5-mini", "google/gemini-2.5-flash"]
+    }
   },
   "agents": {
     "enabled": true,
@@ -141,6 +147,10 @@ Treat `node-process` as an explicit escape hatch for trusted code. It offers no 
 
 Unknown definitions stay visible as waiting. They do not fail the Fabric runtime. Late discovery activates them. `/fabric reload` reconciles entry changes as a transaction. When a definition re-registers with `overwrite: true`, Fabric uses the same rollback-capable replacement path. See [components, effects, and committed capabilities](components.md).
 
+## Speculation
+
+`speculation` configures opportunistic pre-launch of read-class calls while the model streams a `fabric_exec` program; see [speculative PTC](speculation.md) for the correctness contract. `speculation.enabled` (default `true`) masters the feature. `speculation.maxConcurrent` (1-32, default 4) caps in-flight speculative calls. `speculation.maxEntries` (1-1024, default 64) bounds retained unserved entries per turn. `speculation.maxBufferBytes` (64 KiB-64 MiB, default 2 MiB) caps the per-stream partial-argument buffer. `speculation.entryTtlMs` (5 s-30 min, default 180000) expires unserved entries. `speculation.mcpAllowlist` (default empty) enables Tier-B speculation of read-only MCP tools with `server.tool` or `server.*` patterns.
+
 ## Prewalk executor
 
 `prewalk.model` is the optional Pi `provider/model` that `/fabric prewalk` selects. `prewalk.mode` chooses how execution continues:
@@ -169,6 +179,21 @@ Unknown definitions stay visible as waiting. They do not fail the Fabric runtime
 `prewalk.compactOnReturn` defaults to `true`. When an in-place continuation settles, Fabric requests a compaction with the configured `compaction.engine` and commits it while the executor is still the active model. Main's restored model receives the compacted transcript. Set this option to `false` when Main must receive the complete transcript.
 
 Each in-place handoff captures Main's active model at the boundary and restores it when the continuation settles. Pi's public `setModel` extension API also updates Pi's default model setting, so the restore returns the configured default to Main's model as well. A session that ends mid-continuation keeps the executor selection persisted until the next settle.
+
+## Models
+
+`models.aliases` names model selectors for `agents.switchModel` and for Pi-runner `model` arguments on `agents.run`, `agents.spawn`, `agents.create`, and `agents.handoff` (see [Agents](agents.md#switching-mains-session-model)). Each alias is either one `provider/model` target or an ordered fallback chain; resolution walks the chain and uses the first authenticated target. Alias names match case-insensitively and take priority over bare model ids and fuzzy matching. Aliases live in normal Fabric configuration, so a project `.pi/fabric.json` can extend the agent-level `fabric.json`; entries with malformed names or targets are ignored at load.
+
+```json
+{
+  "models": {
+    "aliases": {
+      "cheap": "google/gemini-2.5-flash",
+      "budget": ["openai/gpt-5-mini", "google/gemini-2.5-flash"]
+    }
+  }
+}
+```
 
 ## Result formatting
 

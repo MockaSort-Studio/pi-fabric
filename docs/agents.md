@@ -45,6 +45,10 @@ const handle = await agents.spawn({
 return await agents.wait({ id: handle.id });
 ```
 
+Set `cwd` on `agents.run()` or `agents.spawn()` to choose the leaf child's filesystem execution directory. Absolute paths are accepted; relative paths resolve from the parent Fabric manager's cwd. Fabric canonicalizes the directory (including symlinks) before launch, and reports that effective path in the handle, status, participant snapshot, result, and log status. Invalid, missing, inaccessible, or non-directory paths fail without falling back to the parent. The option is also forwarded by workflow helpers and `council.run()`. It is not available on recursive `rlm.query()`, persistent actors, or trajectory handoff; recursive agents must omit `cwd`.
+
+For Pi children, selecting `cwd` neither grants nor requires project trust. Fabric adds no trust gate and passes neither `--approve` nor `--no-approve`; Pi loads `AGENTS.override.md`, `AGENTS.md`, and `CLAUDE.md` under its normal context rules, while protected project resources remain governed by Pi's saved decisions and `defaultProjectTrust`. Each runner keeps its native startup behavior. A generated worktree is evaluated at its own canonical path.
+
 ### Durable participant residency
 
 `agents.spawn()` and `agents.create()` accept `residency: "session" | "durable"`. The default is `session`. It keeps the usual lifecycle: the current Pi host owns the participant and stops or suspends it when the host shuts down. The model chooses `durable` during execution. Users do not configure it as a setting.
@@ -113,6 +117,8 @@ In the guest, `agents.handoff()` resolves to `{ scheduled: true, status: "deferr
 ```
 
 When you supply a task, Fabric arms prewalk and immediately submits the task to Main. Without a task, it captures the next user input. Select the executor in `/fabric settings` under **Prewalk**. **Always re-arm** uses `prewalk.model` to arm prewalk automatically at each session start without interaction. It also arms prewalk after each completed handoff. `/fabric prewalk --off` cancels it until the next session starts.
+
+Host extensions that must serialize work after prewalk can use the acknowledged protocol exported from `pi-fabric/protocol`. Emit `FABRIC_PREWALK_REQUEST_EVENT` with `{ version: 1, context, claim, respond }`. Fabric calls `claim()` synchronously; the first claimant owns the request. It calls `respond({ ok: true })` only after prewalk is armed, or `respond({ ok: false, error })` after cancellation or failure. A request that is not claimed means no compatible Fabric runtime is installed. The protocol intentionally arms without submitting a task, so the caller can deliver its next queued row only after the acknowledgment.
 
 The default value of `prewalk.mode` is `"in-place"`:
 
@@ -186,6 +192,21 @@ Each run gets an isolated `fabric-<run-id>` Veda session through `-S` and `--no-
 
 Veda children do not have recursive Fabric capabilities. Fabric rejects `recursive: true`. Veda does not support steering, so steer and follow-up calls throw when called. It also cannot run persistent actors because each invocation executes one headless prompt. Use `runner: "pi"` when you need recursive Fabric or persistent coordination.
 
+### Switching Main's session model
+
+`agents.switchModel` changes the live Pi session model in place and keeps it there:
+
+```ts
+await agents.switchModel({ model: "anthropic/claude-opus-4-5" });
+await agents.switchModel({ model: "cheap" });
+```
+
+The selector resolves in order: a `models.aliases` entry (a string alias is one target; an array is a fallback chain where the first authenticated target wins), an exact `provider/id`, an exact model id, then the closest match across provider, id, and display name. Closeness ties fall to the most recently used model, read from the [pi-model-sort](https://github.com/monotykamary/pi-model-sort) extension's usage store when it is installed, and then to the highest-sorting key, mirroring pi's newest-alias convention. An optional `provider` argument narrows every stage. Selectors with no resemblance to an authenticated entry and exhausted alias chains throw; the session model stays unchanged. `agents.models()` enumerates the authenticated registry entries this resolution runs against. The result reports the active model, the previous one, and how the selector resolved: `via` is the alias name for configured aliases, or `closest`, `recent`, or `latest` for fuzzy picks. A call naming the active model returns `{ switched: false, reason: "already-active" }`. The switch applies to the next model turn and later, unlike `prewalk`, which temporarily installs an executor model at a mutation boundary and then restores the boundary model.
+
+Pi-runner `model` arguments on `agents.run`, `agents.spawn`, `agents.create`, and `agents.handoff` resolve through the same selector logic (aliases, closest match, recency) before the child starts. A selector matching nothing in the authenticated registry passes through unchanged, so freshly released or custom ids still reach the child Pi runtime, which reports its own resolution error when it cannot place them.
+
+This is the host-level equivalent of the `pi-model-switch` extension's `switch_model` tool, with aliases moved into Fabric configuration so project and agent scopes behave like every other Fabric section.
+
 ### Transports
 
 | Transport   | Operation                                                     | Command to attach            |
@@ -207,7 +228,7 @@ localterm start
 
 `/fabric agents` lists the children. Run `/fabric attach <id>` to show the correct attach command. Abort signals propagate to the transport and the selected child process. When a program uses orchestration entry points such as `agent`/`workflow.agent`, `agents.run`/`agents.wait`/`agents.ask`, `council.run`, or `rlm.query`, Fabric increases the whole-program `executor.timeoutMs` to at least `agents.timeoutMs`. The same increase applies to `agents.*` refs called through `tools.call()` and to refs calculated at runtime. The parent deadline then cannot stop a child that remains within its own agent budget.
 
-Set `worktree: true` to create a dedicated Git worktree and a `pi-fabric/<name>-<id>` branch. Fabric retains worktrees for inspection until you call `agents.cleanup()`. It passes the absolute project and mesh roots to each Pi child. A recursive child in a worktree stays in the same participant directory and does not create another `.pi/fabric/mesh` inside that worktree.
+Set `worktree: true` to create a dedicated Git worktree and a `pi-fabric/<name>-<id>` branch from the repository containing the selected `cwd`. Fabric retains worktrees for inspection until you call `agents.cleanup()`. When the selected cwd is a repository subdirectory, Fabric uses the matching subdirectory in the generated worktree when it exists; otherwise it uses the worktree root. The reported effective cwd is the generated worktree path, and Pi evaluates that generated path as its own canonical cwd. The caller's project and mesh roots remain unchanged, so a child targeting another repository still belongs to the orchestrating Fabric topology. A recursive child in a worktree stays in the same participant directory and does not create another `.pi/fabric/mesh` inside that worktree.
 
 [Model-guidance components](components.md#model-facing-guidance-components) can target participants by canonical provider/model. Direct agents and actors retain their role prompt and receive matching append guidance after it. Recursive Pi children load the project components and resolve their own replaceable Fabric execution slot, so the parent does not duplicate guidance. Durable owners use the latest atomically committed guidance snapshot for each launch. Guidance changes prompts only; it cannot widen tools, approvals, or committed capabilities. Task text, message envelopes, run IDs, and timestamps stay out of the guidance system prompt, so repeated runs with the same role, model, and component projection retain a byte-stable prefix.
 
@@ -235,6 +256,17 @@ return { self: await agents.self(), lineage };
 For Main and one-shot agents, `steer` arrives after the tool calls in the current turn and before the next model call. `followUp` waits until the current run settles. For actors, both operations add a message to the serial mailbox. `agents.status({ id })` accepts any participant ID. It returns complete details for a local run or actor and a bounded directory summary for a remote participant. `agents.setSteeringMode` and `setFollowUpMode` continue to control local one-shot runs.
 
 Local routing returns `"main"` or `"local"`. For cross-process `steer`, `followUp`, and `stop`, Fabric resolves the exact owner of the target. It sends a control command addressed to that owner and waits for an acknowledgement that matches the version, target, and owner identity. Success returns `routed: "mesh", acknowledged: true` after this verified acknowledgement. Unknown IDs, stale owners, rejection, and timeout throw an error. The dashboard actions `s`, `u`, and `x` use the same route. Set `mesh.enabled` to use cross-process control. See [`references/agents.md`](../skills/fabric-exec/references/agents.md).
+
+### Peer labels and queue gates
+
+Every root participant mints a project-scoped label such as `FAB-1` when it first publishes: the prefix derives from the project directory basename (initials for multi-word names, up to three letters for single-word names) and the number comes from a mesh-wide monotonic counter, so retired labels are never reused. Labels appear on participant records, peer projections, and the dashboard, giving other sessions' tooling a stable handle to show users in place of raw session ids.
+
+Two host-local, versioned events on `pi.events` let queue extensions coordinate with peers:
+
+- `pi-fabric:peers:cards:v1` claims and resolves with live peer cards (`{ id, label, status, model?, cwd?, startedAt, updatedAt, pendingMessages }`), sorted by creation time.
+- `pi-fabric:peer:await-settle:v1` claims and resolves once every watched peer (a `selector` label/id, or all peers when omitted) has been quiet for `settledForMs` (default 3s) since its last observed run. Peers that vanish from the mesh count as settled. The request accepts an `AbortSignal` for cancellation, and an optional `update` callback reports per-peer waiting status. Requests fail when the mesh is disabled.
+
+[pi-queue-steer](https://github.com/monotykamary/pi-queue-steer-factory) uses both: its `/fabric await LABEL` gate row holds queued rows until the target peers settle.
 
 ### Participant lifecycle subscriptions
 
@@ -497,7 +529,7 @@ return rlm.query({
 });
 ```
 
-`rlm.query()` calls `agents.run({ runner: "pi", recursive: true })` with Fabric enabled in the child. Fabric rejects Claude runners for recursive use. It also rejects recursion at `agents.maxDepth`. This setting accepts any non-negative safe integer, and `0` disables child spawning. Approval for the initial recursive call delegates only the `agent` risk capability to recursive children. It does not delegate approvals for network access, execution, or writes. Each Fabric process applies its own configured concurrency and timeout limits. When `agents.budgetUsd` is set, a shared append-only cost ledger limits total spending across the recursion tree. Each node writes the cost of its children to one ledger file that it receives through the environment. A node rejects a new child when accumulated spending reaches the budget. This check is best effort. Concurrent children can pass the check before another child records cost, so the tree can exceed the limit slightly. Use `agents.maxPerExecution` as the race-free ceiling. Results and live status for each recursive child include a `budget` summary with `limit`, `spent`, `remaining`, and `tokens`. Fabric keeps the latest bounded nested-agent status tree in memory. Completed recursive leaves remain visible in **Topology · Run** after the child process deletes its temporary nested run directories. Fabric releases the snapshot when the parent run is cleaned up or the Fabric session shuts down.
+`rlm.query()` calls `agents.run({ runner: "pi", recursive: true })` with Fabric enabled in the child; it does not accept `cwd`. Recursive spawning means Fabric agent composition, not recursive filesystem traversal. Fabric rejects Claude runners for recursive use. It also rejects recursion at `agents.maxDepth`. This setting accepts any non-negative safe integer, and `0` disables child spawning. Approval for the initial recursive call delegates only the `agent` risk capability to recursive children. It does not delegate approvals for network access, execution, or writes. Each Fabric process applies its own configured concurrency and timeout limits. When `agents.budgetUsd` is set, a shared append-only cost ledger limits total spending across the recursion tree. Each node writes the cost of its children to one ledger file that it receives through the environment. A node rejects a new child when accumulated spending reaches the budget. This check is best effort. Concurrent children can pass the check before another child records cost, so the tree can exceed the limit slightly. Use `agents.maxPerExecution` as the race-free ceiling. Results and live status for each recursive child include a `budget` summary with `limit`, `spent`, `remaining`, and `tokens`. Fabric keeps the latest bounded nested-agent status tree in memory. Completed recursive leaves remain visible in **Topology · Run** after the child process deletes its temporary nested run directories. Fabric releases the snapshot when the parent run is cleaned up or the Fabric session shuts down.
 
 `agents.maxTokensPerChild` limits cumulative token use for each child. Its default value, `0`, disables the limit. The wall-clock `timeoutMs` limits time, and `budgetUsd` limits cost. This limit caps the context of one runaway child before the host session compacts. Fabric stops the child with the same `timed_out` status and a `token limit` error. See [`/skill:fabric-rlm`](../skills/fabric-rlm/SKILL.md).
 

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { resolveAgentDir } from "../core/agent-dir.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { CodePreviewSettings } from "./code-preview.js";
@@ -144,7 +144,7 @@ export class FabricUiController {
     this.#refresh();
     const [{ FabricDashboard }, { buildClaudeModelSource, buildModelSource }] =
       await Promise.all([import("./dashboard.js"), import("./model-picker.js")]);
-    const modelSource = buildModelSource(context.modelRegistry, getAgentDir());
+    const modelSource = buildModelSource(context.modelRegistry, resolveAgentDir());
     let claudeModelSource: ModelSource | undefined;
     if (this.#snapshot.actors.some((actor) => actor.runner === "claude")) {
       try {

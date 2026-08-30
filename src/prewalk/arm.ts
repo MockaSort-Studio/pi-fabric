@@ -63,7 +63,7 @@ export const autoArmFabricPrewalk = async (
   pi: ExtensionAPI,
 ): Promise<string | undefined> => {
   const { prewalk } = state.config;
-  if (!prewalk.alwaysRearm) return undefined;
+  if (prewalk.enabled === false || !prewalk.alwaysRearm) return undefined;
   // initialize() cancels any prior arm at session start; a non-idle status
   // means another path armed first — never clobber it.
   if (state.prewalk.status().state !== "idle") return undefined;

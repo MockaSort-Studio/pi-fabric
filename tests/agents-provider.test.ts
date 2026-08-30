@@ -11,7 +11,7 @@ import type {
   FabricLifecycleEvent,
   FabricLifecycleSubscription,
 } from "../src/lifecycle/types.js";
-import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
+import { DEFAULT_FABRIC_CONFIG, type FabricModelsConfig } from "../src/config.js";
 import type {
   FabricMainAgentDeliveryRequest,
   FabricMainAgentTarget,
@@ -57,6 +57,10 @@ const setup = (
   peers: FabricPeerInfo[] = [],
   members: FabricParticipantInfo[] = [],
   control?: FabricControlPlane,
+  options?: {
+    switchModel?: FabricMainAgentTarget["switchModel"];
+    modelsConfig?: FabricModelsConfig;
+  },
 ) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-agents-provider-"));
   roots.push(root);
@@ -101,6 +105,7 @@ const setup = (
         routed: "main" as const,
       };
     },
+    ...(options?.switchModel ? { switchModel: options.switchModel } : {}),
   };
   const actors = new ActorManager("test", identity, mesh, meshConfig, agents, () => {}, {
     actorRoot: path.join(root, "actors"),
@@ -159,8 +164,12 @@ const setup = (
     participants,
     control,
     lifecycle,
+    undefined,
+    undefined,
+    undefined,
+    () => options?.modelsConfig ?? DEFAULT_FABRIC_CONFIG.models,
   );
-  return { root, actors, globalActors, provider, mainDeliveries };
+  return { root, actors, agents, globalActors, provider, mainDeliveries };
 };
 
 afterEach(async () => {
@@ -595,6 +604,105 @@ describe("AgentsProvider runner support", () => {
     expect(schema.properties).toHaveProperty("task");
     expect(schema.properties).not.toHaveProperty("when");
     expect(schema.properties).not.toHaveProperty("checkpoint");
+  });
+
+  it("exposes cwd on one-shot schemas but not handoff or actor definitions", async () => {
+    const { provider } = setup();
+    const run = await provider.describe("run", context);
+    const spawn = await provider.describe("spawn", context);
+    const handoff = await provider.describe("handoff", context);
+    const create = await provider.describe("create", context);
+    const properties = (descriptor: typeof run) =>
+      (descriptor?.inputSchema as { properties: Record<string, unknown> }).properties;
+
+    expect(properties(run)).toHaveProperty("cwd");
+    expect(properties(spawn)).toHaveProperty("cwd");
+    expect(properties(handoff)).not.toHaveProperty("cwd");
+    expect(properties(create)).not.toHaveProperty("cwd");
+  });
+
+  it("rejects durable recursive cwd before the provider can transfer ownership", async () => {
+    const { provider, root } = setup();
+
+    await expect(
+      provider.invoke(
+        "spawn",
+        { task: "must remain recursive", cwd: process.cwd(), recursive: true, residency: "durable" },
+        context,
+      ),
+    ).rejects.toThrow(/only for non-recursive agents/);
+    expect(fs.existsSync(path.join(root, "runs"))).toBe(false);
+  });
+
+  it("shows the effective cwd in run and spawn launch activity", async () => {
+    const { provider } = setup();
+    const updates: string[] = [];
+    const invocationContext = { ...context, update: (message: string) => updates.push(message) };
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-agent-activity-"));
+    roots.push(root);
+    const target = path.join(root, "leaf");
+    fs.mkdirSync(target);
+    const requested = path.join(root, "leaf-link");
+    fs.symlinkSync(target, requested, "dir");
+    const canonical = fs.realpathSync(target);
+
+    const runResult = await provider.invoke(
+      "run",
+      { task: "report the launch directory", cwd: requested },
+      invocationContext,
+    ) as { cwd: string };
+    expect(runResult.cwd).toBe(canonical);
+    expect(updates.some((message) => message.endsWith(`cwd ${canonical}`))).toBe(true);
+
+    updates.length = 0;
+    const handle = await provider.invoke(
+      "spawn",
+      { task: "report the launch directory", cwd: requested },
+      invocationContext,
+    ) as { id: string; cwd: string };
+    expect(handle.cwd).toBe(canonical);
+    expect(updates.some((message) => message.endsWith(`cwd ${canonical}`))).toBe(true);
+    await provider.invoke("wait", { id: handle.id }, invocationContext);
+    await provider.invoke("cleanup", { id: handle.id }, invocationContext);
+  });
+
+  it.skipIf(process.platform === "win32")("bounds and escapes control characters in cwd launch activity", async () => {
+    const { provider } = setup();
+    const updates: string[] = [];
+    const invocationContext = { ...context, update: (message: string) => updates.push(message) };
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-agent-activity-"));
+    roots.push(root);
+    const longPart = "x".repeat(96);
+    const target = path.join(root, longPart, longPart, `leaf-\u001b-${"y".repeat(96)}`);
+    fs.mkdirSync(target, { recursive: true });
+    const requested = path.join(root, "leaf-link");
+    fs.symlinkSync(target, requested, "dir");
+    const canonical = fs.realpathSync(target);
+    const safe = canonical.replace(/[\u0000-\u001f\u007f]/g, (character) =>
+      `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
+    );
+    const shown = safe.length <= 240 ? safe : `…${safe.slice(-239)}`;
+
+    const runResult = await provider.invoke(
+      "run",
+      { task: "report the launch directory", cwd: requested },
+      invocationContext,
+    ) as { cwd: string };
+    expect(runResult.cwd).toBe(canonical);
+    expect(updates.some((message) => message.endsWith(`cwd ${shown}`))).toBe(true);
+
+    updates.length = 0;
+    const handle = await provider.invoke(
+      "spawn",
+      { task: "report the launch directory", cwd: requested },
+      invocationContext,
+    ) as { id: string; cwd: string };
+    expect(handle.cwd).toBe(canonical);
+    expect(updates.some((message) => message.endsWith(`cwd ${shown}`))).toBe(true);
+    expect(updates.every((message) => !/[\u0000-\u001f\u007f]/.test(message))).toBe(true);
+    expect(updates.every((message) => message.length < 512)).toBe(true);
+    await provider.invoke("wait", { id: handle.id }, invocationContext);
+    await provider.invoke("cleanup", { id: handle.id }, invocationContext);
   });
 
   it("exposes the compact option on handoff only and validates it before deferring", async () => {
@@ -1771,3 +1879,177 @@ describe("collectAgentToolPreviewNodes", () => {
     expect(nodes[0]).toMatchObject({ owner: "actor", name: "mailbox-bot" });
   });
 });
+
+describe("AgentsProvider switchModel", () => {
+  const registryModels = [
+    { provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus 4.5" },
+    { provider: "google", id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+    { provider: "google", id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+  ];
+
+  const modelContext = (current?: { provider: string; id: string }): FabricInvocationContext => ({
+    ...context,
+    extensionContext: {
+      modelRegistry: { getAvailable: () => registryModels },
+      ...(current ? { model: current } : {}),
+    } as unknown as ExtensionContext,
+  });
+
+  it("describes the action with a required model selector", async () => {
+    const { provider } = setup();
+    const descriptor = await provider.describe("switchModel", context);
+    expect(descriptor?.inputSchema).toMatchObject({ required: ["model"] });
+    expect(descriptor?.risk).toBe("agent");
+  });
+
+  it("switches an exact provider/id and reports the previous model", async () => {
+    const switchModel = vi.fn(async () => ({ ok: true }));
+    const { provider } = setup([], [], undefined, {
+      switchModel: switchModel as FabricMainAgentTarget["switchModel"],
+    });
+    const invocation = modelContext({ provider: "anthropic", id: "claude-opus-4-5" });
+    const result = await provider.invoke(
+      "switchModel",
+      { model: "google/gemini-2.5-flash" },
+      invocation,
+    );
+    expect(result).toEqual({
+      switched: true,
+      model: "google/gemini-2.5-flash",
+      name: "Gemini 2.5 Flash",
+      previous: "anthropic/claude-opus-4-5",
+    });
+    expect(switchModel).toHaveBeenCalledWith(
+      { provider: "google", id: "gemini-2.5-flash" },
+      invocation.extensionContext,
+    );
+  });
+
+  it("resolves aliases configured in models.aliases with fallback chains", async () => {
+    const switchModel = vi.fn(async () => ({ ok: true }));
+    const { provider } = setup([], [], undefined, {
+      switchModel: switchModel as FabricMainAgentTarget["switchModel"],
+      modelsConfig: { aliases: { budget: ["cohere/command-r", "google/gemini-2.5-pro"] } },
+    });
+    const result = await provider.invoke(
+      "switchModel",
+      { model: "Budget" },
+      modelContext(),
+    );
+    expect(result).toMatchObject({
+      switched: true,
+      model: "google/gemini-2.5-pro",
+      alias: "budget",
+    });
+  });
+
+  it("keeps the current model when the selector is already active", async () => {
+    const switchModel = vi.fn(async () => ({ ok: true }));
+    const { provider } = setup([], [], undefined, {
+      switchModel: switchModel as FabricMainAgentTarget["switchModel"],
+    });
+    const result = await provider.invoke(
+      "switchModel",
+      { model: "claude-opus" },
+      modelContext({ provider: "anthropic", id: "claude-opus-4-5" }),
+    );
+    expect(result).toEqual({
+      switched: false,
+      reason: "already-active",
+      model: "anthropic/claude-opus-4-5",
+      name: "Claude Opus 4.5",
+    });
+    expect(switchModel).not.toHaveBeenCalled();
+  });
+
+  it("resolves inexact selectors to the closest match and reports the pick", async () => {
+    const switchModel = vi.fn(async () => ({ ok: true }));
+    const { provider } = setup([], [], undefined, {
+      switchModel: switchModel as FabricMainAgentTarget["switchModel"],
+    });
+    const result = await provider.invoke(
+      "switchModel",
+      { model: "gemini" },
+      modelContext(),
+    );
+    expect(result).toMatchObject({
+      switched: true,
+      model: "google/gemini-2.5-pro",
+      via: "closest",
+    });
+    expect(switchModel).toHaveBeenCalledWith(
+      { provider: "google", id: "gemini-2.5-pro" },
+      expect.anything(),
+    );
+  });
+
+  it("resolves inexact run models to the canonical provider/id before spawning", async () => {
+    const { provider, agents } = setup();
+    const spawn = vi.spyOn(agents, "spawn");
+    await provider.invoke(
+      "run",
+      { task: "return a short result", model: "gemini" },
+      modelContext(),
+    );
+    expect(spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "google/gemini-2.5-pro" }),
+      undefined,
+    );
+  });
+
+  it("passes unresolvable run models through verbatim for the child runtime", async () => {
+    const { provider, agents } = setup();
+    const spawn = vi.spyOn(agents, "spawn");
+    await provider.invoke(
+      "run",
+      { task: "return a short result", model: "opencode/ox-alpha" },
+      modelContext(),
+    );
+    expect(spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "opencode/ox-alpha" }),
+      undefined,
+    );
+  });
+
+  it("rejects unknown selectors and exhausted alias chains", async () => {
+    const { provider } = setup([], [], undefined, {
+      switchModel: vi.fn(async () => ({ ok: true })) as FabricMainAgentTarget["switchModel"],
+      modelsConfig: { aliases: { budget: ["cohere/command-r", "mistral/mistral-large"] } },
+    });
+    await expect(
+      provider.invoke("switchModel", { model: "cohere/command-r" }, modelContext()),
+    ).rejects.toThrow(/no available model matching "cohere\/command-r"/);
+    await expect(
+      provider.invoke("switchModel", { model: "budget" }, modelContext()),
+    ).rejects.toThrow(/Tried: cohere\/command-r, mistral\/mistral-large/);
+  });
+
+  it("surfaces host switch failures as errors", async () => {
+    const { provider } = setup([], [], undefined, {
+      switchModel: vi.fn(async () => ({
+        ok: false,
+        error: "No authentication configured for model: google/gemini-2.5-flash",
+      })) as FabricMainAgentTarget["switchModel"],
+    });
+    await expect(
+      provider.invoke("switchModel", { model: "google/gemini-2.5-flash" }, modelContext()),
+    ).rejects.toThrow(/No authentication configured/);
+  });
+
+  it("rejects when Main is not a local host with model control", async () => {
+    const { provider } = setup();
+    await expect(
+      provider.invoke("switchModel", { model: "google/gemini-2.5-flash" }, modelContext()),
+    ).rejects.toThrow(/requires a local Main session/);
+  });
+
+  it("requires a non-empty model selector", async () => {
+    const { provider } = setup([], [], undefined, {
+      switchModel: vi.fn(async () => ({ ok: true })) as FabricMainAgentTarget["switchModel"],
+    });
+    await expect(
+      provider.invoke("switchModel", { model: "  " }, modelContext()),
+    ).rejects.toThrow(/requires a model selector/);
+  });
+});
+

@@ -1057,6 +1057,23 @@ const main = async (): Promise<void> => {
   const steerTimer = options.steerFile ? setInterval(pollSteer, 200) : undefined;
   steerTimer?.unref?.();
 
+  const failOversizedEvent = (line: string): void => {
+    const prefix = line.slice(0, MAX_EVENT_LINE_CHARS);
+    let artifactPath: string | undefined;
+    try {
+      artifactPath = path.join(path.dirname(options.logFile), "oversized-event-prefix.txt");
+      fs.writeFileSync(artifactPath, prefix, { encoding: "utf8", mode: 0o600 });
+    } catch {
+      artifactPath = undefined;
+    }
+    terminalStatus = "failed";
+    terminalError = artifactPath
+      ? `Agent emitted an oversized event line; first ${prefix.length} characters saved to: ${artifactPath}`
+      : "Agent emitted an oversized event line";
+    outputBuffer = "";
+    terminateChild(child, "SIGTERM");
+  };
+
   child.stdout?.on("data", (chunk: Buffer) => {
     const decoded = outputDecoder.write(chunk);
     if (options.runner === "veda") {
@@ -1068,18 +1085,12 @@ const main = async (): Promise<void> => {
       const newline = outputBuffer.indexOf("\n");
       if (newline < 0) {
         if (outputBuffer.length > MAX_EVENT_LINE_CHARS) {
-          terminalStatus = "failed";
-          terminalError = "Agent emitted an oversized event line";
-          outputBuffer = "";
-          terminateChild(child, "SIGTERM");
+          failOversizedEvent(outputBuffer);
         }
         break;
       }
       if (newline > MAX_EVENT_LINE_CHARS) {
-        terminalStatus = "failed";
-        terminalError = "Agent emitted an oversized event line";
-        outputBuffer = "";
-        terminateChild(child, "SIGTERM");
+        failOversizedEvent(outputBuffer.slice(0, newline));
         return;
       }
       const line = outputBuffer.slice(0, newline).replace(/\r$/, "");

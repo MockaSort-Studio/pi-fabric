@@ -1,7 +1,5 @@
-import {
-  formatSkillsForPrompt,
-  type Skill,
-} from "@earendil-works/pi-coding-agent";
+import type { Skill } from "@earendil-works/pi-coding-agent";
+import { formatSkillsForPrompt } from "./skill-block.js";
 
 const SKILL_SECTION_HEADING =
   "The following skills provide specialized instructions for specific tasks.";

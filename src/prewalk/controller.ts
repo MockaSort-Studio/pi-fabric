@@ -37,6 +37,10 @@ export type FabricPrewalkStatus =
 export interface FabricPrewalkClaim {
   arm: FabricPrewalkArm;
   mutation: FabricCallAudit;
+  // Session-monotonic claim order, stamped when a mutation actually claims
+  // the arm (dsh's commit-order habit, adapted). Never resets on cancel or
+  // re-arm, so a later claim can never recycle an earlier number.
+  seq: number;
 }
 
 export interface FabricPrewalkSettlement {
@@ -53,6 +57,7 @@ const normalizedTask = (value: string | undefined): string | undefined => {
 export class PrewalkController {
   #status: FabricPrewalkStatus = { state: "idle" };
   #settling = new Set<string>();
+  #claimSeq = new Map<string, number>();
 
   status(): FabricPrewalkStatus {
     return structuredClone(this.#status);
@@ -226,8 +231,9 @@ export class PrewalkController {
     if (!mutation) return undefined;
     const arm = this.#snapshotArm();
     if (!arm) return undefined;
+    const seq = this.#nextClaimSeq(sessionId);
     this.#status = { state: "handing_off", ...arm };
-    return { arm, mutation };
+    return { arm, mutation, seq };
   }
 
   // Filesystem-fallback claim for writes audits cannot attribute (shell
@@ -245,8 +251,15 @@ export class PrewalkController {
       success: true,
       ...(files.length > 0 ? { args: { files: [...files] } } : {}),
     };
+    const seq = this.#nextClaimSeq(sessionId);
     this.#status = { state: "handing_off", ...arm };
-    return { arm, mutation };
+    return { arm, mutation, seq };
+  }
+
+  #nextClaimSeq(sessionId: string): number {
+    const seq = (this.#claimSeq.get(sessionId) ?? 0) + 1;
+    this.#claimSeq.set(sessionId, seq);
+    return seq;
   }
 
   #snapshotArm(): FabricPrewalkArm | undefined {

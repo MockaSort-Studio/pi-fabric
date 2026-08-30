@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { FabricMcpConfig } from "../config.js";
-import type { FabricActionDescriptor } from "../protocol.js";
+import type { FabricActionDescriptor, FabricToolAnnotations } from "../protocol.js";
 import { sanitizeMcpRefPart } from "../ref-names.js";
 import {
   McpDescriptorCacheStore,
@@ -46,6 +46,7 @@ export const loadCachedMcpDescriptors = async (
     const cached = parseCachedServer(raw);
     if (!cached) continue;
     for (const tool of cached.tools) {
+      const annotations = (tool as { annotations?: FabricToolAnnotations }).annotations;
       descriptors.push({
         name: `${server}.${tool.name}`,
         description: tool.description ?? `${tool.name} on MCP server ${server}`,
@@ -53,6 +54,7 @@ export const loadCachedMcpDescriptors = async (
         ...(tool.outputSchema ? { outputSchema: normalizeSchema(tool.outputSchema) } : {}),
         risk: "network",
         namespace: server,
+        ...(annotations ? { annotations: { ...annotations } } : {}),
       });
     }
   }

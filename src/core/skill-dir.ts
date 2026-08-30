@@ -1,4 +1,4 @@
-import { parseSkillBlock } from "@earendil-works/pi-coding-agent";
+import { parseSkillBlock } from "./skill-block.js";
 import { homedir } from "node:os";
 import path from "node:path";
 

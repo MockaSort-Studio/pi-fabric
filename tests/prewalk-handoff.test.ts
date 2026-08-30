@@ -1242,7 +1242,7 @@ describe("filesystem-drift prewalk claims", () => {
       controller,
       run,
       "session-1",
-      { files: ["src/guard.ts", "docs/guard.md"], truncated: 3, added: 1, modified: 1, deleted: 0 },
+      { files: ["src/guard.ts", "docs/guard.md"], truncated: 3, added: 1, modified: 1, deleted: 0, unchanged: 0 },
       "json",
     );
 
@@ -1250,7 +1250,9 @@ describe("filesystem-drift prewalk claims", () => {
     expect(pending).toMatchObject({
       kind: "prewalk-in-place",
       args: { model: "anthropic/executor", task: "Implement the guard" },
+      audit: { args: { seq: 1 } },
       triggerRef: "fs.drift",
+      triggerSeq: 1,
       triggerFiles: ["src/guard.ts", "docs/guard.md"],
       triggerFilesTruncated: 3,
     });
@@ -1272,6 +1274,7 @@ describe("filesystem-drift prewalk claims", () => {
       continued: true,
       trigger: {
         ref: "fs.drift",
+        seq: 1,
         files: ["src/guard.ts", "docs/guard.md"],
         truncated: 3,
       },
@@ -1291,7 +1294,7 @@ describe("filesystem-drift prewalk claims", () => {
       controller,
       run,
       "session-1",
-      { files: ["src/guard.ts"], truncated: 0, added: 0, modified: 1, deleted: 0 },
+      { files: ["src/guard.ts"], truncated: 0, added: 0, modified: 1, deleted: 0, unchanged: 0 },
       "json",
     );
 
@@ -1311,7 +1314,7 @@ describe("filesystem-drift prewalk claims", () => {
         controller,
         bashExecution(),
         "session-1",
-        { files: ["a.ts"], truncated: 0, added: 0, modified: 1, deleted: 0 },
+        { files: ["a.ts"], truncated: 0, added: 0, modified: 1, deleted: 0, unchanged: 0 },
         "json",
       ),
     ).toBeUndefined();
@@ -1322,7 +1325,7 @@ describe("filesystem-drift prewalk claims", () => {
         controller,
         bashExecution(),
         "session-2",
-        { files: ["a.ts"], truncated: 0, added: 0, modified: 1, deleted: 0 },
+        { files: ["a.ts"], truncated: 0, added: 0, modified: 1, deleted: 0, unchanged: 0 },
         "json",
       ),
     ).toBeUndefined();

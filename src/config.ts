@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { renameAtomic } from "./core/atomic-write.js";
+import { normalizeModelAliases } from "./core/model-resolution.js";
 import { PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
 import {
   CURRENT_FABRIC_CONFIG_VERSION,
@@ -97,6 +98,10 @@ interface FabricVedaRunnerConfig {
 }
 
 interface FabricPrewalkConfig {
+  // Master switch, persisted by /fabric prewalk --disable|--enable or the
+  // settings UI (absent means enabled). Manual arming, session auto-arm, and
+  // boundary claims all gate on it.
+  enabled?: boolean;
   mode: FabricPrewalkMode;
   model?: string;
   alwaysRearm: boolean;
@@ -245,6 +250,32 @@ export interface FabricMemoryConfig {
   regexTimeoutMs?: number;
 }
 
+export interface FabricSpeculationConfig {
+  /** Master switch for speculative programmatic tool calling during streaming. */
+  enabled: boolean;
+  /** Maximum simultaneously in-flight speculative calls; excess candidates are dropped. */
+  maxConcurrent: number;
+  /** Maximum retained unserved speculation entries per turn. */
+  maxEntries: number;
+  /** Per-stream cap on buffered partial tool-call arguments while extracting the `code` field. */
+  maxBufferBytes: number;
+  /** Unserved speculation entries older than this are aborted and discarded. */
+  entryTtlMs: number;
+  /**
+   * Tier B: MCP tools that may be speculated despite risk "network". Entries
+   * are `server.tool` or `server.*` and match the ref after the `mcp.` prefix.
+   * Only enable for tools the operator knows are read-only; cached MCP
+   * annotations with destructiveHint=true always refuse.
+   */
+  mcpAllowlist: string[];
+}
+
+
+export interface FabricModelsConfig {
+  /** Alias name → ordered provider/model fallback chain, first available wins. */
+  aliases: Record<string, string[]>;
+}
+
 export interface FabricConfig {
   fullCodeMode: boolean;
   executor: FabricExecutorConfig;
@@ -252,6 +283,7 @@ export interface FabricConfig {
   mcp: FabricMcpConfig;
   prewalk: FabricPrewalkConfig;
   agents: FabricAgentConfig;
+  models: FabricModelsConfig;
   components: FabricComponentEntry[];
   capture: FabricToolCaptureConfig;
   ui: FabricUiConfig;
@@ -260,6 +292,7 @@ export interface FabricConfig {
   mesh: FabricMeshConfig;
   memory: FabricMemoryConfig;
   schema: FabricSchemaConfig;
+  speculation: FabricSpeculationConfig;
   codePreview: CodePreviewSettings;
 }
 
@@ -391,6 +424,9 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     eventContextChars: 40_000,
     actorContextEntries: 14,
   },
+  models: {
+    aliases: {},
+  },
   memory: {
     enabled: true,
     maxSessions: 500,
@@ -415,6 +451,14 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     maxFiles: 100,
     maxBytes: 10 * 1024 * 1024,
     trustedCommands: {},
+  },
+  speculation: {
+    enabled: true,
+    maxConcurrent: 4,
+    maxEntries: 64,
+    maxBufferBytes: 2 * 1024 * 1024,
+    entryTtlMs: 180_000,
+    mcpAllowlist: [],
   },
   codePreview: defaultCodePreviewSettings(),
 };
@@ -589,8 +633,10 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const retention = objectValue(input.retention);
   const mesh = objectValue(input.mesh);
   const memory = objectValue(input.memory);
+  const modelsSection = objectValue(input.models);
   const schema = objectValue(input.schema);
   const schemaMode = schemaModeValue(schema.mode, DEFAULT_FABRIC_CONFIG.schema.mode);
+  const speculation = objectValue(input.speculation);
   const configuredExecutorRuntime = executorRuntimeValue(
     executor.runtime,
     DEFAULT_FABRIC_CONFIG.executor.runtime,
@@ -762,6 +808,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       advisory: booleanValue(mcp.advisory, DEFAULT_FABRIC_CONFIG.mcp.advisory),
     },
     prewalk: {
+      ...(prewalk.enabled === false ? { enabled: false } : {}),
       mode: prewalkModeValue(prewalk.mode, DEFAULT_FABRIC_CONFIG.prewalk.mode),
       ...(prewalkModel ? { model: prewalkModel } : {}),
       ...(prewalkThinking ? { thinking: prewalkThinking } : {}),
@@ -981,6 +1028,9 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         100,
       ),
     },
+    models: {
+      aliases: normalizeModelAliases(modelsSection.aliases),
+    },
     memory: {
       enabled: booleanValue(memory.enabled, DEFAULT_FABRIC_CONFIG.memory.enabled),
       ...(memoryIndexDir ? { indexDir: memoryIndexDir } : {}),
@@ -1092,6 +1142,46 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         100 * 1024 * 1024,
       ),
       trustedCommands,
+    },
+    speculation: {
+      enabled: booleanValue(
+        speculation.enabled,
+        DEFAULT_FABRIC_CONFIG.speculation.enabled,
+      ),
+      maxConcurrent: boundedInteger(
+        speculation.maxConcurrent,
+        DEFAULT_FABRIC_CONFIG.speculation.maxConcurrent,
+        1,
+        32,
+      ),
+      maxEntries: boundedInteger(
+        speculation.maxEntries,
+        DEFAULT_FABRIC_CONFIG.speculation.maxEntries,
+        1,
+        1_024,
+      ),
+      maxBufferBytes: boundedInteger(
+        speculation.maxBufferBytes,
+        DEFAULT_FABRIC_CONFIG.speculation.maxBufferBytes,
+        64 * 1024,
+        64 * 1024 * 1024,
+      ),
+      entryTtlMs: boundedInteger(
+        speculation.entryTtlMs,
+        DEFAULT_FABRIC_CONFIG.speculation.entryTtlMs,
+        5_000,
+        30 * 60_000,
+      ),
+      mcpAllowlist: [
+        ...new Set(
+          (Array.isArray(speculation.mcpAllowlist) ? speculation.mcpAllowlist : [])
+            .filter(
+            (entry): entry is string =>
+              typeof entry === "string" && entry.trim().length > 0,
+          )
+            .map((entry) => entry.trim().slice(0, 256)),
+        ),
+      ].slice(0, 256),
     },
     codePreview: normalizeCodePreviewSettings(input.codePreview),
   };
@@ -1268,7 +1358,11 @@ export const saveFabricConfig = (
   const input = readJsonObjectFile(targetPath);
   const existing = migrateFabricConfigDocument(input?.document ?? {}).document;
   const merged = mergeObjects(existing, partial) as Record<string, unknown>;
-  merged.configVersion = CURRENT_FABRIC_CONFIG_VERSION;
+  // Never stamp down: preserve version markers written by newer builds.
+  merged.configVersion = Math.max(
+    typeof merged.configVersion === "number" ? merged.configVersion : 0,
+    CURRENT_FABRIC_CONFIG_VERSION,
+  );
   writeJsonAtomic(targetPath, merged, input?.source);
   return { scope, path: targetPath };
 };

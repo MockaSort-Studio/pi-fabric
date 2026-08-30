@@ -26,6 +26,7 @@ const makeHarness = (
     model?: string;
     thinking?: FabricThinking;
     detectShellWrites?: boolean;
+    enabled?: boolean;
     fullCodeMode?: boolean;
     schemaMode?: string;
     agentsEnabled?: boolean;
@@ -43,6 +44,7 @@ const makeHarness = (
       schema: { mode: input.schemaMode ?? "assist" },
       agents: { enabled: input.agentsEnabled ?? true },
       prewalk: {
+        ...(input.enabled === false ? { enabled: false } : {}),
         mode: input.mode ?? "in-place",
         ...(input.model !== undefined ? { model: input.model } : {}),
         ...(input.thinking !== undefined ? { thinking: input.thinking } : {}),
@@ -126,6 +128,15 @@ describe("armFabricPrewalkSession", () => {
 });
 
 describe("autoArmFabricPrewalk", () => {
+  it("stays silent when the prewalk master switch is off", async () => {
+    const h = makeHarness({ model: "anthropic/executor", enabled: false });
+
+    const skip = await autoArmFabricPrewalk(h.state, h.context, h.pi);
+
+    expect(skip).toBeUndefined();
+    expect(h.prewalk.status().state).toBe("idle");
+  });
+
   it("arms new sessions from prewalk.model", async () => {
     const h = makeHarness({ model: "anthropic/executor" });
 

@@ -1,4 +1,5 @@
-import { getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { resolveAgentDir } from "./core/agent-dir.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import path from "node:path";
@@ -126,6 +127,12 @@ export class FabricState {
 
   get registry(): FabricRuntimeState["registry"] { return this.#required().registry; }
   get execution(): FabricRuntimeState["execution"] { return this.#required().execution; }
+
+  /** Speculative-PTC stream tap; undefined pre-init or when speculation is disabled. */
+  get speculationTap(): FabricRuntimeState["speculationTap"] { return this.#runtime?.speculationTap; }
+
+  /** Turn-boundary backstop for the speculation store; safe before initialization. */
+  resetSpeculation(): void { this.#runtime?.resetSpeculation(); }
   get agents(): FabricRuntimeState["agents"] { return this.#required().agents; }
   get actors(): FabricRuntimeState["actors"] { return this.#required().actors; }
   get globalActors(): FabricRuntimeState["globalActors"] { return this.#required().globalActors; }
@@ -147,7 +154,7 @@ export class FabricState {
     this.#config = undefined;
     const config = loadFabricConfig({
       cwd: context.cwd,
-      agentDir: getAgentDir(),
+      agentDir: resolveAgentDir(),
       projectTrusted: context.isProjectTrusted(),
     });
     this.#config = config;
@@ -181,7 +188,7 @@ export class FabricState {
     } else {
       this.#config = loadFabricConfig({
         cwd: context.cwd,
-        agentDir: getAgentDir(),
+        agentDir: resolveAgentDir(),
         projectTrusted: context.isProjectTrusted(),
       });
     }
@@ -296,12 +303,12 @@ export class FabricState {
   reloadConfig(context: ExtensionContext): void {
     const next = loadFabricConfig({
       cwd: context.cwd,
-      agentDir: getAgentDir(),
+      agentDir: resolveAgentDir(),
       projectTrusted: context.isProjectTrusted(),
     });
     if (this.#config) next.schema.mode = this.#config.schema.mode;
     this.#config = next;
-    this.#runtime?.reloadConfig(context);
+    this.#runtime?.reloadConfig(context, next);
   }
 
   async shutdown(): Promise<void> {

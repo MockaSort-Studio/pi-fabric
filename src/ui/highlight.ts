@@ -7,6 +7,7 @@ import { bundledLanguages } from "shiki/langs";
 import { bundledThemesInfo } from "shiki/themes";
 import type { GrammarState, Highlighter } from "shiki";
 import { resolveShikiTheme, type ShikiThemeVariant } from "./code-preview.js";
+import { resolveShikiThemeObject } from "./shiki-theme.js";
 
 const configuredMaxHighlightChars = Number.parseInt(
   process.env.CODE_PREVIEW_MAX_HIGHLIGHT_CHARS ?? "",
@@ -318,6 +319,7 @@ export function languageFromPath(filePath: string | undefined): string | undefin
 /** Configure highlighting without loading Shiki until the first code preview needs it. */
 export function configureHighlighting(themePreferenceValue: string, syntaxEnabled = true): void {
   const preference = themePreferenceValue.trim() || "auto";
+  const wasEnabled = enabled;
   enabled = syntaxEnabled;
   if (!enabled) {
     themePreference = preference;
@@ -338,7 +340,13 @@ export function configureHighlighting(themePreferenceValue: string, syntaxEnable
     return;
   }
   const themeChanged = syncEffectiveTheme(preference, observedVariant);
-  if (!themeChanged && (highlighter || initializingTheme)) {
+  // syncEffectiveTheme already rebuilds eagerly on a real theme swap and
+  // highlightCode's requestInit lazily covers a never-initialized highlighter;
+  // the only remaining case that needs an explicit init is re-enabling after
+  // a disable disposed the highlighter. Rebuilding unconditionally here cost
+  // a full 10-grammar shiki init (~80-260ms of main-thread work) on every
+  // /fabric settings save even when nothing display-related had changed.
+  if (!themeChanged && !wasEnabled && !highlighter && !initializingTheme) {
     void initHighlighting(currentTheme, syntaxEnabled);
   }
 }
@@ -352,8 +360,16 @@ export async function initHighlighting(theme: string, syntaxEnabled = true): Pro
   initializingTheme = theme;
   try {
     const { createHighlighter } = await import("shiki");
+    // Resolve the theme object from pi-fabric's own module graph and hand
+    // createHighlighter the *object*, not a bare id string. Shiki's internal
+    // lazy `import("@shikijs/themes/<id>)` for string ids cannot be resolved
+    // inside Pi's extension host (issue #46); passing the object sidesteps it.
+    const themeObject = await resolveShikiThemeObject(theme);
+    if (!themeObject) {
+      throw new Error(`Unknown shiki theme: ${theme}`);
+    }
     const next = await createHighlighter({
-      themes: [theme],
+      themes: [themeObject],
       langs: [...PRELOADED_LANGUAGES],
     });
     if (version !== initVersion) {
@@ -845,9 +861,11 @@ const fileHighlightRange = (
     entry.waiters.push({ to: clampedTo, invalidate });
     scheduleFileHighlight(entry);
   }
-  if (entry.lines.length < to) return null;
+  // Coverage past EOF: serve the existing lines rather than wait forever on a
+  // target that can never be reached.
+  if (entry.lines.length < clampedTo) return null;
   const out: FileHighlightLine[] = [];
-  for (let index = from; index < to; index++) {
+  for (let index = from; index < Math.min(to, total); index++) {
     out.push({ raw: entry.sourceLines[index] ?? "", ansi: entry.lines[index] ?? "" });
   }
   return out;

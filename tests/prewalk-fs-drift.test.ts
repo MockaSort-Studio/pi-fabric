@@ -60,17 +60,51 @@ describe("PrewalkDriftTracker", () => {
     expect(await tracker.evaluate("session-1", root)).toBeUndefined();
   });
 
-  it("treats mtime-only churn as drift (stat-only trade-off, deliberately no hashing)", async () => {
+  it("claims mtime-only churn once, records the content hash, then filters repeats", async () => {
     const root = await tempRoot();
     const file = path.join(root, "a.txt");
     await writeFile(file, "alpha");
     const tracker = new PrewalkDriftTracker();
     await tracker.captureBaseline("session-1", root);
 
-    const before = await stat(file);
-    await utimes(file, before.atime, new Date(before.mtimeMs + 5_000));
-    const drift = await tracker.evaluate("session-1", root);
-    expect(drift?.modified).toBe(1);
+    // First sighting: the baseline holds no content hash yet, so the churn
+    // still claims — and teaches the fresh baseline a.txt's SHA-1.
+    let stamp = await stat(file);
+    await utimes(file, stamp.atime, new Date(stamp.mtimeMs + 5_000));
+    const first = await tracker.evaluate("session-1", root);
+    expect(first).toMatchObject({ modified: 1, unchanged: 0, files: ["a.txt"] });
+
+    // Repeat churn with identical content is filtered as mtime-only noise.
+    stamp = await stat(file);
+    await utimes(file, stamp.atime, new Date(stamp.mtimeMs + 5_000));
+    expect(await tracker.evaluate("session-1", root)).toBeUndefined();
+    // Content actually changing claims again regardless of the recorded hash.
+    await writeFile(file, "alpha-2");
+    expect(await tracker.evaluate("session-1", root)).toMatchObject({ modified: 1 });
+  });
+
+  it("filters hashed churn while still reporting real content changes", async () => {
+    const root = await tempRoot();
+    const churned = path.join(root, "a.txt");
+    const real = path.join(root, "b.txt");
+    await writeFile(churned, "alpha");
+    await writeFile(real, "beta");
+    const tracker = new PrewalkDriftTracker();
+    await tracker.captureBaseline("session-1", root);
+
+    // Real content change claims and records a.txt's hash in the new baseline.
+    await writeFile(churned, "alpha-2");
+    expect(await tracker.evaluate("session-1", root)).toMatchObject({
+      modified: 1,
+      files: ["a.txt"],
+    });
+
+    // a.txt churns with identical content while b.txt actually changes.
+    const stamp = await stat(churned);
+    await utimes(churned, stamp.atime, new Date(stamp.mtimeMs + 5_000));
+    await writeFile(real, "beta-2");
+    const second = await tracker.evaluate("session-1", root);
+    expect(second).toMatchObject({ modified: 1, unchanged: 1, files: ["b.txt"] });
   });
 
   it("baselines silently on first evaluation and claims only later drift", async () => {

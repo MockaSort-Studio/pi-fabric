@@ -29,8 +29,16 @@ import {
   type FabricProviderListRequest,
   type FabricScopedProviderResult,
 } from "../protocol.js";
+import {
+  formatUnknownActionMessage,
+  repairActionName,
+} from "./action-repair.js";
 import { formatFabricEffectConflict } from "./effect-conflict.js";
 import { stableJsonHash } from "./stable-hash.js";
+import type {
+  FabricSpeculationReplay,
+  FabricSpeculationRuntime,
+} from "../speculation/types.js";
 import type { FabricNestedToolResultProxy } from "./tool-result-proxy.js";
 import {
   FabricProviderBindings,
@@ -66,6 +74,10 @@ export interface FabricCallAudit {
   mediaNote?: string;
   preview?: unknown;
   effectConflicts?: FabricEffectConflict[];
+  /** Result was pre-launched while the program streamed and served from the speculation store. */
+  speculated?: boolean;
+  /** Spelled action name that repaired to the canonical one at resolve (e.g. search → recall). */
+  repairedFrom?: string;
 }
 
 export type FabricRegistryActivityEvent =
@@ -326,8 +338,23 @@ export class ActionRegistry {
   readonly #providerBindings = new FabricProviderBindings();
   readonly #activeEffects = new Map<string, { ref: string; effect: FabricActionEffect }>();
   readonly #unavailable = new Map<string, string>();
+  #speculation: FabricSpeculationRuntime | undefined;
+  #speculationEligibility: ((action: ResolvedFabricAction) => boolean) | undefined;
 
   constructor(readonly toolResultProxy?: FabricNestedToolResultProxy) {}
+
+  /**
+   * Attach the speculative-PTC runtime. Eligibility is re-checked against the
+   * resolved descriptor inside speculate(), so a config/captured-tool change
+   * cannot sneak a side-effecting ref into the store after the fact.
+   */
+  setSpeculation(
+    runtime: FabricSpeculationRuntime | undefined,
+    eligibility?: (action: ResolvedFabricAction) => boolean,
+  ): void {
+    this.#speculation = runtime;
+    this.#speculationEligibility = eligibility;
+  }
 
   register(provider: FabricProvider, options: { overwrite?: boolean } = {}): void {
     this.mount(provider, options);
@@ -666,9 +693,16 @@ export class ActionRegistry {
         ref,
         context.capabilityView,
       );
-      const descriptor = await provider.describe(actionName, context);
-      if (!descriptor) throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
-      const action = resolveDescriptor(provider, descriptor);
+      const resolved = await this.#resolveActionDescriptor(
+        provider,
+        actionName,
+        context,
+        context.capabilityView === undefined,
+      );
+      if (!resolved.action) {
+        throw new FabricResolutionError(formatUnknownActionMessage(ref, resolved.suggestions));
+      }
+      const action = resolved.action;
       if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
         throw new FabricResolutionError(`Fabric capability descriptor changed: ${ref}`);
       }
@@ -694,6 +728,7 @@ export class ActionRegistry {
     // line and what typed calls pragmatically use): walk every provider for
     // a unique action-name match.
     const matches: ResolvedFabricAction[] = [];
+    const declaredNames: string[] = [];
     for (const provider of this.#providerBindings.providers()) {
       let descriptors: FabricActionDescriptor[];
       try {
@@ -702,6 +737,7 @@ export class ActionRegistry {
         continue;
       }
       for (const descriptor of descriptors) {
+        declaredNames.push(descriptor.name);
         if (descriptor.name === ref) matches.push(resolveDescriptor(provider, descriptor));
       }
     }
@@ -712,7 +748,8 @@ export class ActionRegistry {
           matches.map((match) => match.ref).sort().join(", "),
       );
     }
-    throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
+    const repair = repairActionName(declaredNames, ref);
+    throw new FabricResolutionError(formatUnknownActionMessage(ref, repair.suggestions));
   }
 
   async acquireScoped(
@@ -728,11 +765,17 @@ export class ActionRegistry {
     const releaseBinding = this.#providerBindings.retain([binding.id]);
     let retentionTransferred = false;
     try {
-      const descriptor = await runAbortable(context.signal, () =>
-        provider.describe(actionName, context),
+      const resolved = await this.#resolveActionDescriptor(
+        provider,
+        actionName,
+        context,
+        context.capabilityView === undefined,
       );
-      if (!descriptor) throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
-      const action = resolveDescriptor(provider, descriptor);
+      if (!resolved.action) {
+        throw new FabricResolutionError(formatUnknownActionMessage(ref, resolved.suggestions));
+      }
+      const action = resolved.action;
+      const providerActionName = resolved.repairedFrom === undefined ? actionName : action.name;
       if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
         throw new FabricResolutionError(`Fabric capability descriptor changed: ${ref}`);
       }
@@ -744,7 +787,7 @@ export class ActionRegistry {
       }
       const preparedArgs = provider.prepareArguments
         ? await runAbortable(context.signal, () =>
-            provider.prepareArguments!(actionName, args, context),
+            provider.prepareArguments!(providerActionName, args, context),
           )
         : args;
       if (typeof preparedArgs !== "object" || preparedArgs === null || Array.isArray(preparedArgs)) {
@@ -753,7 +796,7 @@ export class ActionRegistry {
       const invalid = validationMessage(action.inputSchema, preparedArgs);
       if (invalid) throw new Error(`Invalid arguments for ${ref}: ${invalid}`);
       const acquired = await runAbortable(context.signal, () =>
-        provider.acquire!(actionName, preparedArgs, context),
+        provider.acquire!(providerActionName, preparedArgs, context),
       );
       if (!acquired || typeof acquired.dispose !== "function") {
         throw new Error(`Scoped acquisition ${ref} did not return a disposer`);
@@ -795,11 +838,17 @@ export class ActionRegistry {
         context.capabilityView,
       );
       endBindingInvocation = this.#providerBindings.beginInvocation(binding.id);
-      const descriptor = await runAbortable(context.signal, () =>
-        provider.describe(actionName, context),
+      const resolved = await this.#resolveActionDescriptor(
+        provider,
+        actionName,
+        context,
+        context.capabilityView === undefined,
       );
-      if (!descriptor) throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
-      const action = resolveDescriptor(provider, descriptor);
+      if (!resolved.action) {
+        throw new FabricResolutionError(formatUnknownActionMessage(ref, resolved.suggestions));
+      }
+      const action = resolved.action;
+      const providerActionName = resolved.repairedFrom === undefined ? actionName : action.name;
       if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
         throw new FabricResolutionError(`Fabric capability descriptor changed: ${ref}`);
       }
@@ -818,7 +867,7 @@ export class ActionRegistry {
       failureStage = "prepare";
       const preparedArgs = provider.prepareArguments
         ? await runAbortable(context.signal, () =>
-            provider.prepareArguments!(actionName, args, context),
+            provider.prepareArguments!(providerActionName, args, context),
           )
         : args;
       if (typeof preparedArgs !== "object" || preparedArgs === null || Array.isArray(preparedArgs)) {
@@ -866,6 +915,9 @@ export class ActionRegistry {
           MAX_AUDIT_VALUE_CHARS,
         ) as Record<string, unknown>,
         ...(effectConflicts.length > 0 ? { effectConflicts } : {}),
+        ...(resolved.repairedFrom !== undefined
+          ? { repairedFrom: resolved.repairedFrom }
+          : {}),
       };
       audit = activeAudit;
       invocationActive = true;
@@ -878,10 +930,41 @@ export class ActionRegistry {
       });
       context.update(`Calling ${ref}`);
       this.#activeEffects.set(nestedToolCallId, { ref, effect });
+      let servedFromSpeculation = false;
       let providerValue: unknown;
+      if (this.#speculation && effect.kind === "none") {
+        const served = await runAbortable(context.signal, () =>
+          this.#speculation!.tryServe(context.parentToolCallId, ref, preparedArgs));
+        if (served.hit) {
+          servedFromSpeculation = true;
+          activeAudit.speculated = true;
+          providerValue = served.value;
+          if (served.replay.updatedArgs !== undefined) {
+            const replayedPreview = previewArgs(ref, served.replay.updatedArgs);
+            activeAudit.args = boundedPreviewValue(
+              replayedPreview,
+              MAX_AUDIT_VALUE_CHARS,
+            ) as Record<string, unknown>;
+            traceOperation?.prepared(served.replay.updatedArgs);
+            context.observeInvocation?.({
+              type: "call_args",
+              callId: nestedToolCallId,
+              args: replayedPreview,
+            });
+          }
+          if (served.replay.media?.length) {
+            activeAudit.media = [...(activeAudit.media ?? []), ...served.replay.media];
+            if (served.replay.mediaNote) activeAudit.mediaNote = served.replay.mediaNote;
+          }
+          if (served.replay.preview !== undefined) activeAudit.preview = served.replay.preview;
+        }
+      }
+      let providerInvoked = false;
       try {
+        if (!servedFromSpeculation) {
+        providerInvoked = true;
         providerValue = await runAbortable(context.signal, () =>
-          provider.invoke(actionName, preparedArgs, {
+          provider.invoke(providerActionName, preparedArgs, {
           ...context,
           nestedToolCallId,
           update(message) {
@@ -928,7 +1011,9 @@ export class ActionRegistry {
           },
           }),
         );
+        }
       } finally {
+        if (providerInvoked && effect.kind !== "none") this.#speculation?.bumpEpoch();
         this.#activeEffects.delete(nestedToolCallId);
       }
       const value = this.toolResultProxy
@@ -987,7 +1072,86 @@ export class ActionRegistry {
     }
   }
 
+  /**
+   * Prepare + pre-launch a speculative call discovered in a partially
+   * streamed program (see src/speculation). Pure pipeline only: descriptor
+   * resolution, the eligibility gate on the resolved action, argument
+   * preparation, and schema validation. authorize/approve/audits are skipped
+   * because the eligibility gate restricts this path to actions that never
+   * prompt, and the real call re-runs the full pipeline on a serve miss.
+   * Side-channel outputs are captured into `replay` so the serve path can
+   * project them into the real audit.
+   */
+  async speculate(
+    ref: string,
+    args: Record<string, unknown>,
+    context: FabricInvocationContext,
+    replay: FabricSpeculationReplay,
+  ): Promise<
+    | {
+        preparedArgs: Record<string, unknown>;
+        execute(signal: AbortSignal | undefined): Promise<unknown>;
+      }
+    | undefined
+  > {
+    if (!this.#speculationEligibility) return undefined;
+    try {
+      const { binding, provider, actionName } = this.#parseRef(ref, context.capabilityView);
+      const descriptor = await runAbortable(context.signal, () =>
+        provider.describe(actionName, context));
+      if (!descriptor) return undefined;
+      const action = resolveDescriptor(provider, descriptor);
+      if (!this.#speculationEligibility(action)) return undefined;
+      const preparedArgs = provider.prepareArguments
+        ? await runAbortable(context.signal, () =>
+            provider.prepareArguments!(actionName, args, context))
+        : args;
+      if (
+        typeof preparedArgs !== "object" ||
+        preparedArgs === null ||
+        Array.isArray(preparedArgs)
+      ) {
+        return undefined;
+      }
+      if (validationMessage(action.inputSchema, preparedArgs)) return undefined;
+      const nestedToolCallId = `${NESTED_TOOL_CALL_ID_PREFIX}spec-${randomUUID()}`;
+      return {
+        preparedArgs,
+        execute: async (signal) => {
+          const endBindingInvocation = this.#providerBindings.beginInvocation(binding.id);
+          try {
+            return await runAbortable(signal, () =>
+              provider.invoke(actionName, preparedArgs, {
+                ...context,
+                signal,
+                nestedToolCallId,
+                update() {},
+                activity() {},
+                attachMedia(blocks, note) {
+                  replay.media = [...(replay.media ?? []), ...blocks];
+                  if (note) replay.mediaNote = note;
+                },
+                updateArguments(updatedArgs) {
+                  replay.updatedArgs = updatedArgs;
+                },
+                attachPreview(preview) {
+                  replay.preview = preview;
+                },
+              }),
+            );
+          } finally {
+            await endBindingInvocation().catch(() => undefined);
+          }
+        },
+      };
+    } catch {
+      // Speculation degrades silently; the real call runs the full pipeline.
+      return undefined;
+    }
+  }
+
   async endInvocation(parentToolCallId: string, timeoutMs = 1_000): Promise<void> {
+    this.#speculation?.onInvocationEnd?.(parentToolCallId);
     const providers = new Set(
       this.#providerBindings.entries().map((binding) => binding.provider),
     );
@@ -1083,6 +1247,54 @@ export class ActionRegistry {
     } finally {
       await Promise.allSettled(temporaryReleases.map((release) => release()));
     }
+  }
+
+  async #declaredActionNames(
+    provider: FabricProvider,
+    context: FabricInvocationContext,
+  ): Promise<string[]> {
+    try {
+      const descriptors = await runAbortable(context.signal, () => provider.list({}, context));
+      return descriptors.map((descriptor) => descriptor.name);
+    } catch {
+      return [];
+    }
+  }
+
+  // Resolve a provider action descriptor, repairing a near-miss action name
+  // (mirroring arg-normalization's prepare-stage argument repair) when the
+  // caller is not pinned to a committed capability view. Committed views are
+  // exact contracts: a pinned miss keeps the plain resolution error.
+  async #resolveActionDescriptor(
+    provider: FabricProvider,
+    actionName: string,
+    context: FabricInvocationContext,
+    allowRepair: boolean,
+  ): Promise<{ action?: ResolvedFabricAction; suggestions: string[]; repairedFrom?: string }> {
+    const descriptor = await runAbortable(context.signal, () =>
+      provider.describe(actionName, context),
+    );
+    if (descriptor) return { action: resolveDescriptor(provider, descriptor), suggestions: [] };
+    if (!allowRepair) return { suggestions: [] };
+    const repair = repairActionName(
+      await this.#declaredActionNames(provider, context),
+      actionName,
+    );
+    if (repair.repaired !== undefined) {
+      const repairedDescriptor = await runAbortable(context.signal, () =>
+        provider.describe(repair.repaired!, context),
+      );
+      if (repairedDescriptor) {
+        return {
+          action: resolveDescriptor(provider, repairedDescriptor),
+          suggestions: [],
+          repairedFrom: actionName,
+        };
+      }
+    }
+    return {
+      suggestions: repair.suggestions.map((name) => `${provider.name}.${name}`),
+    };
   }
 
   #parseRef(
