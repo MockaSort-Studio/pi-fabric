@@ -36,10 +36,12 @@ import {
   expandSkillDirMarkersInSkillBlock,
 } from "./core/skill-dir.js";
 import { coreOverridePromptGuidance } from "./core/core-override-guidance.js";
+import { PI_CORE_TOOL_NAMES } from "./core/pi-tools.js";
 import {
   fabricExecutionKernelGuidance,
   defaultFabricExecutionGuidance,
   fabricSchemaGuidance,
+  extensionToolRosterGuidance,
 } from "./core/system-guidance.js";
 import {
   FABRIC_EXECUTION_GUIDANCE_SLOT,
@@ -308,6 +310,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       fabricOwnsModelTools(),
       fabricOwnsModelTools() ? hiddenCapturedToolNames() : undefined,
     );
+    capturedTools.refresh();
     refreshAdvisorSources();
   };
   const suspendToolCapture = (): void => {
@@ -738,6 +741,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     const overrideGuidance = effectiveFullCodeMode
       ? coreOverridePromptGuidance(capturedTools).trim()
       : undefined;
+    const extensionRoster = effectiveFullCodeMode
+      ? extensionToolRosterGuidance(capturedTools.list(), new Set(PI_CORE_TOOL_NAMES))
+      : undefined;
     // Only turn-stable sections go into the system prompt. Anything derived
     // from the current prompt (skill references, capability advisory) rides
     // the message channel so provider prefix caches never cold-prefill.
@@ -746,6 +752,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       resolvedGuidance.slotText,
       fabricSchemaGuidance(schemaMode),
       overrideGuidance,
+      extensionRoster,
       resolvedGuidance.appendText,
     ].filter((section): section is string => Boolean(section)).join("\n\n");
     // One-shot capability steering: when the prompt's vocabulary matches a
