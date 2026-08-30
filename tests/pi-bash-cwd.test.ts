@@ -12,12 +12,17 @@ import {
 } from "../src/providers/pi-bash-cwd.js";
 
 const roots: string[] = [];
+const cwdMarker = "fabric-cwd-marker.txt";
 
 const makeTree = (): { root: string; nested: string } => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-bash-cwd-")));
   roots.push(root);
   const nested = path.join(root, "services", "link");
   fs.mkdirSync(nested, { recursive: true });
+  // Reading a relative file proves the shell reached the target directory
+  // without comparing Git Bash's /tmp spelling with a Windows native path.
+  fs.writeFileSync(path.join(root, cwdMarker), root);
+  fs.writeFileSync(path.join(nested, cwdMarker), nested);
   return { root, nested };
 };
 
@@ -59,19 +64,18 @@ describe("resolvePiBashCwd", () => {
     fs.symlinkSync(nested, link, "dir");
     const result = await new BashCwdDefinitions().get(link).execute(
       "pi-bash-cwd-symlink-test",
-      { command: "pwd" },
+      { command: `cat ${cwdMarker}` },
       undefined,
       () => {},
       undefined as never,
     );
-    const reported = (result.content[0] as { text: string }).text.trim();
-    expect(fs.realpathSync(reported)).toBe(fs.realpathSync(link));
+    expect(result.content[0]).toMatchObject({ text: nested });
   });
 
   it("names the resolved path when the directory is missing", () => {
     const { root } = makeTree();
     expect(() => resolvePiBashCwd(root, "nope")).toThrowError(
-      new RegExp(`Invalid pi\\.bash cwd "nope" \\(${root}/nope\\)`),
+      `Invalid pi.bash cwd "nope" (${path.join(root, "nope")})`,
     );
   });
 
@@ -148,12 +152,12 @@ describe("BashCwdDefinitions", () => {
     const definitions = new BashCwdDefinitions();
     const result = await definitions.get(nested).execute(
       "pi-bash-cwd-test",
-      { command: "pwd" },
+      { command: `cat ${cwdMarker}` },
       undefined,
       () => {},
       undefined as never,
     );
-    expect(result.content[0]).toMatchObject({ text: expect.stringContaining(nested) });
+    expect(result.content[0]).toMatchObject({ text: nested });
   });
 
   // Guards the regression this change exists to prevent: declaring cwd in the
@@ -163,12 +167,11 @@ describe("BashCwdDefinitions", () => {
     const { root, nested } = makeTree();
     const result = await createBashToolDefinition(root).execute(
       "pi-bash-cwd-test",
-      { command: "pwd", cwd: nested } as never,
+      { command: `cat ${cwdMarker}`, cwd: nested } as never,
       undefined,
       () => {},
       undefined as never,
     );
-    expect(result.content[0]).toMatchObject({ text: expect.stringContaining(root) });
-    expect((result.content[0] as { text: string }).text).not.toContain(nested);
+    expect(result.content[0]).toMatchObject({ text: root });
   });
 });
