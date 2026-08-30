@@ -1,6 +1,9 @@
 packages:
   - "."
 
+overrides:
+  "ajv>fast-uri": ^3.1.6
+
 allowBuilds:
   "@google/genai": true
   esbuild: true
