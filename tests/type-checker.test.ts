@@ -42,7 +42,8 @@ return run.status;
     const accepted = typeCheckFabricCode(
       `
 await agents.run({ task: "run elsewhere", cwd: "../other" });
-await agents.spawn({ task: "spawn elsewhere", cwd: "/tmp/other" });
+await agents.spawn({ task: "spawn elsewhere", cwd: "/tmp/other", residency: "durable" });
+await agents.create({ name: "durable actor", instructions: "watch", residency: "durable" });
 await workflow.agent("workflow elsewhere", { cwd: "worktree" });
 await council.run({ task: "council elsewhere", roles: ["reviewer"], cwd: "council" });
 return rlm.query({ task: "recursive elsewhere" });

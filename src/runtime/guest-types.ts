@@ -67,6 +67,7 @@ interface FabricAgentRequest {
   prompt?: string;
   instructions?: string;
   timeout_ms?: number;
+  residency?: FabricParticipantResidency;
 }
 interface FabricHandoffCall {
   readonly ref: string;
@@ -130,6 +131,7 @@ interface FabricPeerInfo {
   local: false;
 }
 type FabricParticipantKind = "root" | "agent" | "actor";
+type FabricParticipantResidency = "session" | "durable";
 type FabricParticipantScope = "local" | "lineage" | "project";
 type FabricParticipantCapability = "steer" | "followUp" | "stop" | "ask" | "actor-bindings" | "attach" | "fabric";
 interface FabricParticipantInfo {
@@ -160,6 +162,7 @@ interface FabricParticipantInfo {
   actorQueued?: number;
   actorMessages?: number;
   controlProtocol: "v1" | "legacy";
+  residency: FabricParticipantResidency;
   local: boolean;
   stale: boolean;
 }
@@ -236,6 +239,7 @@ interface FabricAgentHandle {
   value?: unknown;
   error?: string;
   logFile?: string;
+  residency?: FabricParticipantResidency;
 }
 interface FabricRemoteControlResult {
   queued: true;
@@ -565,6 +569,7 @@ interface FabricActorRequestBase {
   extensions?: boolean;
   requires?: Array<string | { ref: string; optional?: boolean }>;
   validWhile?: FabricActorValidWhile;
+  residency?: FabricParticipantResidency;
 }
 type FabricActorRequest = FabricActorRequestBase & (
   | { delivery?: "mailbox"; triggerTurn?: false }
@@ -593,6 +598,7 @@ interface FabricActorInfo {
   capabilityDigest?: string;
   missingCapabilities?: string[];
   validWhile?: { version: 1; source: string };
+  residency: FabricParticipantResidency;
   queued: number;
   messages: number;
   createdAt: number;

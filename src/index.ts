@@ -100,7 +100,7 @@ const FABRIC_ENTRY_DIR = path.dirname(FABRIC_EXTENSION_ENTRY_PATH);
 const FABRIC_RUNTIME_PATHS = {
   extension: FABRIC_EXTENSION_ENTRY_PATH,
   worker: path.join(FABRIC_ENTRY_DIR, "worker.js"),
-  residentHost: path.join(FABRIC_ENTRY_DIR, "residency", "host.js"),
+  residentHost: path.join(FABRIC_ENTRY_DIR, "residency", "launcher.js"),
   skills: path.resolve(FABRIC_ENTRY_DIR, "..", "skills"),
 };
 const FABRIC_SKILLS_DIR = FABRIC_RUNTIME_PATHS.skills;
