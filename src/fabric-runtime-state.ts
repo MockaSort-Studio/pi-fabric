@@ -36,6 +36,7 @@ import {
   loadFabricConfig,
   type FabricConfig,
   type FabricResultFormat,
+  type FabricSchemaMode,
 } from "./config.js";
 import {
   ActionRegistry,
@@ -954,6 +955,16 @@ export class FabricRuntimeState {
   // schema.mode from its own previous config, preserving the existing
   // in-memory override chain (state and runtime share the same preserved
   // mode by construction: the runtime's config originates from FabricState).
+  // Ephemeral schema mode override: mutates the live config in place so the
+  // per-call readers (SchemaController.authorize, the top-level tool gate,
+  // ExecutionService's runtime selection) see the change immediately without
+  // a provider-topology rebuild. FabricState owns the coupling rules.
+  setSchemaMode(mode: FabricSchemaMode, executorRuntime: FabricConfig["executor"]["runtime"]): void {
+    if (!this.#config) return;
+    this.#config.schema.mode = mode;
+    this.#config.executor.runtime = executorRuntime;
+  }
+
   reloadConfig(context: ExtensionContext, next: FabricConfig): void {
     if (!this.#config || !this.#cwd) return;
     next.schema.mode = this.#config.schema.mode;

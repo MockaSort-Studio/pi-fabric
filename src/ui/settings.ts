@@ -39,6 +39,7 @@ import {
   type FabricCapabilityAdvisoryMode,
   type FabricConfig,
   type FabricConfigScope,
+  type FabricSchemaMode,
 } from "../config.js";
 import { THINKING_LEVELS, thinkingLabel } from "../thinking.js";
 import type { CapturedToolCatalog } from "../capture/catalog.js";
@@ -61,6 +62,7 @@ const ADVISORY_SESSION_CAPS = ["1", "3", "5", "10"] as const;
 const ADVISORY_BUDGETS = ["256", "512", "1024", "2048"] as const;
 const RESULT_FORMATS = ["auto", "yaml", "json", "text"] as const;
 const EXECUTOR_RUNTIMES = ["quickjs", "node-process", "bun-process"] as const;
+const SCHEMA_MODES = ["off", "audit", "enforce"] as const;
 const COMPACTION_ENGINES = ["fabric", "pi"] as const;
 const COMPACTION_THRESHOLD_SETTING_ID = "compaction.threshold";
 const COMPACTION_DEFAULT_THRESHOLD_LABEL = "Pi default";
@@ -107,6 +109,7 @@ const PREWALK_MODES = ["in-place", "trajectory"] as const;
 const ROOT_ITEM_IDS = [
   "fullCodeMode",
   "executor",
+  "schema",
   "approvals",
   "mcp",
   "prewalk",
@@ -338,6 +341,8 @@ const summaryFor = (id: string, config: FabricConfig): string => {
       return config.fullCodeMode ? "true" : "false";
     case "executor":
       return `${config.executor.runtime} · ${formatMs(config.executor.timeoutMs)}`;
+    case "schema":
+      return config.schema.mode;
     case "approvals":
       return config.approvals.execute;
     case "mcp":
@@ -1066,6 +1071,52 @@ export const buildFabricSettingsItems = (
               ),
             },
           ),
+        ],
+        persist,
+      ),
+    }),
+    setting("schema", "Schema", summaryFor("schema", config), {
+      description: "Typed evidence loop and local-file transaction channel. Enforcement is locked per session; mode changes take effect in the next session.",
+      submenu: sectionSubmenu(
+        theme,
+        "Schema",
+        "Typed evidence loop and local-file transaction channel. In enforce mode, protected-workspace mutations require schema.hypothesize → schema.verify → schema.commit inside one fabric_exec call.",
+        [
+          setting("schema.mode", "Mode", config.schema.mode, {
+            description:
+              "off (default) leaves the control plane ungated. audit records would_block events for actions enforce would deny. enforce admits only the schema transaction channel for protected-workspace changes and forces the QuickJS runtime. Takes effect in the next session.",
+            values: SCHEMA_MODES,
+          }),
+          setting("schema.certificateTtlMs", "Certificate TTL", formatMs(config.schema.certificateTtlMs), {
+            description: "How long a schema.verify certificate stays valid. Clamped to 1s–10min.",
+            submenu: numericSubmenu(
+              theme,
+              [1_000, 5_000, 10_000, 30_000, 60_000, 120_000, 300_000, 600_000],
+              formatMs,
+              "Certificate TTL",
+              "How long a schema.verify certificate stays valid. Clamped to 1s–10min.",
+            ),
+          }),
+          setting("schema.maxFiles", "Max files", String(config.schema.maxFiles), {
+            description: "Maximum files in one schema.commit transaction. Clamped to 1–1000.",
+            submenu: numericSubmenu(
+              theme,
+              [1, 5, 10, 25, 50, 100, 250, 500, 1000],
+              (n) => String(n),
+              "Max files",
+              "Maximum files in one schema.commit transaction. Clamped to 1–1000.",
+            ),
+          }),
+          setting("schema.maxBytes", "Max bytes", formatBytes(config.schema.maxBytes), {
+            description: "Maximum total bytes written by one schema.commit transaction. Clamped to 1 KiB–100 MiB.",
+            submenu: numericSubmenu(
+              theme,
+              [1_048_576, 5_242_880, 10_485_760, 52_428_800, 104_857_600],
+              formatBytes,
+              "Max bytes",
+              "Maximum total bytes written by one schema.commit transaction. Clamped to 1 KiB–100 MiB.",
+            ),
+          }),
         ],
         persist,
       ),
@@ -2122,6 +2173,11 @@ export async function openFabricSettings(
         ? deps.state.config
         : loadFabricConfigForScope(configLocation, saveScope),
     );
+    if (id === "schema.mode" && typeof value === "string") {
+      // reloadConfig pins the live session's startup mode; render the saved
+      // value so the picker does not appear to ignore the selection.
+      settingsConfig.schema.mode = value as FabricSchemaMode;
+    }
     deps.onConfigApplied?.(id);
     dirty = true;
     changedSections.add(id.split(".")[0] ?? id);
@@ -2213,6 +2269,11 @@ export async function openFabricSettings(
     if (needsReload) {
       context.ui.notify(
         "Fabric settings saved. Run /fabric reload to apply mesh, agent, and MCP changes.",
+        "info",
+      );
+    } else if (changedSections.has("schema")) {
+      context.ui.notify(
+        "Fabric settings saved. Schema changes take effect in the next session.",
         "info",
       );
     } else {

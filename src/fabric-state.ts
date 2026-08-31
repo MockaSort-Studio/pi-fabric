@@ -11,7 +11,13 @@ import {
 } from "./components/provider-component.js";
 import type { FabricOwnedModelGuidance } from "./components/model-guidance.js";
 import type { FabricComponentGraph } from "./components/types.js";
-import { loadFabricConfig, type FabricConfig, type FabricResultFormat } from "./config.js";
+import {
+  loadFabricConfig,
+  loadFabricConfigForScope,
+  type FabricConfig,
+  type FabricResultFormat,
+  type FabricSchemaMode,
+} from "./config.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
 import { PrewalkController } from "./prewalk/controller.js";
 import { PrewalkDriftTracker } from "./prewalk/fs-drift.js";
@@ -306,9 +312,61 @@ export class FabricState {
       agentDir: resolveAgentDir(),
       projectTrusted: context.isProjectTrusted(),
     });
-    if (this.#config) next.schema.mode = this.#config.schema.mode;
+    if (this.#config) {
+      next.schema.mode = this.#config.schema.mode;
+      // Keep the enforce ⇒ QuickJS coupling alive across reloads; a disk
+      // runtime value must never combine with a live enforce override.
+      if (next.schema.mode === "enforce") next.executor.runtime = this.#config.executor.runtime;
+    }
     this.#config = next;
     this.#runtime?.reloadConfig(context, next);
+  }
+
+  // Ephemeral, session-only schema mode: mutates the live config (guidance,
+  // resolved-action gate, and executor runtime all read it per call) without
+  // touching fabric.json, so the next session starts from the configured mode.
+  // reloadConfig preserves the override like the startup mode does.
+  setSchemaMode(context: ExtensionContext, mode: FabricSchemaMode): void {
+    if (!this.#config) throw new Error("Fabric is not initialized");
+    const previous = this.#config.schema.mode;
+    if (mode === "enforce" && previous !== "enforce" && !this.#config.fullCodeMode) {
+      throw new Error(
+        "Schema enforce requires full code mode; enable fullCodeMode or start a session with schema.mode=enforce",
+      );
+    }
+    this.#config.schema.mode = mode;
+    if (mode === "enforce") {
+      // Mirror normalizeFabricConfig: the sandbox gate is void when guest code
+      // has a process escape hatch, so enforce always runs on QuickJS.
+      this.#config.executor.runtime = "quickjs";
+    } else if (previous === "enforce") {
+      this.#config.executor.runtime = this.#diskConfig(context).executor.runtime;
+    }
+    this.#runtime?.setSchemaMode(mode, this.#config.executor.runtime);
+  }
+
+  schemaStatus(context: ExtensionContext): {
+    mode: FabricSchemaMode;
+    source: "config" | "session override";
+    executorRuntime: string;
+  } {
+    const disk = this.#diskConfig(context);
+    const mode = this.#config?.schema.mode ?? disk.schema.mode;
+    return {
+      mode,
+      source: this.#config && this.#config.schema.mode !== disk.schema.mode
+        ? "session override"
+        : "config",
+      executorRuntime: this.#config?.executor.runtime ?? disk.executor.runtime,
+    };
+  }
+
+  #diskConfig(context: ExtensionContext): FabricConfig {
+    const projectTrusted = context.isProjectTrusted();
+    return loadFabricConfigForScope(
+      { cwd: context.cwd, agentDir: resolveAgentDir(), projectTrusted },
+      projectTrusted ? "project" : "global",
+    );
   }
 
   async shutdown(): Promise<void> {

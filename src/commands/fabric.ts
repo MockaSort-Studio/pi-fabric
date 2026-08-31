@@ -232,6 +232,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         "status",
         "dashboard",
         "settings",
+        "schema",
         "prewalk",
         "reload",
         "providers",
@@ -269,6 +270,10 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
       const subcommand = argumentPrefix.slice(0, firstSpace);
       const idPrefix = argumentPrefix.slice(firstSpace + 1);
       if (!state.initialized) return null;
+      if (subcommand === "schema") {
+        const modes = ["off", "audit", "enforce"].filter((mode) => mode.startsWith(idPrefix));
+        return modes.length > 0 ? modes.map((value) => ({ value, label: value })) : null;
+      }
       if (subcommand === "import") {
         const items: AutocompleteItem[] = [];
         try {
@@ -371,6 +376,35 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
             }
           },
         });
+        return;
+      }
+      if (command === "schema") {
+        const requested = argumentsList[0];
+        if (requested === undefined) {
+          const status = state.schemaStatus(context);
+          context.ui.notify(
+            `Schema mode: ${status.mode} (${status.source}) · executor: ${status.executorRuntime} · /fabric schema [off|audit|enforce] overrides this session only`,
+            "info",
+          );
+          return;
+        }
+        if (requested !== "off" && requested !== "audit" && requested !== "enforce") {
+          context.ui.notify("Usage: /fabric schema [off|audit|enforce]", "warning");
+          return;
+        }
+        try {
+          state.setSchemaMode(context, requested);
+        } catch (error) {
+          context.ui.notify(
+            error instanceof Error ? error.message : String(error),
+            "error",
+          );
+          return;
+        }
+        context.ui.notify(
+          `Schema mode set to ${requested} for this session (config file unchanged; the next session starts from the configured mode)`,
+          "info",
+        );
         return;
       }
       if (command === "prewalk") {
