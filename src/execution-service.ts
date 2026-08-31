@@ -50,6 +50,7 @@ let runtimeDependencies:
   | Promise<{
       QuickJsRuntime: typeof import("./runtime/quickjs-runtime.js").QuickJsRuntime;
       NodeProcessRuntime: typeof import("./runtime/node-process-runtime.js").NodeProcessRuntime;
+      BunProcessRuntime: typeof import("./runtime/node-process-runtime.js").BunProcessRuntime;
       typeCheckFabricCode: typeof import("./runtime/type-checker.js").typeCheckFabricCode;
       guestTypeDeclarations: typeof import("./runtime/guest-types.js").guestTypeDeclarations;
       buildDynamicGuestDeclarations: typeof import("./runtime/dynamic-guest-types.js").buildDynamicGuestDeclarations;
@@ -68,6 +69,7 @@ const loadRuntimeDependencies = () =>
   ]).then(([quickjs, nodeProcess, checker, guest, dynamicGuest, coreOverrides]) => ({
     QuickJsRuntime: quickjs.QuickJsRuntime,
     NodeProcessRuntime: nodeProcess.NodeProcessRuntime,
+    BunProcessRuntime: nodeProcess.BunProcessRuntime,
     typeCheckFabricCode: checker.typeCheckFabricCode,
     guestTypeDeclarations: guest.guestTypeDeclarations,
     buildDynamicGuestDeclarations: dynamicGuest.buildDynamicGuestDeclarations,
@@ -488,7 +490,9 @@ export class FabricExecutionService {
       if (!this.#runtime || this.#runtimeKind !== runtimeKind) {
         this.#runtime = runtimeKind === "node-process"
           ? new dependencies.NodeProcessRuntime()
-          : new dependencies.QuickJsRuntime();
+          : runtimeKind === "bun-process"
+            ? new dependencies.BunProcessRuntime()
+            : new dependencies.QuickJsRuntime();
         this.#runtimeKind = runtimeKind;
       }
       sandboxResult = await this.#runtime.execute(

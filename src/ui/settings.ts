@@ -60,7 +60,7 @@ const ADVISORY_THRESHOLDS = ["0.6", "0.9", "1.4", "2.0"] as const;
 const ADVISORY_SESSION_CAPS = ["1", "3", "5", "10"] as const;
 const ADVISORY_BUDGETS = ["256", "512", "1024", "2048"] as const;
 const RESULT_FORMATS = ["auto", "yaml", "json", "text"] as const;
-const EXECUTOR_RUNTIMES = ["quickjs", "node-process"] as const;
+const EXECUTOR_RUNTIMES = ["quickjs", "node-process", "bun-process"] as const;
 const COMPACTION_ENGINES = ["fabric", "pi"] as const;
 const COMPACTION_THRESHOLD_SETTING_ID = "compaction.threshold";
 const COMPACTION_DEFAULT_THRESHOLD_LABEL = "Pi default";
@@ -949,7 +949,9 @@ export const buildFabricSettingsItems = (
   const executorMemoryDescription = (): string =>
     config.executor.runtime === "quickjs"
       ? "Maximum QuickJS heap size. WASM32 limits this to less than 4 GiB."
-      : "V8 old-generation heap limit for the disposable Node process. Large allocations may destabilize the system.";
+      : config.executor.runtime === "bun-process"
+        ? "Heap target for the disposable Bun process. Bun ignores V8 heap flags, so this limit is not enforced."
+        : "V8 old-generation heap limit for the disposable Node process. Large allocations may destabilize the system.";
 
   const defaultToolsItem = setting(
     "agents.defaultTools",
@@ -1005,7 +1007,7 @@ export const buildFabricSettingsItems = (
             description:
               config.schema.mode === "enforce"
                 ? "Schema enforce mode requires the isolated QuickJS runtime."
-                : "QuickJS is isolated and limited by WASM32. Node process supports larger heaps but is an unsafe trusted-code escape hatch, not a security sandbox.",
+                : "QuickJS is isolated and limited by WASM32. Node/Bun processes support larger heaps but are an unsafe trusted-code escape hatch, not a security sandbox.",
             values: config.schema.mode === "enforce" ? ["quickjs"] : EXECUTOR_RUNTIMES,
           }),
           setting("executor.timeoutMs", "Timeout", formatMs(config.executor.timeoutMs), {

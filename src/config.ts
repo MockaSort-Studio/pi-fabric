@@ -30,7 +30,7 @@ export type FabricUiWidgetMode = "auto" | "always" | "hidden";
 type FabricToolDisplayMode = "full" | "compact";
 export type FabricResultFormat = "auto" | "yaml" | "json" | "text";
 export type FabricPrewalkMode = "in-place" | "trajectory";
-export type FabricExecutorRuntime = "quickjs" | "node-process";
+export type FabricExecutorRuntime = "quickjs" | "node-process" | "bun-process";
 export type FabricConfigScope = "global" | "project";
 type FabricCompactionEngine = "pi" | "fabric";
 type FabricActorScope = "project" | "session";
@@ -575,7 +575,7 @@ const executorRuntimeValue = (
   value: unknown,
   fallback: FabricExecutorRuntime,
 ): FabricExecutorRuntime =>
-  value === "quickjs" || value === "node-process" ? value : fallback;
+  value === "quickjs" || value === "node-process" || value === "bun-process" ? value : fallback;
 
 const resultFormatValue = (
   value: unknown,

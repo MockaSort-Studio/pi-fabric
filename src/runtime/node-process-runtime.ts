@@ -9,7 +9,10 @@ import {
 import { NODE_PROCESS_CHILD_SOURCE } from "./node-process-child-source.js";
 import { createGuestStackMap, remapGuestErrorText } from "./guest-stack-map.js";
 import { transpileFabricCodeWithSourceMap } from "./type-checker.js";
-import { resolveScriptRuntimeSync } from "../agents/transports/process-utils.js";
+import {
+  resolveScriptRuntime,
+  resolveScriptRuntimeSync,
+} from "../agents/transports/process-utils.js";
 
 interface ChildCallMessage {
   type: "call";
@@ -33,6 +36,12 @@ const send = (child: ChildProcess, message: any): void => {
 };
 
 export class NodeProcessRuntime {
+  readonly #interpreter: "node" | "bun";
+
+  constructor(interpreter: "node" | "bun" = "node") {
+    this.#interpreter = interpreter;
+  }
+
   async execute(
     code: string,
     hostCall: FabricHostCall,
@@ -51,21 +60,39 @@ export class NodeProcessRuntime {
         value: undefined,
         logs: [],
         terminationReason: "runtime_error",
-        error: "Node process memory limit must be a positive safe integer",
+        error: "Process memory limit must be a positive safe integer",
       };
     }
 
-    const heapLimitMb = Math.max(16, Math.floor(options.memoryLimitBytes / (1024 * 1024)));
+    // Bun evaluates --eval input as ESM and ignores V8 heap flags, so the
+    // Bun child gets the guest source bare; Node needs the module + heap flags.
+    // Bun resolution stays async: Pi may legitimately run under Node while bun
+    // is only available on PATH, and the sync variant does no PATH lookup.
+    const runtimeOptions = this.#interpreter === "bun" ? { requireBun: true } : { requireNode: true };
+    const interpreterPath = this.#interpreter === "bun"
+      ? await resolveScriptRuntime(runtimeOptions)
+      : resolveScriptRuntimeSync(runtimeOptions);
     const child = spawn(
-      resolveScriptRuntimeSync({ requireNode: true }),
-      [
-        `--max-old-space-size=${heapLimitMb}`,
-        "--input-type=module",
-        "--eval",
-        NODE_PROCESS_CHILD_SOURCE,
-      ],
+      interpreterPath,
+      this.#interpreter === "bun"
+        ? ["--eval", NODE_PROCESS_CHILD_SOURCE]
+        : [
+            `--max-old-space-size=${Math.max(16, Math.floor(options.memoryLimitBytes / (1024 * 1024)))}`,
+            "--input-type=module",
+            "--eval",
+            NODE_PROCESS_CHILD_SOURCE,
+          ],
       { stdio: ["ignore", "ignore", "ignore", "ipc"] },
     );
+    // Bun resolution is async, so the signal may have aborted while resolving.
+    if (options.signal?.aborted) {
+      return {
+        value: undefined,
+        logs: [],
+        terminationReason: "aborted",
+        error: "Execution cancelled",
+      };
+    }
     const hostAbortController = new AbortController();
     const startedAt = Date.now();
     let effectiveTimeoutMs = options.timeoutMs;
@@ -89,7 +116,7 @@ export class NodeProcessRuntime {
         if (deadline) clearTimeout(deadline);
         if (abortHandler) options.signal?.removeEventListener("abort", abortHandler);
         if (!hostAbortController.signal.aborted && hostTasks.size > 0) {
-          hostAbortController.abort(new Error(result.error ?? "Node process execution stopped"));
+          hostAbortController.abort(new Error(result.error ?? "Process execution stopped"));
         }
         child.removeAllListeners();
         if (child.connected) child.disconnect();
@@ -131,7 +158,7 @@ export class NodeProcessRuntime {
           finishing = true;
           if (deadline) clearTimeout(deadline);
           if (message.result.terminationReason !== "completed" && !hostAbortController.signal.aborted) {
-            hostAbortController.abort(new Error(message.result.error ?? "Node process execution stopped"));
+            hostAbortController.abort(new Error(message.result.error ?? "Process execution stopped"));
           }
           void (async () => {
             const completed = await settleWithin(hostTasks, HOST_TASK_SETTLE_GRACE_MS);
@@ -174,7 +201,7 @@ export class NodeProcessRuntime {
           value: undefined,
           logs: [],
           terminationReason: "runtime_error",
-          error: `Node process executor failed: ${error.message}`,
+          error: `Process executor failed: ${error.message}`,
         });
       });
       child.once("exit", (exitCode, signal) => {
@@ -184,7 +211,7 @@ export class NodeProcessRuntime {
           value: undefined,
           logs: [],
           terminationReason: "runtime_error",
-          error: `Node process executor exited before returning a result (${detail}); it may have exceeded its memory limit`,
+          error: `Process executor exited before returning a result (${detail}); it may have exceeded its memory limit`,
         });
       });
 
@@ -198,5 +225,11 @@ export class NodeProcessRuntime {
         maxLogChars: options.maxLogChars ?? 100_000,
       });
     });
+  }
+}
+
+export class BunProcessRuntime extends NodeProcessRuntime {
+  constructor() {
+    super("bun");
   }
 }

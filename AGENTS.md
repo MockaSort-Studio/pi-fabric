@@ -5,7 +5,7 @@
 Always finish a change with a fresh build before handing it back:
 
 ```sh
-pnpm run build
+bun run build
 ```
 
 Pi loads and publishes the compiled bundle in `dist/` — not `src/`. Tests run
@@ -16,11 +16,17 @@ verify immediately.
 ## Before committing
 
 ```sh
-pnpm run check
+bun run check
 ```
 
 This runs typecheck, build, the full test suite, and dead-code lint. Keep it
 green; a build alone is not completion.
+
+## Package manager
+
+This repo is bun-managed (`bun.lock`; scripts invoke `bun run` internally).
+Do not use pnpm/npm — pnpm's pre-run dependency check fails against the bun
+lockfile.
 
 ## Commits
 

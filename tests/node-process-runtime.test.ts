@@ -1,10 +1,20 @@
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { NodeProcessRuntime } from "../src/runtime/node-process-runtime.js";
+import { BunProcessRuntime, NodeProcessRuntime } from "../src/runtime/node-process-runtime.js";
 
 const options = {
   timeoutMs: 5_000,
   memoryLimitBytes: 128 * 1024 * 1024,
 };
+
+const hasBun = (() => {
+  try {
+    execFileSync("bun", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 describe("NodeProcessRuntime", () => {
   it("runs guest code in a disposable process and bridges host calls", async () => {
@@ -183,5 +193,93 @@ describe("NodeProcessRuntime guest stack remapping", () => {
     expect(result.terminationReason).toBe("runtime_error");
     expect(result.error).toContain("guest code:3:");
     expect(result.error).toContain("boom");
+  });
+});
+
+describe.skipIf(!hasBun)("BunProcessRuntime", () => {
+  it("runs guest code in a disposable Bun process and bridges host calls", async () => {
+    const result = await new BunProcessRuntime().execute(
+      `
+const models = await tools.models();
+print("models", models.length);
+return { models, process: typeof process };
+`,
+      async (ref) => ref === "fabric.$models" ? [{ id: "large-model" }] : undefined,
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.logs).toEqual(["models 1"]);
+    expect(result.value).toEqual({
+      models: [{ id: "large-model" }],
+      process: "undefined",
+    });
+  });
+
+  it("preserves named string payloads", async () => {
+    const content = [
+      "multiline",
+      "` ${value} { braces }",
+      "quotes: \" '",
+      "nul:" + String.fromCharCode(0) + " end",
+    ].join("\n");
+    const result = await new BunProcessRuntime().execute(
+      "return π.content;",
+      async () => undefined,
+      { ...options, strings: { content } },
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.value).toBe(content);
+  });
+
+  it("waits for issued host calls before completing", async () => {
+    let settled = false;
+    const result = await new BunProcessRuntime().execute(
+      'void tools.call({ ref: "demo.background" }); return "done";',
+      async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        settled = true;
+      },
+      options,
+    );
+
+    expect(result.value).toBe("done");
+    expect(settled).toBe(true);
+  });
+
+  it("forcibly terminates synchronous infinite loops", async () => {
+    const result = await new BunProcessRuntime().execute(
+      "while (true) {}",
+      async () => undefined,
+      { ...options, timeoutMs: 50 },
+    );
+
+    expect(result.terminationReason).toBe("timed_out");
+    expect(result.error).toContain("timed out after 50ms");
+  });
+
+  it("terminates the child process when externally aborted", async () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error("stop")), 25);
+    const result = await new BunProcessRuntime().execute(
+      "await new Promise(() => {});",
+      async () => undefined,
+      { ...options, signal: controller.signal },
+    );
+
+    expect(result.terminationReason).toBe("aborted");
+    expect(result.error).toBe("Execution cancelled");
+  });
+
+  it("surfaces guest errors as runtime errors", async () => {
+    const result = await new BunProcessRuntime().execute(
+      'throw new Error("bun boom");',
+      async () => undefined,
+      options,
+    );
+
+    expect(result.terminationReason).toBe("runtime_error");
+    expect(result.error).toContain("bun boom");
   });
 });
