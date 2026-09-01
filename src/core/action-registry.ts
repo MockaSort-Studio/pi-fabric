@@ -724,9 +724,8 @@ export class ActionRegistry {
       }
       throw new FabricResolutionError(`Unknown Fabric action in committed view: ${ref}`);
     }
-    // Bare action names (what the capability advisory prints in its Next:
-    // line and what typed calls pragmatically use): walk every provider for
-    // a unique action-name match.
+    // Bare action names (what typed calls pragmatically use): walk every
+    // provider for a unique action-name match.
     const matches: ResolvedFabricAction[] = [];
     const declaredNames: string[] = [];
     for (const provider of this.#providerBindings.providers()) {
