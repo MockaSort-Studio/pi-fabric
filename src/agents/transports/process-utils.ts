@@ -48,8 +48,10 @@ export const processIsAlive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // On Windows, EPERM means the process exists but cannot be opened for
+    // signaling; only ESRCH (or other errors) mean it is gone.
+    return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "EPERM";
   }
 };
 
