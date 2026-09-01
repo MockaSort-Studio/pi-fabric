@@ -108,7 +108,7 @@ const validateResidentHostConfig = (value: unknown, configPath: string): Residen
   return config as ResidentHostConfig;
 };
 
-export class ResidentHost {
+class ResidentHost {
   readonly hostId: string;
   readonly identity: MeshIdentity;
   readonly mesh: MeshStore;
@@ -695,7 +695,7 @@ export class ResidentHost {
   }
 }
 
-export const runResidentHost = async (
+const runResidentHost = async (
   config: ResidentHostConfig,
   signal?: AbortSignal,
 ): Promise<void> => {

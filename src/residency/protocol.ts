@@ -79,7 +79,7 @@ interface ResidentForegroundCommand {
   createdAt: number;
 }
 
-export interface ResidentRemoveActorCommand {
+interface ResidentRemoveActorCommand {
   format: typeof RESIDENT_HOST_FORMAT;
   operation: "removeActor";
   requestId: string;
@@ -88,7 +88,7 @@ export interface ResidentRemoveActorCommand {
   createdAt: number;
 }
 
-export interface ResidentCreateActorCommand {
+interface ResidentCreateActorCommand {
   format: typeof RESIDENT_HOST_FORMAT;
   operation: "createActor";
   requestId: string;
