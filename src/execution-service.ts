@@ -139,6 +139,10 @@ export interface FabricExecutionAuthorizer {
 export interface FabricExecutionOptions {
   code: string;
   strings?: Record<string, string>;
+  /** Per-invocation whole-program deadline request from fabric_exec.timeoutMs.
+   * Raises (never lowers) the configured executor.timeoutMs, subject to
+   * executor.maxTimeoutMs. */
+  requestedTimeoutMs?: number;
   signal: AbortSignal | undefined;
   parentToolCallId: string;
   context: ExtensionContext;
@@ -361,13 +365,23 @@ export class FabricExecutionService {
     // Start known orchestration programs with the longer deadline. Calls
     // reached through generic or computed refs are classified again at the
     // host bridge and can extend the active sandbox deadline before they run.
+    // An explicit per-invocation request raises (never lowers) the starting
+    // deadline, capped by the configured policy maximum.
     const orchestrationTimeoutMs = Math.max(
       this.config.executor.timeoutMs,
       this.config.agents.timeoutMs,
     );
-    const effectiveTimeoutMs = codeUsesOrchestration(options.code)
-      ? orchestrationTimeoutMs
-      : this.config.executor.timeoutMs;
+    const requestedTimeoutMs =
+      typeof options.requestedTimeoutMs === "number" &&
+      Number.isFinite(options.requestedTimeoutMs)
+        ? Math.max(1, Math.floor(options.requestedTimeoutMs))
+        : 0;
+    const effectiveTimeoutMs = Math.max(
+      codeUsesOrchestration(options.code)
+        ? orchestrationTimeoutMs
+        : this.config.executor.timeoutMs,
+      Math.min(requestedTimeoutMs, this.config.executor.maxTimeoutMs),
+    );
     const minimumTimeoutMsForHostCall = (
       ref: string,
       args: Record<string, unknown>,
@@ -396,6 +410,15 @@ export class FabricExecutionService {
             Math.min(Math.floor(requested) + 5_000, MAX_AGENT_TIMEOUT_MS),
           );
         }
+      }
+      // Exact-ref configured floors raise the enclosing deadline for known
+      // long-running host calls without any tool-side timeout argument.
+      const refFloor = this.config.executor.hostCallTimeouts[targetRef];
+      if (refFloor !== undefined) {
+        return Math.max(
+          this.config.executor.timeoutMs,
+          Math.min(Math.floor(refFloor), this.config.executor.maxTimeoutMs),
+        );
       }
       if (!isBlockingOrchestrationRef(targetRef)) return undefined;
       const requestedTimeoutMs =

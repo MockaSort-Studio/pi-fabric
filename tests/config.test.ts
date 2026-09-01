@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_FABRIC_CONFIG,
   MAX_EXECUTOR_MEMORY_LIMIT_BYTES,
+  MAX_EXECUTOR_TIMEOUT_MS,
   QUICKJS_MAX_MEMORY_LIMIT_BYTES,
   effectiveToolCaptureConfig,
   loadFabricConfig,
@@ -115,6 +116,41 @@ describe("Fabric configuration", () => {
     });
     expect(config.mesh.actorQueueLimit).toBe(1);
     expect(config.mesh.eventContextChars).toBe(1_000_000);
+  });
+
+  it("normalizes executor timeout ceilings and per-ref floors", () => {
+    const normalized = normalizeFabricConfig({
+      executor: {
+        timeoutMs: 600_000,
+        maxTimeoutMs: 3_600_000,
+        hostCallTimeouts: {
+          "extensions.subagent": 1_800_000,
+          "": 5_000,
+          "extensions.bad": 0,
+        },
+      },
+    });
+    expect(normalized.executor.timeoutMs).toBe(600_000);
+    expect(normalized.executor.maxTimeoutMs).toBe(3_600_000);
+    expect(normalized.executor.hostCallTimeouts).toEqual({
+      "extensions.subagent": 1_800_000,
+    });
+
+    // timeoutMs above the policy max is visibly normalized down to it.
+    const clamped = normalizeFabricConfig({
+      executor: { timeoutMs: 7_200_000, maxTimeoutMs: 900_000 },
+    });
+    expect(clamped.executor.timeoutMs).toBe(900_000);
+
+    // The policy max itself is bounded by the hard implementation maximum.
+    const hard = normalizeFabricConfig({ executor: { maxTimeoutMs: 99 * 3_600_000 } });
+    expect(hard.executor.maxTimeoutMs).toBe(MAX_EXECUTOR_TIMEOUT_MS);
+
+    // Per-ref floors cannot exceed the policy max.
+    const floored = normalizeFabricConfig({
+      executor: { maxTimeoutMs: 300_000, hostCallTimeouts: { "extensions.subagent": 3_600_000 } },
+    });
+    expect(floored.executor.hostCallTimeouts).toEqual({ "extensions.subagent": 300_000 });
   });
 
   it("normalizes executor runtimes and their memory ceilings", () => {

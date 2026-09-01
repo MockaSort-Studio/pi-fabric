@@ -38,6 +38,12 @@ type FabricActorScope = "project" | "session";
 interface FabricExecutorConfig {
   runtime: FabricExecutorRuntime;
   timeoutMs: number;
+  /** Policy maximum for any executor deadline, including per-invocation
+   * requests and per-ref floors. Values above this are visibly normalized. */
+  maxTimeoutMs: number;
+  /** Exact-ref deadline floors (ms) for known long-running host calls, e.g.
+   * "extensions.subagent". Keys are exact refs; no wildcard matching. */
+  hostCallTimeouts: Record<string, number>;
   memoryLimitBytes: number;
   maxOutputChars: number;
   maxNestedResultChars: number;
@@ -283,6 +289,10 @@ export interface FabricConfig {
   codePreview: CodePreviewSettings;
 }
 
+/** Hard implementation maximum for any executor deadline. Policy ceilings
+ * (executor.maxTimeoutMs) may be raised up to this value by administrators. */
+export const MAX_EXECUTOR_TIMEOUT_MS = 24 * 3_600_000;
+
 export const MIN_AGENT_TIMEOUT_MS = 1_000;
 const DEFAULT_AGENT_TIMEOUT_MS = 3_600_000;
 export const MAX_AGENT_TIMEOUT_MS = 24 * 3_600_000;
@@ -302,6 +312,8 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   executor: {
     runtime: "quickjs",
     timeoutMs: 120_000,
+    maxTimeoutMs: 900_000,
+    hostCallTimeouts: {},
     memoryLimitBytes: 64 * 1024 * 1024,
     maxOutputChars: 50_000,
     maxNestedResultChars: 2_000_000,
@@ -593,6 +605,12 @@ const riskValue = (value: unknown, fallback: FabricRisk): FabricRisk =>
 
 export const normalizeFabricConfig = (input: Record<string, unknown>): FabricConfig => {
   const executor = objectValue(input.executor);
+  const executorMaxTimeoutMs = boundedInteger(
+    executor.maxTimeoutMs,
+    DEFAULT_FABRIC_CONFIG.executor.maxTimeoutMs,
+    1_000,
+    MAX_EXECUTOR_TIMEOUT_MS,
+  );
   const approvals = objectValue(input.approvals);
   const mcp = objectValue(input.mcp);
   const mcpCache = objectValue(mcp.cache);
@@ -713,11 +731,28 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     fullCodeMode: booleanValue(input.fullCodeMode, DEFAULT_FABRIC_CONFIG.fullCodeMode),
     executor: {
       runtime: executorRuntime,
+      maxTimeoutMs: boundedInteger(
+        executor.maxTimeoutMs,
+        DEFAULT_FABRIC_CONFIG.executor.maxTimeoutMs,
+        1_000,
+        MAX_EXECUTOR_TIMEOUT_MS,
+      ),
+      hostCallTimeouts: Object.fromEntries(
+        Object.entries(objectValue(executor.hostCallTimeouts))
+          .filter(([ref, value]) =>
+            typeof ref === "string" &&
+            Boolean(ref.trim()) &&
+            typeof value === "number" &&
+            Number.isFinite(value) &&
+            value >= 1,
+          )
+          .map(([ref, value]) => [ref, boundedInteger(value, 1_000, 1_000, executorMaxTimeoutMs)]),
+      ),
       timeoutMs: boundedInteger(
         executor.timeoutMs,
         DEFAULT_FABRIC_CONFIG.executor.timeoutMs,
         1_000,
-        900_000,
+        executorMaxTimeoutMs,
       ),
       memoryLimitBytes: boundedInteger(
         executor.memoryLimitBytes,

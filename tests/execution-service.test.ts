@@ -675,6 +675,129 @@ return "unreachable";
     expect(result.value).toBe("ok");
   });
 
+  it("permits a captured-style slow call beyond executor.timeoutMs via per-invocation timeoutMs", async () => {
+    const registry = new ActionRegistry();
+    const descriptor = {
+      name: "slowext",
+      description: "captured extension stub",
+      inputSchema: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+        additionalProperties: true,
+      },
+      risk: "read" as const,
+    };
+    registry.register({
+      name: "extensions",
+      description: "fake extensions",
+      async list() { return [descriptor]; },
+      async describe(name) { return name === "slowext" ? descriptor : undefined; },
+      async invoke(_name, _args, context) {
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => resolve({ ok: true }), 250);
+          context.signal?.addEventListener("abort", () => clearTimeout(timer), { once: true });
+        });
+      },
+    });
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.fullCodeMode = true;
+    config.approvals.read = "allow";
+    config.executor.timeoutMs = 100;
+    const service = new FabricExecutionService(registry, config);
+    const context = { cwd: process.cwd(), hasUI: false } as ExtensionContext;
+
+    // Without a raised deadline the 250ms call fails at the 100ms default.
+    const timedOut = await service.execute({
+      code: 'await extensions.slowext({ url: "x" }); return "ok";',
+      signal: undefined,
+      parentToolCallId: "default-timeout",
+      context,
+      onPartial() {},
+    });
+    expect(timedOut.success).toBe(false);
+    expect(timedOut.error).toContain("timed out");
+
+    // The per-invocation request raises the whole-program deadline.
+    const raised = await service.execute({
+      code: 'await extensions.slowext({ url: "x" }); return "ok";',
+      requestedTimeoutMs: 30_000,
+      signal: undefined,
+      parentToolCallId: "raised-timeout",
+      context,
+      onPartial() {},
+    });
+    expect(raised.success).toBe(true);
+    expect(raised.value).toBe("ok");
+
+    // The request cannot exceed the configured policy maximum.
+    const capped = await service.execute({
+      code: 'await extensions.slowext({ url: "x" }); return "ok";',
+      requestedTimeoutMs: 3_600_000,
+      signal: undefined,
+      parentToolCallId: "capped-timeout",
+      context,
+      onPartial() {},
+    });
+    expect(capped.success).toBe(true);
+  });
+
+  it("raises the deadline for a configured exact host-call ref", async () => {
+    const registry = new ActionRegistry();
+    const descriptor = {
+      name: "subagent",
+      description: "captured extension stub",
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: true,
+      },
+      risk: "read" as const,
+    };
+    registry.register({
+      name: "extensions",
+      description: "fake extensions",
+      async list() { return [descriptor]; },
+      async describe(name) {
+        return name === "subagent" || name === "unfloored" ? descriptor : undefined;
+      },
+      async invoke(_name, _args, context) {
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => resolve({ ok: true }), 250);
+          context.signal?.addEventListener("abort", () => clearTimeout(timer), { once: true });
+        });
+      },
+    });
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.fullCodeMode = true;
+    config.approvals.read = "allow";
+    config.executor.timeoutMs = 100;
+    config.executor.hostCallTimeouts = { "extensions.subagent": 30_000 };
+    const service = new FabricExecutionService(registry, config);
+    const context = { cwd: process.cwd(), hasUI: false } as ExtensionContext;
+
+    const result = await service.execute({
+      code: 'await extensions.subagent({}); return "ok";',
+      signal: undefined,
+      parentToolCallId: "ref-floor",
+      context,
+      onPartial() {},
+    });
+    expect(result.success).toBe(true);
+    expect(result.value).toBe("ok");
+
+    // A ref without a configured floor still runs at the default deadline.
+    const other = await service.execute({
+      code: 'await extensions.unfloored({}); return "ok";',
+      signal: undefined,
+      parentToolCallId: "ref-floor-other",
+      context,
+      onPartial() {},
+    });
+    expect(other.success).toBe(false);
+    expect(other.error).toContain("timed out");
+  });
+
   it("extends the outer deadline from an explicit pi.bash timeout", async () => {
     const registry = new ActionRegistry();
     const descriptor = {

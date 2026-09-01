@@ -5,6 +5,7 @@ const OPTIONAL_FABRIC_EXEC_KEYS = [
   "resultFormat",
   "tokenBudget",
   "agentBudget",
+  "timeoutMs",
   "display",
 ] as const;
 

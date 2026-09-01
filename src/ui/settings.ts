@@ -334,8 +334,10 @@ const summaryFor = (id: string, config: FabricConfig): string => {
   switch (id) {
     case "fullCodeMode":
       return config.fullCodeMode ? "true" : "false";
-    case "executor":
-      return `${config.executor.runtime} · ${formatMs(config.executor.timeoutMs)}`;
+    case "executor": {
+      const refFloors = Object.keys(config.executor.hostCallTimeouts).length;
+      return `${config.executor.runtime} · ${formatMs(config.executor.timeoutMs)} · max ${formatMs(config.executor.maxTimeoutMs)}${refFloors > 0 ? ` · ${refFloors} ref floor${refFloors === 1 ? "" : "s"}` : ""}`;
+    }
     case "schema":
       return config.schema.mode;
     case "approvals":
@@ -1011,15 +1013,44 @@ export const buildFabricSettingsItems = (
             values: config.schema.mode === "enforce" ? ["quickjs"] : EXECUTOR_RUNTIMES,
           }),
           setting("executor.timeoutMs", "Timeout", formatMs(config.executor.timeoutMs), {
-            description: "Maximum wall-clock time for a single fabric_exec program.",
+            description: `Default wall-clock time for a single fabric_exec program. A per-invocation timeoutMs or a matching executor.hostCallTimeouts ref can raise it up to the ${formatMs(config.executor.maxTimeoutMs)} policy maximum.`,
             submenu: numericSubmenu(
               theme,
               [15_000, 30_000, 60_000, 120_000, 300_000, 600_000],
               formatMs,
               "Executor timeout",
-              "Maximum wall-clock time for a single fabric_exec program.",
+              `Default wall-clock time for a single fabric_exec program (policy max ${formatMs(config.executor.maxTimeoutMs)}).`,
             ),
           }),
+          setting(
+            "executor.maxTimeoutMs",
+            "Policy max",
+            formatMs(config.executor.maxTimeoutMs),
+            {
+              description:
+                "Ceiling for every executor deadline: per-invocation timeoutMs requests and executor.hostCallTimeouts ref floors are capped at this value. Values above it are normalized on load.",
+              submenu: numericSubmenu(
+                theme,
+                [300_000, 600_000, 900_000, 1_800_000, 3_600_000],
+                formatMs,
+                "Executor policy maximum",
+                "Ceiling for every executor deadline, including per-invocation requests and per-ref floors.",
+              ),
+            },
+          ),
+          setting(
+            "executor.hostCallTimeouts",
+            "Per-ref floors",
+            Object.keys(config.executor.hostCallTimeouts).length > 0
+              ? Object.keys(config.executor.hostCallTimeouts)
+                  .map((ref) => `${ref}=${formatMs(config.executor.hostCallTimeouts[ref] ?? 0)}`)
+                  .join(", ")
+              : "none",
+            {
+              description:
+                "Exact-ref deadline floors for known long-running host calls (configured in the Fabric config file), e.g. \"extensions.subagent\": 3600000.",
+            },
+          ),
           setting(
             "executor.memoryLimitBytes",
             "Memory limit",

@@ -13,6 +13,38 @@ Pi Fabric reads configuration from two JSON files. Project values override globa
 
 Treat `node-process` and `bun-process` as an explicit escape hatch for trusted code. It offers no security sandbox. The runtime keeps Fabric's IPC host bridge, approvals, audit records, timeout, and cancellation in place. Node's and Bun's `vm` APIs provide no security boundary. Enable it only for workloads and projects whose generated code you accept running with the local user account's authority. Each invocation starts a fresh child process, and Fabric forcibly terminates that process when it settles, times out, or is cancelled. Schema enforce mode always forces `quickjs`. Large limits in either runtime can exhaust system memory or destabilize the machine.
 
+### Executor timeouts and ceilings
+
+`executor.timeoutMs` (default `120000`) bounds a whole `fabric_exec` program. Two mechanisms can raise it:
+
+- **Per-invocation request**: `fabric_exec({ timeoutMs: 600000, code: ... })` asks for a longer whole-program deadline for that one call. It can never reduce the default: the effective timeout is `max(executor.timeoutMs, requested)`.
+- **Per-ref floor**: `executor.hostCallTimeouts` maps exact host-call refs (no wildcards) to a minimum deadline in ms. A matching ref raises the enclosing deadline to at least the configured value without any tool-side timeout argument:
+
+```json
+{
+  "executor": {
+    "timeoutMs": 120000,
+    "maxTimeoutMs": 3600000,
+    "hostCallTimeouts": {
+      "extensions.subagent": 3600000
+    }
+  }
+}
+```
+
+Every raised deadline is capped by `executor.maxTimeoutMs` (default `900000`, i.e. 15 minutes: the former undocumented clamp, now explicit), which itself can be raised up to the hard implementation maximum of 24 hours. Values above a cap are visibly normalized down to the cap during config load and the effective values are shown in `/fabric` settings, never silently surprising. A per-invocation request or ref floor takes effect even when the ref is unknown to Fabric, so captured tools, MCP calls, and future host calls all run within an intentionally longer deadline without Fabric knowing their argument semantics. Existing `pi.bash` behavior (extending the deadline from an explicit `timeout` argument) is unchanged, and deadline expiry still cancels the active host call and any child process it owns.
+
+The precedence across all sources is:
+
+```text
+effective timeout = min(
+  maxTimeoutMs,
+  max(executor.timeoutMs, matching hostCallTimeouts[ref], fabric_exec.timeoutMs)
+)
+```
+
+where absent values do not participate. Orchestration programs (`agents.run` / `agents.wait` / `agents.ask`, `workflow.agent`, ...) keep their separate `agents.timeoutMs` floor, which is unaffected by `executor.maxTimeoutMs`.
+
 ## Full reference
 
 ```json
@@ -22,6 +54,8 @@ Treat `node-process` and `bun-process` as an explicit escape hatch for trusted c
   "executor": {
     "runtime": "quickjs",
     "timeoutMs": 120000,
+    "maxTimeoutMs": 900000,
+    "hostCallTimeouts": {},
     "memoryLimitBytes": 67108864,
     "maxOutputChars": 100000,
     "maxNestedResultChars": 2000000,
