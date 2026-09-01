@@ -88,6 +88,11 @@ try {
   let closingInput = false;
   let stderr = "";
   const ownerPath = path.join(path.dirname(configPath), "owner.json");
+  // The resident host may start slowly or fail silently; keep the child stderr
+  // and the latest ownership observation on disk so a client-side startup
+  // timeout can surface the real cause instead of a bare deadline error.
+  const childLogPath = path.join(path.dirname(configPath), "child-stderr.log");
+  try { fs.rmSync(childLogPath, { force: true }); } catch { /* best effort */ }
   const ownerPoll = setInterval(() => {
     const observation = observeResidentOwner(liveOwnerPid(ownerPath), child.pid, claimedOwner);
     claimedOwner = observation.claimed;
@@ -98,7 +103,10 @@ try {
     }
   }, 50);
   ownerPoll.unref();
-  child.stderr?.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk}`.slice(-4_000); });
+  child.stderr?.on("data", (chunk: Buffer) => {
+    stderr = `${stderr}${chunk}`.slice(-4_000);
+    try { fs.writeFileSync(childLogPath, stderr); } catch { /* best effort */ }
+  });
   child.on("error", (error) => writeFailure(configPath, error));
   child.on("exit", (code, signal) => {
     clearInterval(ownerPoll);

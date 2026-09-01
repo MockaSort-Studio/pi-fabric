@@ -167,7 +167,11 @@ export class ResidencyClient {
       }
       await delay(STATUS_POLL_MS);
     }
-    throw new Error(`Timed out starting Fabric resident host ${this.hostId}`);
+    // Surface any launcher-recorded child stderr so a silent slow start (or a
+    // quiet child crash) is diagnosable from the error alone.
+    const childStderr = fs.readFileSync(path.join(this.options.config.residencyRoot, "child-stderr.log"), "utf8").trim();
+    const diagnostics = childStderr ? ` Child stderr: ${childStderr.slice(-500)}` : "";
+    throw new Error(`Timed out starting Fabric resident host ${this.hostId}.${diagnostics}`);
   }
 
   async ensureActor(id: string): Promise<void> {
