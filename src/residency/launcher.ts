@@ -80,7 +80,7 @@ try {
     cwd: config.cwd,
     detached: false,
     // RPC ends on stdin EOF. Keep it open only while this child owns residency.
-    stdio: ["pipe", "ignore", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, PI_FABRIC_RESIDENT_CONFIG: configPath },
   });
   let seenOwner = false;
@@ -93,6 +93,11 @@ try {
   // timeout can surface the real cause instead of a bare deadline error.
   const childLogPath = path.join(path.dirname(configPath), "child-stderr.log");
   try { fs.rmSync(childLogPath, { force: true }); } catch { /* best effort */ }
+  // The extension loader may report load failures on stdout; capture both
+  // streams so a silent child is diagnosable from the log alone.
+  child.stdout?.on("data", (chunk: Buffer) => {
+    try { fs.appendFileSync(childLogPath, chunk); } catch { /* best effort */ }
+  });
   const ownerPoll = setInterval(() => {
     const observation = observeResidentOwner(liveOwnerPid(ownerPath), child.pid, claimedOwner);
     claimedOwner = observation.claimed;
@@ -105,7 +110,7 @@ try {
   ownerPoll.unref();
   child.stderr?.on("data", (chunk: Buffer) => {
     stderr = `${stderr}${chunk}`.slice(-4_000);
-    try { fs.writeFileSync(childLogPath, stderr); } catch { /* best effort */ }
+    try { fs.appendFileSync(childLogPath, chunk); } catch { /* best effort */ }
   });
   child.on("error", (error) => writeFailure(configPath, error));
   child.on("exit", (code, signal) => {
