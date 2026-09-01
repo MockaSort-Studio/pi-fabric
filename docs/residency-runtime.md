@@ -67,6 +67,14 @@ Also validate a locally installed package in Pi: create a durable actor, verify
 its `owner.json`, route `stop`, and confirm the actor becomes `stopped` with a
 resident `ownerHostId`.
 
+## Known Windows limitation
+
+Durable residency E2E is POSIX-only today. On Windows, the launcher's spawn of
+the `pi` binary through the installed `node_modules/.bin` shims hangs before
+the child starts, so the resident host never starts.
+The launcher, ownership observation, and protocol logic are platform-agnostic
+and are tested on every operating system.
+
 ## Future direction
 
 A native Pi extension-host subprocess API could replace `launcher.js` later.
