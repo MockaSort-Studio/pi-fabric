@@ -14,6 +14,7 @@ import {
 import { runAbortable, throwIfAborted } from "../async-settlement.js";
 import { CapturedToolCatalog } from "../capture/catalog.js";
 import { PI_CORE_TOOL_NAMES, type PiCoreToolName } from "../core/pi-tools.js";
+import { classifyPiBashError, piBashResultError } from "../core/pi-bash-error.js";
 import { expandSkillDirMarkersForRead } from "../core/skill-dir.js";
 import type {
   FabricActionDescriptor,
@@ -295,7 +296,10 @@ export class PiToolsProvider implements FabricProvider {
           (partialResult) => this.#attachPartialPreview(name, partialResult, args, context),
           context.extensionContext,
         ),
-      );
+      ).catch((error) => {
+        throwIfAborted(context.signal);
+        throw name === "bash" ? classifyPiBashError(error) : error;
+      });
       this.#attachReadMedia(name, result, context);
       this.#attachReadNote(name, result, context);
       this.#attachPreview(name, result, args, context);
@@ -329,6 +333,7 @@ export class PiToolsProvider implements FabricProvider {
     let result: PiToolResult;
     let isError = false;
     let thrown: unknown;
+    let executionStarted = false;
     let updateTail: Promise<void> = Promise.resolve();
     try {
       const preflight = await runAbortable(context.signal, () => runner.emitToolCall({
@@ -341,6 +346,7 @@ export class PiToolsProvider implements FabricProvider {
       if (preflight?.block) {
         throw new Error(preflight.reason || `Pi tool ${name} was blocked`);
       }
+      executionStarted = true;
       result = (await runAbortable(context.signal, () => tool.execute(
         toolCallId,
         args,
@@ -362,7 +368,7 @@ export class PiToolsProvider implements FabricProvider {
         context.extensionContext,
       ))) as PiToolResult;
     } catch (error) {
-      thrown = error;
+      thrown = name === "bash" && executionStarted ? classifyPiBashError(error) : error;
       isError = true;
       result = {
         content: [
@@ -412,6 +418,7 @@ export class PiToolsProvider implements FabricProvider {
     }));
 
     if (isError) {
+      if (name === "bash") throw piBashResultError(thrown, textContent(result.content));
       const text = textContent(result.content).trim();
       throw new Error(text || (thrown instanceof Error ? thrown.message : `Pi tool ${name} failed`));
     }

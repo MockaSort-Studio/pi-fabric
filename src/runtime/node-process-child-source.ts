@@ -97,6 +97,10 @@ process.on("message", (message) => {
   if (!operation) return;
   pending.delete(message.id);
   if (message.ok) operation.resolve(message.value);
-  else operation.reject(new Error(message.error ?? "Host call failed"));
+  else {
+    const error = new Error(message.error ?? "Host call failed");
+    if (message.bashExit) error.__fabricBashExit = message.bashExit;
+    operation.reject(error);
+  }
 });
 `;

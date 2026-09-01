@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { GUEST_TYPE_DECLARATIONS } from "../src/runtime/guest-types.js";
 import { typeCheckFabricCode } from "../src/runtime/type-checker.js";
 import { QuickJsRuntime } from "../src/runtime/quickjs-runtime.js";
+import { classifyPiBashError } from "../src/core/pi-bash-error.js";
 
 const options = { timeoutMs: 5_000, memoryLimitBytes: 32 * 1024 * 1024 };
 
@@ -55,7 +56,7 @@ describe("pi bare-string shorthand", () => {
 
     const hostCall = vi.fn(async (_ref: string, args: Record<string, unknown>) => {
       if (args.command === "exit 7") {
-        throw new Error("before\n\n\nCommand exited with code 7");
+        throw classifyPiBashError(new Error("before\n\n\nCommand exited with code 7"));
       }
       throw new Error("Command timed out after 1000ms");
     });
@@ -341,7 +342,7 @@ describe("pi positional args", () => {
 
   it("settles a two-arg bash call when the merged options carry settle:true", async () => {
     const hostCall = vi.fn(async (_ref: string, _args: Record<string, unknown>): Promise<never> => {
-      throw new Error("oops\n\n\nCommand exited with code 7");
+      throw classifyPiBashError(new Error("oops\n\n\nCommand exited with code 7"));
     });
     const result = await new QuickJsRuntime().execute(
       'return await pi.bash("exit 7", { settle: true });',

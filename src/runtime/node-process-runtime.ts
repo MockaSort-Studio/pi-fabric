@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { runAbortable, settleWithin } from "../async-settlement.js";
+import { piBashExitMetadata } from "../core/pi-bash-error.js";
 import {
   GUEST_SETUP,
   type FabricHostCall,
@@ -191,6 +192,7 @@ export class NodeProcessRuntime {
               id: message.id,
               ok: false,
               error: error instanceof Error ? error.message : String(error),
+              bashExit: message.ref === "pi.bash" ? piBashExitMetadata(error) : undefined,
             }),
         );
         hostTasks.add(task);
