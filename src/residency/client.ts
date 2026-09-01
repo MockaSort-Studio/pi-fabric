@@ -169,10 +169,18 @@ export class ResidencyClient {
     }
     // Surface any launcher-recorded child output so a silent slow start (or a
     // quiet child crash) is diagnosable from the error alone.
-    let childStderr = "";
-    try { childStderr = fs.readFileSync(path.join(this.options.config.residencyRoot, "child-stderr.log"), "utf8").trim(); } catch { /* log absent: child stayed silent */ }
-    const diagnostics = childStderr ? ` Child output: ${childStderr.slice(-500)}` : "";
-    throw new Error(`Timed out starting Fabric resident host ${this.hostId}.${diagnostics}`);
+    const readIfPresent = (name: string): string => {
+      try { return fs.readFileSync(path.join(this.options.config.residencyRoot, name), "utf8").trim(); } catch { return ""; }
+    };
+    const childOutput = readIfPresent("child-stderr.log");
+    const launcherLog = readIfPresent("launcher.log").split("\n").slice(-6).join("\n");
+    const ownerState = readIfPresent("owner.json").slice(0, 300);
+    const diagnostics = [
+      childOutput ? `Child output: ${childOutput.slice(-500)}` : "",
+      launcherLog ? `Launcher log: ${launcherLog}` : "",
+      ownerState ? `Owner state: ${ownerState}` : "Owner state: absent",
+    ].filter(Boolean).join(" | ");
+    throw new Error(`Timed out starting Fabric resident host ${this.hostId}. ${diagnostics}`);
   }
 
   async ensureActor(id: string): Promise<void> {
