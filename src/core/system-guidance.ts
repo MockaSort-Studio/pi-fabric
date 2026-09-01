@@ -11,11 +11,14 @@ export const defaultFabricExecutionGuidance = (fullCodeMode: boolean): string =>
 // Shape of CapturedToolCatalog entries this renderer needs (kept structural to avoid a runtime dependency on the capture layer from a guidance module).
 export interface ExtensionRosterToolSource {
   name: string;
-  definition: { description?: string };
+  sourceInfo?: { source?: string; path?: string };
 }
 
 // In full code mode the model sees only fabric_exec in its tool list, so
-// registered extension tools are invisible unless named up front (#69). Core
+// registered extension tools are invisible unless named up front (#69). The
+// roster stays names-only: descriptions and schemas are taught on demand by
+// capture.advisory hints (capability combustion, docs/capability-combustion.md)
+// and tools.list, so the standing prompt cost is a bare name index. Core
 // overrides are excluded: they surface as pi.* via coreOverridePromptGuidance.
 export const extensionToolRosterGuidance = (
   tools: ReadonlyArray<ExtensionRosterToolSource>,
@@ -23,15 +26,27 @@ export const extensionToolRosterGuidance = (
 ): string | undefined => {
   const extensionTools = tools.filter((tool) => !coreToolNames.has(tool.name));
   if (extensionTools.length === 0) return undefined;
-  const lines = extensionTools.map((tool) => {
-    const summary = (tool.definition.description ?? "").split("\n")[0]?.trim() ?? "";
-    const label = "- `extensions." + tool.name + "()`";
-    return summary ? label + ": " + summary.slice(0, 120) : label;
-  });
+  const namespaceLabel = (tool: ExtensionRosterToolSource): string => {
+    const source = tool.sourceInfo?.source?.trim();
+    if (source) return source;
+    const parts = (tool.sourceInfo?.path ?? "").split(/[\\/]/).filter(Boolean);
+    const base = parts.at(-1)?.trim() ?? "";
+    // Entry files like index.js name the package directory, not the source.
+    if (/^index\./i.test(base)) return parts.at(-2)?.trim() || base;
+    return base || "extensions";
+  };
+  const groups = new Map<string, string[]>();
+  for (const tool of [...extensionTools].sort((left, right) => left.name.localeCompare(right.name))) {
+    const label = namespaceLabel(tool);
+    const names = groups.get(label);
+    if (names) names.push(tool.name);
+    else groups.set(label, [tool.name]);
+  }
   return [
-    "Registered extension tools are callable inside fabric_exec as `extensions.<name>(args)` and via `extensions.list` for discovery.",
-    "Prefer a purpose-built extension tool over re-implementing its effect with pi.bash:",
-    ...lines,
+    "Registered extension tools are callable inside fabric_exec as `extensions.<name>(args)`; run `tools.list` for full descriptions and schemas before re-implementing an effect with pi.bash.",
+    ...[...groups.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([label, names]) => "- " + label + ": " + names.join(", ")),
   ].join("\n");
 };
 

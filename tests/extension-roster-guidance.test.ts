@@ -1,34 +1,42 @@
 import { describe, expect, it } from "vitest";
 import { extensionToolRosterGuidance } from "../src/core/system-guidance.js";
 
-const entry = (name: string, description?: string) => ({
+const entry = (name: string, sourceInfo?: { source?: string; path?: string }) => ({
   name,
-  ...(description === undefined ? { definition: {} } : { definition: { description } }),
+  ...(sourceInfo === undefined ? {} : { sourceInfo }),
 });
 
 describe("extensionToolRosterGuidance", () => {
-  it("lists extension tools with first-line descriptions", () => {
+  it("lists tool names grouped by source namespace without descriptions", () => {
     const roster = extensionToolRosterGuidance(
-      [entry("deploy_release", "Deploys the release.\nSecond line"), entry("ctx_read", "Reads context")],
+      [
+        entry("fovea_focus", { source: "pi-fovea" }),
+        entry("fovea_dwell", { source: "pi-fovea" }),
+        entry("openai_image", { source: "pi-better-openai" }),
+      ],
       new Set(["read", "bash"]),
     );
-    expect(roster).toContain("`extensions.deploy_release()`: Deploys the release.");
-    expect(roster).toContain("`extensions.ctx_read()`");
-    expect(roster).not.toContain("Second line");
-    expect(roster).toContain("extensions.list");
+    expect(roster).toContain("- pi-better-openai: openai_image");
+    expect(roster).toContain("- pi-fovea: fovea_dwell, fovea_focus");
+    expect(roster).toContain("tools.list");
+  });
+
+  it("falls back to path basenames, then a generic label", () => {
+    const roster = extensionToolRosterGuidance(
+      [
+        entry("from_entry", { path: "/ext/pi-somewhere/index.js" }),
+        entry("from_file", { path: "/ext/pi-other/cool.js" }),
+        entry("bare"),
+      ],
+      new Set(),
+    );
+    expect(roster).toContain("- pi-somewhere: from_entry");
+    expect(roster).toContain("- cool.js: from_file");
+    expect(roster).toContain("- extensions: bare");
   });
 
   it("excludes captured core overrides and empty catalogs", () => {
-    expect(extensionToolRosterGuidance([entry("read", "core override")], new Set(["read"]))).toBeUndefined();
+    expect(extensionToolRosterGuidance([entry("read")], new Set(["read"]))).toBeUndefined();
     expect(extensionToolRosterGuidance([], new Set())).toBeUndefined();
-  });
-
-  it("truncates overly long descriptions", () => {
-    const roster = extensionToolRosterGuidance(
-      [entry("big", "x".repeat(300))],
-      new Set(),
-    );
-    expect(roster).not.toContain("x".repeat(121));
-    expect(roster).toContain("x".repeat(120));
   });
 });
