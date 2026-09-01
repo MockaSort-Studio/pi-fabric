@@ -53,10 +53,13 @@ const liveOwnerPid = (ownerPath: string): number | undefined => {
 const writeFailure = (configPath: string, error: unknown): void => {
   try {
     const message = error instanceof Error ? error.message : String(error);
-    fs.writeFileSync(path.join(path.dirname(configPath), "error.json"), JSON.stringify({
+    const dir = path.dirname(configPath);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "error.json"), JSON.stringify({
       error: message,
       occurredAt: Date.now(),
     }, null, 2));
+    fs.appendFileSync(path.join(dir, "launcher.log"), `${JSON.stringify({ event: "launcher-failed", at: Date.now(), message })}\n`);
   } catch {
     // Startup diagnostics are best-effort.
   }
@@ -65,6 +68,20 @@ const writeFailure = (configPath: string, error: unknown): void => {
 const configPath = parseConfigPath(process.argv);
 try {
   const config = readConfig(configPath);
+  // Lifecycle trace: the launcher can otherwise fail silently (broken args,
+  // an unspawnable pi binary), leaving the client to guess at the cause.
+  const trace = (event: string, extra: Record<string, unknown> = {}): void => {
+    try {
+      const dir = path.dirname(configPath);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.appendFileSync(path.join(dir, "launcher.log"), `${JSON.stringify({
+        event, at: Date.now(), ...extra,
+      })}\n`);
+    } catch {
+      // Diagnostics are best-effort.
+    }
+  };
+  trace("launcher-started", { pid: process.pid, configPath, platform: process.platform });
   const entry = fileURLToPath(new URL("./pi-entry.js", import.meta.url));
   // Pi loads extension peers through its virtual module runtime; raw Node cannot.
   const child = spawnPi(config.piBinary, [
@@ -112,9 +129,14 @@ try {
     stderr = `${stderr}${chunk}`.slice(-4_000);
     try { fs.appendFileSync(childLogPath, chunk); } catch { /* best effort */ }
   });
-  child.on("error", (error) => writeFailure(configPath, error));
+  trace("child-spawned", { pid: child.pid });
+  child.on("error", (error) => {
+    trace("child-error", { message: error instanceof Error ? error.message : String(error) });
+    writeFailure(configPath, error);
+  });
   child.on("exit", (code, signal) => {
     clearInterval(ownerPoll);
+    trace("child-exit", { code, signal, seenOwner });
     if (!seenOwner) writeFailure(configPath, stderr.trim() || `Pi resident host exited (${signal ?? code ?? "unknown"})`);
     process.exitCode = code ?? 1;
   });
