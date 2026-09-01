@@ -1,7 +1,13 @@
 export const fabricExecutionKernelGuidance = (fullCodeMode: boolean): string =>
-  fullCodeMode
-    ? "Pi Fabric full code mode: `fabric_exec` is the only way to call Pi core tools — use them as `pi.*` inside `code`."
-    : "Pi Fabric is in orchestration-only mode. Pi core and registered extension tools stay on their native direct execution path; inside fabric_exec, `pi.*` and `extensions.*` are unavailable.";
+  [
+    fullCodeMode
+      ? "Pi Fabric full code mode: `fabric_exec` is the only way to call Pi core tools — use them as `pi.*` inside `code`."
+      : "Pi Fabric is in orchestration-only mode. Pi core and registered extension tools stay on their native direct execution path; inside fabric_exec, `pi.*` and `extensions.*` are unavailable.",
+    // Files the model has not opened (images in particular) must be read before
+    // use; this line rides the turn-stable kernel guidance so provider prefix
+    // caches stay warm.
+    `Read every file the user provides (images, screenshots, code, text) with the ${fullCodeMode ? "`pi.read`" : "`read`"} tool before responding — never assume its contents.`,
+  ].join(" ");
 
 export const defaultFabricExecutionGuidance = (fullCodeMode: boolean): string =>
   fullCodeMode
