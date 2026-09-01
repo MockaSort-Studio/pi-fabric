@@ -58,9 +58,9 @@ running durable agent.
 Run:
 
 ```bash
-pnpm run typecheck
-pnpm run build
-pnpm exec vitest run tests/type-checker.test.ts tests/residency.test.ts tests/fabric-runtime-components.test.ts
+bun run typecheck
+bun run build
+bunx vitest run tests/type-checker.test.ts tests/residency.test.ts tests/fabric-runtime-components.test.ts
 ```
 
 Also validate a locally installed package in Pi: create a durable actor, verify
