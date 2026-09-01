@@ -16,6 +16,11 @@ import type {
 import type { MeshIdentity } from "../mesh/store.js";
 import { LifecycleBroker } from "../lifecycle/broker.js";
 import {
+  DEFAULT_LIFECYCLE_COALESCE_MS,
+  LifecycleDeliveryScheduler,
+  type PendingLifecycleDelivery,
+} from "../lifecycle/delivery-scheduler.js";
+import {
   isFabricLifecycleEventType,
   lifecycleSourceIdentity,
   type FabricLifecycleEvent,
@@ -608,7 +613,53 @@ export class AgentsProvider implements FabricProvider {
     readonly residency?: ResidencyClient,
     readonly ownsRuntime = true,
     readonly modelsConfig: () => FabricModelsConfig = () => DEFAULT_FABRIC_CONFIG.models,
-  ) {}
+  ) {
+    this.#lifecycleScheduler = new LifecycleDeliveryScheduler(
+      DEFAULT_LIFECYCLE_COALESCE_MS,
+      (target, batch) => this.#routeLifecycleBatch(target, batch),
+      (target, batch, error) => {
+        console.warn(
+          `[pi-fabric] lifecycle delivery to ${target} failed for ${batch.length} event(s): ` +
+            (error instanceof Error ? error.message : String(error)),
+        );
+      },
+    );
+  }
+
+  readonly #lifecycleScheduler: LifecycleDeliveryScheduler;
+
+  #lifecycleMessage(event: FabricLifecycleEvent): string {
+    const status = event.status ? ` with status ${event.status}` : "";
+    const run = event.runId ? ` (run ${event.runId.slice(0, 8)})` : "";
+    return `Fabric lifecycle ${event.event} from ${event.source.name} (${event.source.id})${run}${status}.`;
+  }
+
+  async #routeLifecycleBatch(
+    target: string,
+    batch: PendingLifecycleDelivery[],
+  ): Promise<void> {
+    const first = batch[0]!;
+    const single = batch.length === 1;
+    const message = single
+      ? this.#lifecycleMessage(first.event)
+      : `Fabric lifecycle events (${batch.length}):\n` +
+        batch.map((delivery) => `- ${this.#lifecycleMessage(delivery.event)}`).join("\n");
+    const data = single ? first.event : batch.map((delivery) => delivery.event);
+    const last = batch[batch.length - 1]!;
+    await this.routeMessage(
+      target,
+      message,
+      data,
+      first.subscription.delivery,
+      undefined,
+      {
+        from: single
+          ? lifecycleSourceIdentity(first.event.source)
+          : lifecycleSourceIdentity(last.event.source),
+        triggerTurn: batch.some((delivery) => delivery.subscription.triggerTurn),
+      },
+    );
+  }
 
   /**
    * Resolve an explicit Pi-runner model selector against the authenticated
@@ -1384,25 +1435,19 @@ export class AgentsProvider implements FabricProvider {
     );
   }
 
+  /** Flush pending coalesced lifecycle deliveries; used by tests and shutdown. */
+  flushLifecycleDeliveries(): Promise<void> {
+    return this.#lifecycleScheduler.flushAll();
+  }
+
   async deliverLifecycle(
     subscription: FabricLifecycleSubscription,
     event: FabricLifecycleEvent,
   ): Promise<void> {
-    const status = event.status ? ` with status ${event.status}` : "";
-    const run = event.runId ? ` (run ${event.runId.slice(0, 8)})` : "";
-    const message =
-      `Fabric lifecycle ${event.event} from ${event.source.name} (${event.source.id})${run}${status}.`;
-    await this.routeMessage(
-      subscription.to,
-      message,
-      event,
-      subscription.delivery,
-      undefined,
-      {
-        from: lifecycleSourceIdentity(event.source),
-        triggerTurn: subscription.triggerTurn,
-      },
-    );
+    // Buffered per target: bursts of run completions coalesce into a single
+    // orchestrator wake turn instead of one full run per event (#85). steer
+    // deliveries bypass the buffer inside the scheduler.
+    this.#lifecycleScheduler.schedule(subscription.to, { subscription, event });
   }
 
   async acceptControl(

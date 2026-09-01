@@ -196,6 +196,104 @@ const createRequest = {
   triggerTurn: false,
 };
 
+const lifecycleSubscription = (
+    overrides: Partial<FabricLifecycleSubscription> = {},
+  ): FabricLifecycleSubscription => ({
+    format: 1,
+    id: `sub-${Math.random().toString(36).slice(2, 8)}`,
+    from: "session:source",
+    events: ["run.completed"],
+    to: "session:test",
+    delivery: "followUp",
+    triggerTurn: true,
+    once: false,
+    afterSequence: 0,
+    createdAt: 1,
+    updatedAt: 1,
+    createdBy: { id: "session:source", name: "source", kind: "main" },
+    ...overrides,
+  });
+
+  const lifecycleEvent = (
+    overrides: Partial<FabricLifecycleEvent> = {},
+  ): FabricLifecycleEvent => ({
+    version: 1,
+    id: `evt-${Math.random().toString(36).slice(2, 8)}`,
+    sequence: Math.floor(Math.random() * 10_000),
+    event: "run.completed",
+    source: {
+      id: "session:source",
+      name: "Peer source",
+      kind: "root",
+      rootId: "session:source",
+      runner: "pi",
+      ownerHostId: "session:source",
+      ownerIdentityId: "session:source",
+    },
+    occurredAt: Date.now(),
+    publishedAt: Date.now(),
+    ...overrides,
+  });
+
+  describe("AgentsProvider lifecycle coalescing", () => {
+    it("coalesces a burst of followUp lifecycle events into one wake delivery", async () => {
+      const { provider, mainDeliveries } = setup();
+      for (let index = 0; index < 5; index += 1) {
+        await provider.deliverLifecycle(
+          lifecycleSubscription(),
+          lifecycleEvent({ source: { ...lifecycleEvent().source, id: `agent-${index}`, name: `worker-${index}` } }),
+        );
+      }
+      await provider.flushLifecycleDeliveries();
+      expect(mainDeliveries.length).toBe(1);
+      const delivery = mainDeliveries[0]!;
+      expect(delivery.delivery).toBe("followUp");
+      expect(delivery.triggerTurn).toBe(true);
+      expect(delivery.message).toContain("Fabric lifecycle events (5)");
+      expect(delivery.message).toContain("worker-0");
+      expect(delivery.message).toContain("worker-4");
+    });
+
+    it("delivers steer lifecycle events immediately without coalescing", async () => {
+      const { provider, mainDeliveries } = setup();
+      await provider.deliverLifecycle(
+        lifecycleSubscription({ delivery: "steer" }),
+        lifecycleEvent(),
+      );
+      await provider.flushLifecycleDeliveries();
+      expect(mainDeliveries.length).toBe(1);
+      expect(mainDeliveries[0]!.delivery).toBe("steer");
+    });
+
+    it("keeps separate targets on separate wake deliveries", async () => {
+      const { provider, mainDeliveries } = setup();
+      await provider.deliverLifecycle(
+        lifecycleSubscription({ to: "session:test" }),
+        lifecycleEvent(),
+      );
+      await provider.deliverLifecycle(
+        lifecycleSubscription({ to: "main" }),
+        lifecycleEvent(),
+      );
+      await provider.flushLifecycleDeliveries();
+      expect(mainDeliveries.length).toBe(2);
+    });
+
+    it("keeps single-event deliveries in the original message format", async () => {
+      const { provider, mainDeliveries } = setup();
+      await provider.deliverLifecycle(
+        lifecycleSubscription(),
+        lifecycleEvent({ runId: "run-12345678", status: "completed" }),
+      );
+      await provider.flushLifecycleDeliveries();
+      expect(mainDeliveries.length).toBe(1);
+      expect(mainDeliveries[0]!.message).toBe(
+        "Fabric lifecycle run.completed from Peer source (session:source) (run run-1234) with status completed.",
+      );
+      expect(mainDeliveries[0]!.message).not.toContain("Fabric lifecycle events");
+    });
+  });
+
 describe("AgentsProvider runner support", () => {
   it("exposes model-programmable residency on spawn and create", async () => {
     const { provider } = setup();
@@ -375,6 +473,7 @@ describe("AgentsProvider runner support", () => {
     };
 
     await provider.deliverLifecycle(subscription, event);
+    await provider.flushLifecycleDeliveries();
 
     expect(mainDeliveries).toEqual([
       expect.objectContaining({
