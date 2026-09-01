@@ -10,6 +10,7 @@ import {
   resolveFabricModelGuidance,
 } from "../components/model-guidance.js";
 import { ActorManager } from "../actors/manager.js";
+import type { FabricActorInfo } from "../actors/types.js";
 import { AgentManager } from "../agents/manager.js";
 import { useBudgetLedger } from "../agents/budget-ledger.js";
 import { LifecycleBroker } from "../lifecycle/broker.js";
@@ -64,14 +65,14 @@ const processAlive = (pid: number): boolean => {
 
 class ResidentHostAlreadyRunning extends Error {}
 
-const parseConfigPath = (argv: readonly string[]): string => {
+const parseResidentHostConfigPath = (argv: readonly string[]): string => {
   const index = argv.indexOf("--config");
   const value = index >= 0 ? argv[index + 1] : undefined;
   if (!value) throw new Error("Missing resident host argument: --config");
   return path.resolve(value);
 };
 
-const validateConfig = (value: unknown, configPath: string): ResidentHostConfig => {
+const validateResidentHostConfig = (value: unknown, configPath: string): ResidentHostConfig => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("Invalid Fabric resident host config");
   }
@@ -598,6 +599,21 @@ export class ResidentHost {
           ok: true,
           completedAt: Date.now(),
         };
+      } else if (command.operation === "createActor") {
+        if (command.request.residency !== "durable") {
+          throw new Error("Resident host createActor only supports durable residency");
+        }
+        // This handler already runs inside the authoritative durable host.
+        // Keep the new actor locally owned; ceding it here created a needless
+        // self-transfer window that blocked the next recruitment request.
+        const actor = await this.actors.create(command.request);
+        response = {
+          format: RESIDENT_HOST_FORMAT,
+          requestId,
+          ok: true,
+          actor: actor as FabricActorInfo,
+          completedAt: Date.now(),
+        };
       } else {
         if (!this.actors.owns(command.id)) {
           throw new Error(`Resident host does not own ${command.id}`);
@@ -705,25 +721,35 @@ export const runResidentHost = async (
   await host.close();
 };
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
-if (isMain) {
-  const configPath = parseConfigPath(process.argv);
+export const runResidentHostFromConfigPath = async (
+  configPath: string,
+  signal?: AbortSignal,
+): Promise<void> => {
   let config: ResidentHostConfig | undefined;
   try {
-    config = validateConfig(readJson<unknown>(configPath), configPath);
-    await runResidentHost(config);
+    config = validateResidentHostConfig(readJson<unknown>(configPath), configPath);
+    await runResidentHost(config, signal);
   } catch (error) {
-    if (!(error instanceof ResidentHostAlreadyRunning)) {
-      const residencyRoot = config?.residencyRoot ?? path.dirname(configPath);
-      try {
-        atomicWrite(path.join(residencyRoot, "error.json"), {
-          error: errorMessage(error),
-          occurredAt: Date.now(),
-        });
-      } catch {
-        // Startup diagnostics are best-effort.
-      }
-      process.exitCode = 1;
+    if (error instanceof ResidentHostAlreadyRunning) return;
+    const residencyRoot = config?.residencyRoot ?? path.dirname(configPath);
+    try {
+      atomicWrite(path.join(residencyRoot, "error.json"), {
+        error: errorMessage(error),
+        occurredAt: Date.now(),
+      });
+    } catch {
+      // Startup diagnostics are best-effort.
     }
+    throw error;
+  }
+};
+
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (isMain) {
+  const configPath = parseResidentHostConfigPath(process.argv);
+  try {
+    await runResidentHostFromConfigPath(configPath);
+  } catch {
+    process.exitCode = 1;
   }
 }

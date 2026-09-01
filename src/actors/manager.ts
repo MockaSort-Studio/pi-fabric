@@ -375,8 +375,9 @@ export class ActorManager {
   async create(request: FabricActorRequest): Promise<FabricActorInfo> {
     this.#refreshOwnership();
     if (
-      this.#actors.size > 0 &&
-      ![...this.#actors.values()].some((actor) => this.#canManage(actor.id))
+      [...this.#actors.values()].some(
+        (actor) => actor.status !== "stopped" && !this.#canManage(actor.id),
+      )
     ) {
       throw new Error("Fabric actor registry is owned by another host");
     }

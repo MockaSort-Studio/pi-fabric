@@ -9,6 +9,7 @@ import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import type { FabricMainAgentDeliveryRequest, FabricMainAgentTarget } from "../src/main-agent.js";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
 import { ResidencyClient } from "../src/residency/client.js";
+import { ResidentActorClient } from "../src/residency/actor-client.js";
 import {
   RESIDENT_HOST_FORMAT,
   residentDeliveryPrefix,
@@ -23,7 +24,7 @@ import { actorParticipantRecord } from "../src/topology/records.js";
 import type { FabricParticipantSource } from "../src/topology/types.js";
 
 const repo = process.cwd();
-const hostPath = path.resolve("dist/residency/host.js");
+const hostPath = path.resolve("dist/residency/launcher.js");
 const fakeWorker = path.resolve("tests/fixtures/fake-worker.mjs");
 const hasResidentHost = fs.existsSync(hostPath);
 const roots: string[] = [];
@@ -457,6 +458,51 @@ describe.skipIf(!hasResidentHost)("durable participant residency", () => {
     await client.close();
     await actors.close();
     await agents.close();
+    await state.participants.close();
+  });
+
+  it("creates multiple durable actors through nested recruitment", { timeout: 20_000 }, async () => {
+    const state = await rootHarness("resident-recruitment");
+    const client = new ResidencyClient({
+      config: state.config,
+      mesh: state.mesh,
+      participants: state.participants,
+      mainAgent: state.mainAgent,
+      hostPath,
+    });
+    const bootstrap = await client.spawnAgent({
+      task: "Start the resident host.",
+      name: "recruitment-bootstrap",
+      residency: "durable",
+    });
+    const recruitment = new ResidentActorClient(
+      state.config.meshRoot,
+      state.identity.id,
+    );
+
+    const actors = await Promise.all([
+      recruitment.createActor({
+        name: "recruited architect",
+        instructions: "Design the bounded change.",
+        residency: "durable",
+      }),
+      recruitment.createActor({
+        name: "recruited advisor",
+        instructions: "Challenge the design.",
+        residency: "durable",
+      }),
+    ]);
+
+    expect(actors.map((actor) => actor.name).sort()).toEqual([
+      "recruited advisor",
+      "recruited architect",
+    ]);
+    expect(actors.every((actor) => actor.residency === "durable")).toBe(true);
+    expect(new Set(actors.map((actor) => actor.sessionFile)).size).toBe(2);
+
+    for (const actor of actors) await client.removeActor(actor.id);
+    await client.cleanupAgent(bootstrap.id);
+    await client.close();
     await state.participants.close();
   });
 

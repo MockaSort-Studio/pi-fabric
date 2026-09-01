@@ -112,7 +112,7 @@ export class ResidencyClient {
     this.#responsesPath = path.join(options.config.residencyRoot, "responses");
     this.#agentsPath = path.join(options.config.residencyRoot, "agents");
     this.#deliveryPrefix = residentDeliveryPrefix(options.config.rootId);
-    this.#hostPath = options.hostPath ?? fileURLToPath(new URL("./host.js", import.meta.url));
+    this.#hostPath = options.hostPath ?? fileURLToPath(new URL("./launcher.js", import.meta.url));
   }
 
   start(): void {

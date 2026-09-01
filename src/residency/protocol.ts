@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import type { FabricOwnedModelGuidance } from "../components/model-guidance.js";
 import type { FabricAgentConfig, FabricMeshConfig, FabricRetentionConfig } from "../config.js";
+import type { FabricActorInfo, FabricActorRequest } from "../actors/types.js";
 import type { AgentHandleInfo, AgentRunRequest } from "../agents/types.js";
 import type { MeshIdentity } from "../mesh/store.js";
 
@@ -78,7 +79,7 @@ interface ResidentForegroundCommand {
   createdAt: number;
 }
 
-interface ResidentRemoveActorCommand {
+export interface ResidentRemoveActorCommand {
   format: typeof RESIDENT_HOST_FORMAT;
   operation: "removeActor";
   requestId: string;
@@ -87,17 +88,28 @@ interface ResidentRemoveActorCommand {
   createdAt: number;
 }
 
+export interface ResidentCreateActorCommand {
+  format: typeof RESIDENT_HOST_FORMAT;
+  operation: "createActor";
+  requestId: string;
+  rootId: string;
+  request: FabricActorRequest;
+  createdAt: number;
+}
+
 export type ResidentCommand =
   | ResidentSpawnCommand
   | ResidentCleanupCommand
   | ResidentForegroundCommand
-  | ResidentRemoveActorCommand;
+  | ResidentRemoveActorCommand
+  | ResidentCreateActorCommand;
 
 export interface ResidentCommandResponse {
   format: typeof RESIDENT_HOST_FORMAT;
   requestId: string;
   ok: boolean;
   handle?: AgentHandleInfo;
+  actor?: FabricActorInfo;
   error?: string;
   completedAt: number;
 }

@@ -1240,6 +1240,73 @@ describe("AgentsProvider shared actor definitions", () => {
     );
   });
 
+  it("routes ask and tell for a remote actor absent from the local registry", async () => {
+    const participant: FabricParticipantInfo = {
+      format: 1,
+      id: "actor:resident-child",
+      kind: "actor",
+      rootId: "session:test",
+      ownerHostId: "host:resident",
+      ownerIdentityId: "identity:resident",
+      parentId: "session:test",
+      name: "resident child",
+      status: "idle",
+      residency: "durable",
+      runner: "pi",
+      transport: "host",
+      capabilities: ["steer", "followUp", "stop", "ask", "actor-bindings", "fabric"],
+      startedAt: 1,
+      updatedAt: 1,
+      controlProtocol: "v1",
+      local: false,
+      stale: false,
+    };
+    const members = [participant];
+    const response = {
+      id: "remote-response",
+      actorId: participant.id,
+      actorName: participant.name,
+      direction: "out" as const,
+      source: "direct",
+      createdAt: Date.now(),
+      text: "PONG",
+    };
+    const requestResult = vi.fn().mockResolvedValue(response);
+    const request = vi.fn().mockResolvedValue({
+      queued: true,
+      messageId: "remote-message",
+      routed: "mesh",
+      acknowledged: true,
+    });
+    const control = { requestResult, request } as unknown as FabricControlPlane;
+    const { provider } = setup([], members, control);
+
+    await expect(provider.invoke("ask", {
+      id: participant.id,
+      message: "PING",
+    }, context)).resolves.toEqual(response);
+    expect(requestResult).toHaveBeenCalledWith(
+      "host:resident",
+      participant.id,
+      "ask",
+      { message: "PING" },
+      "identity:resident",
+      { timeoutMs: DEFAULT_FABRIC_CONFIG.agents.timeoutMs + 30_000 },
+    );
+
+    await provider.invoke("tell", {
+      id: participant.id,
+      message: "queue",
+    }, context);
+    expect(request).toHaveBeenCalledWith(
+      "host:resident",
+      participant.id,
+      "followUp",
+      expect.objectContaining({ message: "queue" }),
+      "identity:resident",
+    );
+  });
+
   it("executes one shared actor with each caller's session binding", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-two-sessions-"));
     roots.push(root);
