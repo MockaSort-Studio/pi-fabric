@@ -1,6 +1,6 @@
 {
   "name": "pi-fabric",
-  "version": "0.73.0",
+  "version": "0.74.0",
   "description": "A programmable tool and agent runtime for Pi",
   "type": "module",
   "main": "./dist/index.js",
@@ -101,7 +101,9 @@
     "knip": "^6.29.0",
     "vitest": "^4.1.10"
   },
-  "workspaces": ["."],
+  "workspaces": [
+    "."
+  ],
   "overrides": {
     "ajv": {
       "fast-uri": "^3.1.6"
