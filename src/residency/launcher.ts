@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { observeResidentOwner } from "./launcher-owner.js";
 
 const parseConfigPath = (argv: readonly string[]): string => {
   const index = argv.indexOf("--config");
@@ -22,6 +23,17 @@ const readConfig = (configPath: string): { cwd: string; piBinary: string } => {
     throw new Error("Fabric resident host config is incomplete");
   }
   return { cwd: config.cwd, piBinary: config.piBinary };
+};
+
+const liveOwnerPid = (ownerPath: string): number | undefined => {
+  try {
+    const owner = JSON.parse(fs.readFileSync(ownerPath, "utf8")) as { pid?: unknown };
+    if (typeof owner.pid !== "number") return undefined;
+    process.kill(owner.pid, 0);
+    return owner.pid;
+  } catch {
+    return undefined;
+  }
 };
 
 const writeFailure = (configPath: string, error: unknown): void => {
@@ -53,14 +65,24 @@ try {
   ], {
     cwd: config.cwd,
     detached: false,
-    // RPC ends on stdin EOF, so the launcher deliberately keeps this pipe open.
+    // RPC ends on stdin EOF. Keep it open only while this child owns residency.
     stdio: ["pipe", "ignore", "pipe"],
     env: { ...process.env, PI_FABRIC_RESIDENT_CONFIG: configPath },
   });
   let seenOwner = false;
+  let claimedOwner = false;
+  let closingInput = false;
   let stderr = "";
   const ownerPath = path.join(path.dirname(configPath), "owner.json");
-  const ownerPoll = setInterval(() => { seenOwner ||= fs.existsSync(ownerPath); }, 50);
+  const ownerPoll = setInterval(() => {
+    const observation = observeResidentOwner(liveOwnerPid(ownerPath), child.pid, claimedOwner);
+    claimedOwner = observation.claimed;
+    seenOwner ||= observation.observedOwner;
+    if (observation.closeInput && !closingInput) {
+      closingInput = true;
+      child.stdin?.end();
+    }
+  }, 50);
   ownerPoll.unref();
   child.stderr?.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk}`.slice(-4_000); });
   child.on("error", (error) => writeFailure(configPath, error));
