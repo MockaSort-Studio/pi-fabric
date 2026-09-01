@@ -46,6 +46,46 @@ const plainTheme = {
   bold: (text: string) => text,
 } as unknown as Theme;
 
+describe("TUI width bounds (#84)", () => {
+  const adversarialLines = [
+    "x".repeat(300),
+    "\t\t\tdeeply\ttabbed\toutput\t" + "y".repeat(200),
+    "\x1b[31mred\x1b[0m".repeat(30),
+    "🎉".repeat(120),
+    "中文".repeat(120),
+    "🏳️‍🌈".repeat(60),
+    "①②③ﬁ".repeat(80),
+    "a̐éö̲".repeat(150),
+  ];
+
+  const expectBounded = (rows: string[], width: number) => {
+    for (const row of rows) {
+      expect(visibleWidth(row)).toBeLessThanOrEqual(width);
+    }
+  };
+
+  it("bounds wrapped and truncated bounded-line rows at narrow widths", () => {
+    for (const width of [50, 51, 20, 11, 3, 1]) {
+      const wrapIndexes = new Set(adversarialLines.map((_line, index) => index));
+      const wrapped = renderBoundedLines(adversarialLines, plainTheme, "off", wrapIndexes);
+      expectBounded(wrapped.render(width), width);
+      const unwrapped = renderBoundedLines(adversarialLines, plainTheme, "off");
+      expectBounded(unwrapped.render(width), width);
+    }
+  });
+
+  it("bounds row-borrowing previews even when the inner renderer overflows", () => {
+    const overproducing = (limit: number, width: number): string[] => [
+      `${"overflow".repeat(Math.max(4, limit))} ${width}`,
+    ];
+    const balance: ResultRowBalance = {};
+    const component = new HiddenRowBorrowingComponent(1, 3, overproducing, balance);
+    for (const width of [50, 11, 3, 1]) {
+      expectBounded(component.render(width), width);
+    }
+  });
+});
+
 describe("fabric nested rendering", () => {
   it("renders the whole expand hint dim", () => {
     expect(expandHint(theme)).toMatch(/^\x1b\[dim\].+ to expand\x1b\[0m$/);

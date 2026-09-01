@@ -139,7 +139,10 @@ class BoundedLineList implements Component {
             Math.max(1, width - visibleWidth(continuationIndent)),
           );
           renderedRows = wrapped.map(
-            (row, index) => index === 0 ? row : continuationIndent + row,
+            (row, index) => truncateBoundedLine(
+              index === 0 ? row : continuationIndent + row,
+              width,
+            ),
           );
         } else renderedRows = [truncateBoundedLine(line, width)];
         rows.push(...(
