@@ -26,7 +26,6 @@ const mcpConfig = (overrides: Partial<FabricMcpConfig> = {}): FabricMcpConfig =>
   allowDynamicServers: true,
   callTimeoutMs: 5_000,
   cache: { enabled: false, revalidate: "changed", revalidateBudgetMs: 10_000 },
-  advisory: false,
   ...overrides,
 });
 
@@ -446,10 +445,8 @@ describe("McpProvider descriptor cache", () => {
       await first.close();
     }
 
-    const used: string[] = [];
     const second = new McpProvider(directory, cacheConfig(configPath), {
       cache: new McpDescriptorCacheStore(cachePath),
-      hooks: { onToolUse: (server) => used.push(server) },
     });
     try {
       await second.list({}, context);
@@ -460,7 +457,6 @@ describe("McpProvider descriptor cache", () => {
         text: string;
       };
       expect(result.text).toBe("echo:warm");
-      expect(used).toEqual(["test"]);
       await second.settle();
       // First contact rode the pooled connection into one background relist.
       expect(countLines(countFile).sort()).toEqual(["fal-ai", "test", "test"]);

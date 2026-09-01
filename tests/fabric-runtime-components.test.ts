@@ -87,7 +87,7 @@ describe("Fabric runtime provider components", () => {
     });
     const fixture = path.join(cwd, "unused.mjs");
     fs.writeFileSync(fixture, "export default {};");
-    runtime = new FabricRuntimeState(pi, new CapturedToolCatalog(), undefined, undefined, {
+    runtime = new FabricRuntimeState(pi, new CapturedToolCatalog(), {
       paths: {
         extension: fixture,
         worker: fixture,

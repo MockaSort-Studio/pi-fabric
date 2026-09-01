@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import path from "node:path";
 import { FabricActivityStore } from "./activity/store.js";
-import { CapturedToolCatalog, type CapturedToolEntry } from "./capture/catalog.js";
+import { CapturedToolCatalog } from "./capture/catalog.js";
 import {
   FABRIC_COMPONENT_PROVIDER_NAMES,
   FABRIC_PROVIDER_COMPONENT_PREFIX,
@@ -24,11 +24,6 @@ import { PrewalkDriftTracker } from "./prewalk/fs-drift.js";
 import type { PendingFabricHandoff } from "./prewalk/handoff.js";
 import type { AgentToolResultMessage } from "./agents/types.js";
 import type { FabricExecutionResult } from "./execution-service.js";
-import {
-  loadCachedMcpDescriptors,
-  type McpAdvisoryCacheOptions,
-} from "./providers/mcp-advisory.js";
-import type { McpProviderHooks } from "./providers/mcp-provider.js";
 import type {
   FabricParticipantInfo,
   FabricParticipantListOptions,
@@ -53,9 +48,6 @@ import type { FabricRuntimePaths } from "./runtime-paths.js";
 export interface FabricStateOptions {
   paths?: FabricRuntimePaths;
   runtimeLoader?: () => Promise<typeof import("./fabric-runtime-state.js")>;
-  mcpAdvisoryLoader?: (
-    options: McpAdvisoryCacheOptions,
-  ) => Promise<FabricActionDescriptor[]>;
 }
 
 type ActivationHook = (context: ExtensionContext) => void | Promise<void>;
@@ -72,11 +64,8 @@ export class FabricState {
   #everActivated = false;
   #activationHook: ActivationHook | undefined;
   #activationFailureHook: ActivationFailureHook | undefined;
-  #bootstrapMcpDescriptors: FabricActionDescriptor[] = [];
   readonly #externalProviders = new Map<string, FabricProvider>();
   readonly #externalComponents = new Map<string, FabricComponentDefinition>();
-  readonly #onCapturedToolUse: ((entry: CapturedToolEntry) => void) | undefined;
-  readonly #mcpHooks: McpProviderHooks | undefined;
   readonly #options: FabricStateOptions;
   readonly activity = new FabricActivityStore();
   readonly prewalk = new PrewalkController();
@@ -87,12 +76,8 @@ export class FabricState {
   constructor(
     readonly pi: ExtensionAPI,
     readonly capturedTools: CapturedToolCatalog,
-    onCapturedToolUse?: (entry: CapturedToolEntry) => void,
-    mcpHooks?: McpProviderHooks,
     options: FabricStateOptions = {},
   ) {
-    this.#onCapturedToolUse = onCapturedToolUse;
-    this.#mcpHooks = mcpHooks;
     this.#options = options;
   }
 
@@ -164,23 +149,12 @@ export class FabricState {
       projectTrusted: context.isProjectTrusted(),
     });
     this.#config = config;
-    this.#bootstrapMcpDescriptors = [];
     this.prewalk.cancel();
     this.prewalkDrift.clear();
     this.activity.reset();
     this.sessionApprovals.approvedRisks.clear();
     this.#widgetDismissedAt = 0;
     context.ui.setStatus("fabric-prewalk", undefined);
-
-    const projectRoot = process.env.PI_FABRIC_PROJECT_ROOT ?? context.cwd;
-    const loadAdvisory = this.#options.mcpAdvisoryLoader ?? loadCachedMcpDescriptors;
-    const cachedDescriptors = await loadAdvisory({
-      cwd: context.cwd,
-      projectRoot,
-      config: config.mcp,
-    }).catch(() => []);
-    if (generation !== this.#generation) return;
-    this.#bootstrapMcpDescriptors = cachedDescriptors;
 
     const pending = this.#activation;
     if (pending) await pending.catch(() => undefined);
@@ -244,12 +218,6 @@ export class FabricState {
     }
   }
 
-  mcpSlice(): FabricActionDescriptor[] {
-    const runtimeDescriptors = this.#current()?.mcpSlice();
-    return runtimeDescriptors && runtimeDescriptors.length > 0
-      ? runtimeDescriptors
-      : this.#bootstrapMcpDescriptors;
-  }
   mainAgentInfo(context?: ExtensionContext): FabricMainAgentInfo { return this.#required().mainAgentInfo(context); }
   peerInfos(): FabricPeerInfo[] { return this.#current()?.peerInfos() ?? []; }
   componentGraph(): FabricComponentGraph {
@@ -386,7 +354,6 @@ export class FabricState {
         this.#externalProviders.clear();
         this.#externalComponents.clear();
         this.#everActivated = false;
-        this.#bootstrapMcpDescriptors = [];
         this.activity.reset();
         this.prewalk.cancel();
         this.prewalkDrift.clear();
@@ -467,8 +434,6 @@ export class FabricState {
     return new module.FabricRuntimeState(
       this.pi,
       this.capturedTools,
-      this.#onCapturedToolUse,
-      this.#mcpHooks,
       {
         activity: this.activity,
         prewalk: this.prewalk,

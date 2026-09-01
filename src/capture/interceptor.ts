@@ -54,7 +54,6 @@ const clonePolicy = (config: FabricToolCaptureConfig): FabricToolCaptureConfig =
   keepVisible: [...config.keepVisible],
   defaultRisk: config.defaultRisk,
   risks: { ...config.risks },
-  advisory: { ...config.advisory },
 });
 
 type ExtensionRunnerConstructor = {

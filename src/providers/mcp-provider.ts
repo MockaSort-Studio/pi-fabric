@@ -119,15 +119,9 @@ const normalizeMcpResult = (result: unknown): unknown => {
   };
 };
 
-// Keep the existing advisory import path stable while the host startup graph
-// uses the dependency-light source module directly.
-export { toMcpAdvisoryDescriptor } from "./mcp-advisory.js";
-
 export interface McpProviderHooks {
   /** Full provider-fidelity descriptor slice after any tool-list change. */
   onSliceChanged?: (descriptors: FabricActionDescriptor[]) => void;
-  /** A tool on this server was actually called (raw server name). */
-  onToolUse?: (server: string) => void;
 }
 
 export interface McpProviderOptions {
@@ -372,7 +366,7 @@ export class McpProvider implements FabricProvider {
   }
 
   // Provider-fidelity descriptors for everything currently known, cached or
-  // ephemeral. Advisory consumers wrap entries with toMcpAdvisoryDescriptor.
+  // ephemeral.
   sliceDescriptors(): FabricActionDescriptor[] {
     const descriptors: FabricActionDescriptor[] = [];
     for (const [server, entry] of this.#servers) {
@@ -417,11 +411,6 @@ export class McpProvider implements FabricProvider {
     }
     if (signal?.aborted) throw new Error("MCP call cancelled");
     if (!tool) throw new Error(`Unknown MCP tool: ${serverName}.${toolName}`);
-    try {
-      this.#hooks.onToolUse?.(server);
-    } catch {
-      // Advisory bookkeeping must never break a tool call.
-    }
     const runtime = await this.#getRuntime();
     const firstContact = !this.#recontacted.has(server);
     if (firstContact) this.#recontacted.add(server);
@@ -622,8 +611,8 @@ export class McpProvider implements FabricProvider {
   }
 
   // Live tool listing for exactly one server; on success updates the working
-  // copy, persistence, and advisory slice. Used by the background revalidator
-  // and by explicit single-server fetches.
+  // copy and persistence. Used by the background revalidator and by explicit
+  // single-server fetches.
   async #fetchServerTools(server: string, timeoutMs?: number): Promise<WorkingServer> {
     const generation = this.#generation;
     const runtime = await this.#getRuntime();
@@ -742,7 +731,7 @@ export class McpProvider implements FabricProvider {
     try {
       this.#hooks.onSliceChanged?.(this.sliceDescriptors());
     } catch {
-      // Advisory bookkeeping must never break the provider.
+      // Catalog notification must never break the provider.
     }
   }
 

@@ -34,7 +34,7 @@ const sourceLabel = (sourceInfo: SourceInfo): string => {
   return path.basename(path.dirname(sourceInfo.path)) || sourceInfo.source;
 };
 
-export const capturedToolNamespace = (entry: CapturedToolEntry): string =>
+const capturedToolNamespace = (entry: CapturedToolEntry): string =>
   `extension:${sourceLabel(entry.sourceInfo)}`;
 
 const descriptorFrom = (entry: CapturedToolEntry): FabricActionDescriptor => ({
@@ -44,10 +44,6 @@ const descriptorFrom = (entry: CapturedToolEntry): FabricActionDescriptor => ({
   risk: entry.risk,
   namespace: capturedToolNamespace(entry),
 });
-
-export const listCapturedToolDescriptors = (
-  entries: CapturedToolEntry[],
-): FabricActionDescriptor[] => entries.map(descriptorFrom);
 
 const asInvocationResult = (
   entry: CapturedToolEntry,
@@ -95,14 +91,8 @@ export class CapturedToolsProvider implements FabricProvider {
     "Tools captured from other Pi extensions and invoked lazily through Fabric";
 
   readonly #scheduler = new CapturedToolScheduler();
-  readonly #onToolUse: ((entry: CapturedToolEntry) => void) | undefined;
 
-  constructor(
-    readonly catalog: CapturedToolCatalog,
-    onToolUse?: (entry: CapturedToolEntry) => void,
-  ) {
-    this.#onToolUse = onToolUse;
-  }
+  constructor(readonly catalog: CapturedToolCatalog) {}
 
   async list(
     request: FabricProviderListRequest,
@@ -142,13 +132,6 @@ export class CapturedToolsProvider implements FabricProvider {
     context: FabricInvocationContext,
   ): Promise<CapturedToolInvocationResult> {
     const entry = this.catalog.require(actionName);
-    // Organic-discovery observation for the capability advisory; bookkeeping
-    // must never break a tool call.
-    try {
-      this.#onToolUse?.(entry);
-    } catch {
-      // Advisory bookkeeping only.
-    }
     return this.#scheduler.run(entry.definition.executionMode, () =>
       runAbortable(context.signal, () => this.#invokeCaptured(entry, args, context)),
     );

@@ -117,28 +117,6 @@ describe("Fabric configuration", () => {
     expect(config.mesh.eventContextChars).toBe(1_000_000);
   });
 
-  it("parses capability advisory settings with defaults and bounds", () => {
-    expect(DEFAULT_FABRIC_CONFIG.capture.advisory).toEqual({
-      mode: "enabled",
-      threshold: 0.9,
-      maxPerSession: 3,
-      budget: 512,
-    });
-    const adorned = normalizeFabricConfig({
-      capture: { advisory: { mode: "enabled", threshold: 4.2, maxPerSession: 9, budget: 2048 } },
-    });
-    expect(adorned.capture.advisory).toEqual({ mode: "enabled", threshold: 4.2, maxPerSession: 9, budget: 2048 });
-    const bounded = normalizeFabricConfig({
-      capture: {
-        advisory: { mode: "surprising", threshold: Number.NaN, maxPerSession: 500, budget: 99_999 },
-      },
-    });
-    expect(bounded.capture.advisory.mode).toBe("enabled");
-    expect(bounded.capture.advisory.threshold).toBe(0.9);
-    expect(bounded.capture.advisory.maxPerSession).toBe(50);
-    expect(bounded.capture.advisory.budget).toBe(8192);
-  });
-
   it("normalizes executor runtimes and their memory ceilings", () => {
     const native = normalizeFabricConfig({
       executor: { runtime: "node-process", memoryLimitBytes: Number.MAX_SAFE_INTEGER },
@@ -765,21 +743,19 @@ describe("Fabric configuration", () => {
 });
 
 describe("MCP descriptor cache configuration", () => {
-  it("defaults to an enabled cache, changed revalidation, and advisory on", () => {
+  it("defaults to an enabled cache with changed revalidation", () => {
     const config = normalizeFabricConfig({});
     expect(config.mcp.cache).toEqual({
       enabled: true,
       revalidate: "changed",
       revalidateBudgetMs: 60_000,
     });
-    expect(config.mcp.advisory).toBe(true);
   });
 
-  it("parses explicit cache and advisory overrides", () => {
+  it("parses explicit cache overrides", () => {
     const config = normalizeFabricConfig({
       mcp: {
         cache: { enabled: false, revalidate: "all", revalidateBudgetMs: 65_000 },
-        advisory: false,
       },
     });
     expect(config.mcp.cache).toEqual({
@@ -787,7 +763,6 @@ describe("MCP descriptor cache configuration", () => {
       revalidate: "all",
       revalidateBudgetMs: 65_000,
     });
-    expect(config.mcp.advisory).toBe(false);
   });
 
   it("clamps the budget and falls back on an unknown revalidation policy", () => {

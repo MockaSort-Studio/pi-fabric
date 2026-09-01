@@ -16,10 +16,10 @@ export interface ExtensionRosterToolSource {
 
 // In full code mode the model sees only fabric_exec in its tool list, so
 // registered extension tools are invisible unless named up front (#69). The
-// roster stays names-only: descriptions and schemas are taught on demand by
-// capture.advisory hints (capability combustion, docs/capability-combustion.md)
-// and tools.list, so the standing prompt cost is a bare name index. Core
-// overrides are excluded: they surface as pi.* via coreOverridePromptGuidance.
+// roster stays names-only: descriptions and schemas are on demand through the
+// tools.list/search/describe discovery surface, so the standing prompt cost is
+// a bare name index. Core overrides are excluded: they surface as pi.* via
+// coreOverridePromptGuidance.
 export const extensionToolRosterGuidance = (
   tools: ReadonlyArray<ExtensionRosterToolSource>,
   coreToolNames: ReadonlySet<string>,

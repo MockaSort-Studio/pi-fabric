@@ -60,16 +60,6 @@ import {
   mergeFabricApprovalUsage,
 } from "./core/direct-tool-approval.js";
 import { buildSkillReferenceGuidance } from "./core/skill-references.js";
-import {
-  CAPABILITY_ADVISORY_CUSTOM_TYPE,
-  CapabilityAdvisor,
-} from "./core/capability-advisory.js";
-import {
-  capturedToolNamespace,
-  listCapturedToolDescriptors,
-} from "./providers/captured-tools-provider.js";
-import { toMcpAdvisoryDescriptor } from "./providers/mcp-advisory.js";
-import { sanitizeMcpRefPart } from "./ref-names.js";
 import { createFabricExecTool } from "./fabric-exec-tool.js";
 import { FabricState } from "./fabric-state.js";
 import { piHostCompatibilityWarning } from "./host-compatibility.js";
@@ -142,6 +132,8 @@ const registrationFrom = (value: unknown): FabricProviderRegistration | undefine
   return registration as FabricProviderRegistration;
 };
 
+const SKILL_REFERENCE_CUSTOM_TYPE = "pi-fabric-skill-reference";
+
 export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   const codePreviewSettings = defaultCodePreviewSettings();
   const decorateShell: FabricToolShellDecorator = withCodePreviewShell;
@@ -151,36 +143,8 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     codePreviewSettings.syntaxHighlighting,
   );
   const capturedTools = new CapturedToolCatalog();
-  const capabilityAdvisor = new CapabilityAdvisor();
   const proxyContract = new ProxyContractLedger();
-  const state = new FabricState(
-    pi,
-    capturedTools,
-    (entry) => {
-      // Organic discovery: the model found and used the namespace on its own —
-      // burn it as ash so no future hint wastes the fire. Nothing to persist:
-      // the tool call itself is the transcript entry a future replay recovers.
-      try {
-        capabilityAdvisor.observeToolUse(capturedToolNamespace(entry));
-      } catch {
-        // Advisory bookkeeping only.
-      }
-    },
-    {
-      onSliceChanged: () => refreshAdvisorSources(),
-      onToolUse: (server) => {
-        // MCP tools are only callable through fabric_exec, so the provider is
-        // the only organic-use observer available; ash the advisor namespace
-        // (sanitized, matching the advisory slice) on every call.
-        try {
-          capabilityAdvisor.observeToolUse(`mcp:${sanitizeMcpRefPart(server)}`);
-        } catch {
-          // Advisory bookkeeping only.
-        }
-      },
-    },
-    { paths: FABRIC_RUNTIME_PATHS },
-  );
+  const state = new FabricState(pi, capturedTools, { paths: FABRIC_RUNTIME_PATHS });
   const directToolApproval = new FabricDirectToolApproval(
     pi,
     () => state.config,
@@ -192,26 +156,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   const toolDisplay = new FabricToolDisplayController();
 
   const capturePolicy = () => effectiveToolCaptureConfig(state.config);
-  // Advisor slices refresh independently: captured tools only while they are
-  // hidden from the model (nothing to point at when tools are natively
-  // visible); the MCP descriptor-cache slice whenever mcp.advisory is on —
-  // MCP tools never have native visibility, so the gate is capture-agnostic.
-  const refreshAdvisorSources = (): void => {
-    if (!state.cwd) return;
-    const policy = capturePolicy();
-    capabilityAdvisor.setSource(
-      "captured",
-      policy.enabled && policy.hideFromModel
-        ? listCapturedToolDescriptors(capturedTools.list())
-        : [],
-    );
-    capabilityAdvisor.setSource(
-      "mcp",
-      state.config.mcp.advisory
-        ? state.mcpSlice().map(toMcpAdvisoryDescriptor)
-        : [],
-    );
-  };
   const fabricOwnsModelTools = (): boolean =>
     state.config.fullCodeMode || state.config.schema.mode === "enforce";
   // Captured tools that must stay out of the model's active set in full code
@@ -298,7 +242,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     initialPolicy: inactiveCapturePolicy,
     onCatalogRefresh: () => {
       scheduleOwnershipReassert();
-      refreshAdvisorSources();
     },
   });
   pi.registerTool(fabricTool);
@@ -311,7 +254,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       fabricOwnsModelTools() ? hiddenCapturedToolNames() : undefined,
     );
     capturedTools.refresh();
-    refreshAdvisorSources();
   };
   const suspendToolCapture = (): void => {
     toolCapture.setPolicy(inactiveCapturePolicy);
@@ -383,30 +325,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     });
   };
 
-  // Durable advisory state is transcript-derived: custom messages replay ash,
-  // emitted-word echoes, and the session fire count; captured/MCP calls replay
-  // organic ash. Branch switches therefore reproduce one exact ledger.
-  const refreshAdvisorLedger = (context: ExtensionContext): void => {
-    capabilityAdvisor.restoreAshFromEntries(
-      context.sessionManager?.getBranch?.() ?? [],
-      (toolName, input) => {
-        const captured = capturedTools.get(toolName);
-        if (captured !== undefined) return capturedToolNamespace(captured);
-        // MCP organic use happens inside fabric_exec and leaves no per-tool
-        // transcript entries; recover it by scanning executed code for
-        // mcp.<server>.<tool> refs so a branch rewind / reload does not
-        // re-hint a namespace the model already spent.
-        if (toolName !== "fabric_exec") return undefined;
-        const code = typeof input?.code === "string" ? input.code : "";
-        if (!code.includes("mcp.")) return undefined;
-        const namespaces = new Set<string>();
-        for (const match of code.matchAll(/\bmcp\.([A-Za-z_$][A-Za-z0-9_$]*)\s*\./g)) {
-          const server = match[1];
-          if (server !== undefined) namespaces.add(`mcp:${server}`);
-        }
-        return namespaces.size > 0 ? [...namespaces] : undefined;
-      },
-    );
+  const refreshProxyLedger = (context: ExtensionContext): void => {
     proxyContract.restoreFromEntries(context.sessionManager?.getBranch?.() ?? []);
   };
 
@@ -444,9 +363,8 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     uninstallHaltOnEscape();
     fabricUi.stop();
     suspendToolCapture();
-    capabilityAdvisor.reset();
     proxyContract.reset();
-    refreshAdvisorLedger(context);
+    refreshProxyLedger(context);
     if (!compatibilityWarningShown) {
       compatibilityWarningShown = true;
       const warning = piHostCompatibilityWarning();
@@ -461,12 +379,11 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     if (state.shouldEagerlyActivate(context)) await state.ensure(context);
   });
 
-  // Branch changes move the leaf: ash, emitted echoes, and spent advisory
-  // budget must track it exactly. Rewind removes abandoned-branch residue.
+  // Branch changes move the leaf: emitted echoes and spent reminder budget
+  // must track it exactly. Rewind removes abandoned-branch residue.
   pi.on("session_tree", async (_event, context) => {
-    capabilityAdvisor.reset();
     proxyContract.reset();
-    refreshAdvisorLedger(context);
+    refreshProxyLedger(context);
     // Pi emits session_tree before it clears and rebuilds the transcript:
     // drop card invalidators from abandoned branches so a later display-mode
     // switch only refreshes cards registered by the rebuilt active branch.
@@ -492,8 +409,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   });
 
   pi.on("turn_end", async (event, context) => {
-    // Furnace feedback: did the just-fired advisory lead to captured tool use?
-    capabilityAdvisor.endTurn();
     // Speculation never crosses a turn boundary; registry.endInvocation already
     // dropped entries for completed fabric_exec runs, this catches turns where
     // the program never executed (type errors, aborts).
@@ -745,7 +660,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       ? extensionToolRosterGuidance(capturedTools.list(), new Set(PI_CORE_TOOL_NAMES))
       : undefined;
     // Only turn-stable sections go into the system prompt. Anything derived
-    // from the current prompt (skill references, capability advisory) rides
+    // from the current prompt (skill references) rides
     // the message channel so provider prefix caches never cold-prefill.
     const guidance = [
       fabricExecutionKernelGuidance(effectiveFullCodeMode),
@@ -755,38 +670,21 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       extensionRoster,
       resolvedGuidance.appendText,
     ].filter((section): section is string => Boolean(section)).join("\n\n");
-    // One-shot capability steering: when the prompt's vocabulary matches a
-    // capability source's fingerprint, name the tools once so the model
-    // reaches for extensions.* / mcp.* instead of re-implementing them. Slice
-    // membership already encodes visibility (captured tools only while
-    // hidden; MCP while mcp.advisory is on), so any non-empty index fires.
-    const advisory =
-      captureSnapshot && capabilityAdvisor.hasSources()
-        ? capabilityAdvisor.evaluate(event.prompt, captureSnapshot.advisory)
-        : undefined;
-    // No separate persistence: ash already lives in memory, and the custom
-    // message below is the transcript record a session replay recovers after
-    // a reload.
-    //
-    // Turn-varying content (skill reference guidance, capability advisory) is
-    // delivered here as a persistent message, not appended to the system
-    // prompt. Keeping the system prompt byte-identical across turns is what
-    // lets provider prefix caches (e.g. DeepSeek) stay warm.
-    const turnContent = [skillReferenceGuidance, advisory?.content]
-      .filter((section): section is string => Boolean(section))
-      .join("\n\n");
+    // Turn-varying content (skill reference guidance) is delivered here as a
+    // persistent message, not appended to the system prompt. Keeping the
+    // system prompt byte-identical across turns is what lets provider prefix
+    // caches (e.g. DeepSeek) stay warm.
+    if (!skillReferenceGuidance) return {
+      systemPrompt: `${systemPrompt}\n\n${guidance}`,
+    };
     return {
       systemPrompt: `${systemPrompt}\n\n${guidance}`,
-      ...(turnContent
-        ? {
-            message: {
-              customType: CAPABILITY_ADVISORY_CUSTOM_TYPE,
-              content: turnContent,
-              display: advisory?.display ?? false,
-              details: advisory?.details ?? {},
-            },
-          }
-        : {}),
+      message: {
+        customType: SKILL_REFERENCE_CUSTOM_TYPE,
+        content: skillReferenceGuidance,
+        display: false,
+        details: {},
+      },
     };
   });
 

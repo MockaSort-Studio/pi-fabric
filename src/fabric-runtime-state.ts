@@ -178,18 +178,11 @@ export class FabricRuntimeState {
   #widgetDismissedAt = 0;
   #suppressResidentGuidanceSync = false;
 
-  readonly #onCapturedToolUse: ((entry: CapturedToolEntry) => void) | undefined;
-  readonly #mcpHooks: McpProviderHooks | undefined;
-
   constructor(
     readonly pi: ExtensionAPI,
     readonly capturedTools: CapturedToolCatalog,
-    onCapturedToolUse?: (entry: CapturedToolEntry) => void,
-    mcpHooks?: McpProviderHooks,
     options: FabricRuntimeStateOptions = {},
   ) {
-    this.#onCapturedToolUse = onCapturedToolUse;
-    this.#mcpHooks = mcpHooks;
     this.activity = options.activity ?? new FabricActivityStore();
     this.prewalk = options.prewalk ?? new PrewalkController();
     this.prewalkDrift = options.prewalkDrift ?? new PrewalkDriftTracker();
@@ -314,12 +307,6 @@ export class FabricRuntimeState {
   get registry(): ActionRegistry {
     if (!this.#registry) throw new Error("Pi Fabric has not initialized");
     return this.#registry;
-  }
-
-  // Current MCP descriptor slice (cache-backed when mcp.cache is enabled), for
-  // the capability advisory. Empty until the provider hydrates.
-  mcpSlice(): FabricActionDescriptor[] {
-    return this.#mcpProvider?.sliceDescriptors() ?? [];
   }
 
   get components(): FabricComponentLoader {
@@ -478,7 +465,7 @@ export class FabricRuntimeState {
     // namespace in enforce mode.
     const capturedToolsProvider =
       effectiveFullCodeMode && (this.#config.capture.enabled || enforceSchema)
-        ? new CapturedToolsProvider(this.capturedTools, this.#onCapturedToolUse)
+        ? new CapturedToolsProvider(this.capturedTools)
         : undefined;
     if (effectiveFullCodeMode) {
       await installBuiltin(createProviderComponent({
@@ -508,11 +495,9 @@ export class FabricRuntimeState {
             }
           : {}),
         hooks: {
-          onSliceChanged: (descriptors) => {
+          onSliceChanged: () => {
             this.#registry?.notifyCatalogChanged("mcp");
-            this.#mcpHooks?.onSliceChanged?.(descriptors);
           },
-          onToolUse: (server) => this.#mcpHooks?.onToolUse?.(server),
         },
       }),
       mounted: (provider) => { this.#mcpProvider = provider; },

@@ -5,11 +5,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { describe, expect, it, vi } from "vitest";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { FabricState } from "../src/fabric-state.js";
-import {
-  MCP_DESCRIPTOR_CACHE_VERSION,
-  McpDescriptorCacheStore,
-  statConfigLayers,
-} from "../src/providers/mcp-descriptor-cache.js";
 import type { FabricComponentDefinition, FabricProvider } from "../src/protocol.js";
 
 const contextAt = (cwd: string, sessionId = "session-1"): ExtensionContext => ({
@@ -62,31 +57,9 @@ const runtimeHarness = () => {
   };
 };
 
-const writeMcpCache = async (cwd: string, configPath: string): Promise<void> => {
-  const store = new McpDescriptorCacheStore(path.join(cwd, ".pi", "fabric", "mcp-cache.json"));
-  await store.save({
-    version: MCP_DESCRIPTOR_CACHE_VERSION,
-    layers: await statConfigLayers(cwd, configPath),
-    updatedAt: new Date().toISOString(),
-    servers: {
-      cached: {
-        definitionHash: "definition",
-        transport: "stdio",
-        description: null,
-        fetchedAt: new Date().toISOString(),
-        stale: false,
-        tools: [{ name: "echo", description: "Echo cached input", inputSchema: { type: "object" } }],
-      },
-      invalid: { tools: [{ name: "ignored" }] } as never,
-    },
-  });
-};
-
 const createState = (loader: never): FabricState => new FabricState(
   {} as ExtensionAPI,
   new CapturedToolCatalog(),
-  undefined,
-  undefined,
   { runtimeLoader: loader },
 );
 
@@ -110,59 +83,6 @@ describe("FabricState lazy bootstrap", () => {
     expect(state.config.schema.mode).toBe("audit");
     expect(harness.loader).not.toHaveBeenCalled();
     expect(harness.instances).toHaveLength(0);
-  });
-
-  it("serves a same-layer MCP advisory cache before loading the runtime", async () => {
-    const cwd = project();
-    const configPath = path.join(cwd, "mcporter.json");
-    fs.writeFileSync(path.join(cwd, ".pi", "fabric.json"), JSON.stringify({
-      mcp: { enabled: true, configPath, cache: { enabled: true }, advisory: true },
-      prewalk: { alwaysRearm: false },
-      mesh: { enabled: false },
-    }));
-    fs.writeFileSync(configPath, JSON.stringify({ mcpServers: {} }));
-    await writeMcpCache(cwd, configPath);
-    const harness = runtimeHarness();
-    const state = createState(harness.loader);
-    vi.stubEnv("PI_FABRIC_PROJECT_ROOT", cwd);
-
-    await state.bootstrap(contextAt(cwd));
-
-    expect(state.mcpSlice()).toEqual([
-      expect.objectContaining({
-        name: "cached.echo",
-        namespace: "cached",
-        description: "Echo cached input",
-        risk: "network",
-      }),
-    ]);
-    expect(harness.loader).not.toHaveBeenCalled();
-    expect(harness.instances).toHaveLength(0);
-    await state.shutdown();
-    expect(state.mcpSlice()).toEqual([]);
-    vi.unstubAllEnvs();
-  });
-
-  it("rejects the bootstrap MCP cache when config layers change", async () => {
-    const cwd = project();
-    const configPath = path.join(cwd, "mcporter.json");
-    fs.writeFileSync(path.join(cwd, ".pi", "fabric.json"), JSON.stringify({
-      mcp: { enabled: true, configPath, cache: { enabled: true }, advisory: true },
-      prewalk: { alwaysRearm: false },
-      mesh: { enabled: false },
-    }));
-    fs.writeFileSync(configPath, JSON.stringify({ mcpServers: {} }));
-    await writeMcpCache(cwd, configPath);
-    fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { changed: {} } }));
-    const harness = runtimeHarness();
-    const state = createState(harness.loader);
-    vi.stubEnv("PI_FABRIC_PROJECT_ROOT", cwd);
-
-    await state.bootstrap(contextAt(cwd));
-
-    expect(state.mcpSlice()).toEqual([]);
-    expect(harness.loader).not.toHaveBeenCalled();
-    vi.unstubAllEnvs();
   });
 
   it("uses one activation for concurrent callers and never reloads after activation", async () => {
