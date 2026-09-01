@@ -24,7 +24,10 @@ import {
   type ResidentHostOwner,
 } from "./protocol.js";
 
-const STARTUP_TIMEOUT_MS = 10_000;
+// One-time cost per resident root: cold-starting the bundled pi binary plus
+// extension loading can exceed 10s on slow runners (e.g. CI Windows), so give
+// startup a generous budget. Idle exit still reclaims the processes.
+const STARTUP_TIMEOUT_MS = 30_000;
 const COMMAND_TIMEOUT_MS = 30_000;
 const STATUS_POLL_MS = 100;
 const AGENT_ID_PATTERN = /^[a-f0-9]{32}$/;

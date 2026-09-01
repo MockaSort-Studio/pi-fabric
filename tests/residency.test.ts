@@ -230,7 +230,7 @@ describe("durable cwd validation", () => {
 });
 
 describe.skipIf(!hasResidentHost)("durable participant residency", () => {
-  it("keeps a durable actor responsive after its originating Main closes", { timeout: 20_000 }, async () => {
+  it("keeps a durable actor responsive after its originating Main closes", { timeout: 45_000 }, async () => {
     const state = await rootHarness("resident-actor");
     const agents = new AgentManager(repo, state.config.agents, {
       workerPath: fakeWorker,
@@ -374,7 +374,7 @@ describe.skipIf(!hasResidentHost)("durable participant residency", () => {
     await reconnect.close();
   });
 
-  it("queues passive actor delivery until Main resumes", { timeout: 20_000 }, async () => {
+  it("queues passive actor delivery until Main resumes", { timeout: 45_000 }, async () => {
     const state = await rootHarness("resident-delivery");
     const agents = new AgentManager(repo, state.config.agents, {
       workerPath: fakeWorker,
@@ -461,7 +461,7 @@ describe.skipIf(!hasResidentHost)("durable participant residency", () => {
     await state.participants.close();
   });
 
-  it("creates multiple durable actors through nested recruitment", { timeout: 20_000 }, async () => {
+  it("creates multiple durable actors through nested recruitment", { timeout: 45_000 }, async () => {
     const state = await rootHarness("resident-recruitment");
     const client = new ResidencyClient({
       config: state.config,
@@ -506,7 +506,7 @@ describe.skipIf(!hasResidentHost)("durable participant residency", () => {
     await state.participants.close();
   });
 
-  it("applies live model guidance snapshots to durable participants", { timeout: 20_000 }, async () => {
+  it("applies live model guidance snapshots to durable participants", { timeout: 45_000 }, async () => {
     const state = await rootHarness("resident-guidance");
     const client = new ResidencyClient({
       config: state.config,
@@ -556,7 +556,7 @@ describe.skipIf(!hasResidentHost)("durable participant residency", () => {
     await state.participants.close();
   });
 
-  it("completes and cleans a durable agent after its originating Main closes", { timeout: 20_000 }, async () => {
+  it("completes and cleans a durable agent after its originating Main closes", { timeout: 45_000 }, async () => {
     const state = await rootHarness("resident-agent");
     const client = new ResidencyClient({
       config: state.config,
@@ -604,7 +604,7 @@ describe.skipIf(!hasResidentHost)("durable participant residency", () => {
     await reconnect.close();
   });
 
-  it("rejects tampered durable worktree metadata before destructive cleanup", { timeout: 20_000 }, async () => {
+  it("rejects tampered durable worktree metadata before destructive cleanup", { timeout: 45_000 }, async () => {
     const state = await rootHarness("resident-worktree-tamper");
     const source = path.join(state.root, "source");
     const unrelated = path.join(state.root, "unrelated");
@@ -691,7 +691,7 @@ describe.skipIf(!hasResidentHost)("durable participant residency", () => {
     }
   });
 
-  it("forwards and reports a canonical durable agent cwd", { timeout: 20_000 }, async () => {
+  it("forwards and reports a canonical durable agent cwd", { timeout: 45_000 }, async () => {
     const state = await rootHarness("resident-agent-cwd");
     state.config.cwd = state.root;
     state.config.projectRoot = state.root;

@@ -1,10 +1,24 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import crossSpawn from "cross-spawn";
 import { observeResidentOwner } from "./launcher-owner.js";
+
+// Same pattern as worker.ts: on Windows, `pi` resolves to a node_modules/.bin
+// .cmd shim that a raw spawn cannot execute, and a .js pi entry must run under
+// a real runtime. The launcher itself is always started through a resolved
+// generic runtime, so process.execPath is node or bun here.
+const NODE_SCRIPT_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".ts", ".cts", ".mts"]);
+const spawnPi = (
+  command: string,
+  args: readonly string[],
+  options: Parameters<typeof crossSpawn>[2],
+): ReturnType<typeof crossSpawn> =>
+  NODE_SCRIPT_EXTENSIONS.has(path.extname(command).toLowerCase())
+    ? crossSpawn(process.execPath, [command, ...args], options)
+    : crossSpawn(command, [...args], options);
 
 const parseConfigPath = (argv: readonly string[]): string => {
   const index = argv.indexOf("--config");
@@ -53,7 +67,7 @@ try {
   const config = readConfig(configPath);
   const entry = fileURLToPath(new URL("./pi-entry.js", import.meta.url));
   // Pi loads extension peers through its virtual module runtime; raw Node cannot.
-  const child = spawn(config.piBinary, [
+  const child = spawnPi(config.piBinary, [
     "--mode", "rpc",
     "--no-session",
     "--no-tools",
