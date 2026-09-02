@@ -293,7 +293,7 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   },
   {
     name: "stop",
-    description: "Stop a local or remotely owned agent or actor that advertises the stop capability",
+    description: "Stop a local or remotely owned agent or actor. Stopping retains its registry entry, mailbox, and session state; use remove for permanent actor deletion.",
     inputSchema: idSchema,
     risk: "agent",
   },
@@ -613,7 +613,7 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
   {
     name: "remove",
     description:
-      'Stop and remove a persistent actor. Default scope "project" removes a live project actor; scope "global" removes a project-independent template from the global registry.',
+      'Permanently delete a persistent actor: stop it, then remove its live registry entry, bindings, mailbox/session state, and mesh presence. Default scope "project" deletes a live project actor; scope "global" deletes a project-independent template.',
     inputSchema: {
       type: "object",
       properties: {
