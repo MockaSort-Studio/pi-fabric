@@ -1,3 +1,6 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { extensionToolRosterGuidance } from "../src/core/system-guidance.js";
 
@@ -33,6 +36,35 @@ describe("extensionToolRosterGuidance", () => {
     expect(roster).toContain("- pi-somewhere: from_entry");
     expect(roster).toContain("- cool.js: from_file");
     expect(roster).toContain("- extensions: bare");
+  });
+
+  it("names local package tools by the nearest package.json manifest", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fabric-roster-"));
+    try {
+      const pkgDir = path.join(root, "pi-manifest-ext");
+      mkdirSync(path.join(pkgDir, "dist"), { recursive: true });
+      writeFileSync(path.join(pkgDir, "package.json"), JSON.stringify({ name: "pi-manifest-ext" }));
+      const roster = extensionToolRosterGuidance(
+        [
+          entry("tool_one", {
+            source: "../../somewhere/relative/pi-manifest-ext",
+            path: path.join(pkgDir, "dist", "index.js"),
+          }),
+        ],
+        new Set(),
+      );
+      expect(roster).toContain("- pi-manifest-ext: tool_one");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("strips npm: prefixes without touching the filesystem", () => {
+    const roster = extensionToolRosterGuidance(
+      [entry("tool_two", { source: "npm:@scope/pi-npm-ext", path: "/nonexistent/nowhere/index.js" })],
+      new Set(),
+    );
+    expect(roster).toContain("- @scope/pi-npm-ext: tool_two");
   });
 
   it("excludes captured core overrides and empty catalogs", () => {

@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import * as path from "node:path";
+
 export const fabricExecutionKernelGuidance = (fullCodeMode: boolean): string =>
   [
     fullCodeMode
@@ -20,6 +23,35 @@ export interface ExtensionRosterToolSource {
   sourceInfo?: { source?: string; path?: string };
 }
 
+// Namespace labels come from the extension package's own identity: the
+// package.json `name` nearest the tool's source file, mirroring how pi names
+// npm-installed packages. Raw `source` strings are configured specifiers that
+// are often full relative paths, so they are only used when no manifest exists.
+const manifestNameCache = new Map<string, string | undefined>();
+
+const packageNameFromManifest = (startPath: string | undefined): string | undefined => {
+  if (!startPath) return undefined;
+  let directory = path.dirname(path.resolve(startPath));
+  while (true) {
+    if (manifestNameCache.has(directory)) return manifestNameCache.get(directory);
+    const manifestPath = path.join(directory, "package.json");
+    let name: string | undefined;
+    if (existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: unknown };
+        if (typeof manifest.name === "string" && manifest.name.trim()) name = manifest.name.trim();
+      } catch {
+        // Unreadable or invalid manifest; keep walking upward.
+      }
+    }
+    manifestNameCache.set(directory, name);
+    if (name) return name;
+    const parent = path.dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
+  }
+};
+
 // In full code mode the model sees only fabric_exec in its tool list, so
 // registered extension tools are invisible unless named up front (#69). The
 // roster stays names-only: descriptions and schemas are on demand through the
@@ -34,8 +66,13 @@ export const extensionToolRosterGuidance = (
   if (extensionTools.length === 0) return undefined;
   const namespaceLabel = (tool: ExtensionRosterToolSource): string => {
     const source = tool.sourceInfo?.source?.trim();
-    if (source) return source;
-    const parts = (tool.sourceInfo?.path ?? "").split(/[\\/]/).filter(Boolean);
+    if (source?.startsWith("npm:")) return source.slice("npm:".length) || source;
+    const manifestName =
+      packageNameFromManifest(tool.sourceInfo?.path) ??
+      packageNameFromManifest(source && /[\\/]/.test(source) ? source : undefined);
+    if (manifestName) return manifestName;
+    if (source && !/[\\/]/.test(source)) return source;
+    const parts = (tool.sourceInfo?.path ?? source ?? "").split(/[\\/]/).filter(Boolean);
     const base = parts.at(-1)?.trim() ?? "";
     // Entry files like index.js name the package directory, not the source.
     if (/^index\./i.test(base)) return parts.at(-2)?.trim() || base;
