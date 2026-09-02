@@ -171,4 +171,11 @@ describe("typeErrorRecoveryHint", () => {
       }],
     )).toContain("belongs to `pi.bash`");
   });
+
+  it("guides unquoted pi.read paths toward quoted strings", () => {
+    expect(typeErrorRecoveryHint(
+      "return await pi.read(/tmp/x);",
+      [{ line: 1, column: 20, message: "Invalid character." }],
+    )).toContain("quote filesystem paths");
+  });
 });

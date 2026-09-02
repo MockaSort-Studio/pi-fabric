@@ -1,4 +1,5 @@
 import { normalizeRunDisplay } from "./run-display.js";
+import { repairFabricGuestCode } from "./runtime/guest-code-repair.js";
 
 const OPTIONAL_FABRIC_EXEC_KEYS = [
   "payloads",
@@ -62,7 +63,7 @@ export const resolveFabricExecPayloads = (params: {
   normalizeFabricExecStrings(params.payloads) ?? normalizeFabricExecStrings(params.strings);
 
 export const prepareFabricExecArguments = (input: unknown): unknown => {
-  if (typeof input === "string") return { code: input };
+  if (typeof input === "string") return { code: repairFabricGuestCode(input) };
   if (!isRecord(input)) return input;
 
   let prepared = input;
@@ -73,6 +74,10 @@ export const prepareFabricExecArguments = (input: unknown): unknown => {
 
   if (Array.isArray(prepared.code) && prepared.code.every((line) => typeof line === "string")) {
     writable().code = prepared.code.join("\n");
+  }
+  if (typeof prepared.code === "string") {
+    const repaired = repairFabricGuestCode(prepared.code);
+    if (repaired !== prepared.code) writable().code = repaired;
   }
 
   for (const key of OPTIONAL_FABRIC_EXEC_KEYS) {

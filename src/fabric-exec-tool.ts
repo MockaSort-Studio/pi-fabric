@@ -29,6 +29,7 @@ import {
   prepareFabricExecArguments,
   resolveFabricExecPayloads,
 } from "./fabric-exec-arguments.js";
+import { repairFabricGuestCode } from "./runtime/guest-code-repair.js";
 import { typeErrorRecoveryHint } from "./type-error-guidance.js";
 import { normalizeRunDisplay } from "./run-display.js";
 import type { PendingFabricHandoff } from "./prewalk/handoff.js";
@@ -789,9 +790,10 @@ export const createFabricExecTool = (
     async execute(toolCallId, params, signal, onUpdate, context) {
       await state.ensure(context);
       // prepareArguments joins code arrays / remaps `strings` → `payloads`
-      // before Pi validates this call; keep the same coercion here for
-      // direct internal invocations of the definition.
-      const code = Array.isArray(params.code) ? params.code.join("\n") : params.code;
+      // and quotes unquoted pi path arguments before Pi validates this call;
+      // keep the same coercion here for direct internal invocations.
+      const joined = Array.isArray(params.code) ? params.code.join("\n") : params.code;
+      const code = repairFabricGuestCode(joined);
       const runDisplay = normalizeRunDisplay(params.display);
       const strings = resolveFabricExecPayloads(params);
       const result = await state.execution.execute({

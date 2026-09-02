@@ -44,6 +44,7 @@ import type {
   FabricSandboxTerminationReason,
 } from "./runtime/quickjs-runtime.js";
 import type { NodeProcessRuntime } from "./runtime/node-process-runtime.js";
+import { repairFabricGuestCode } from "./runtime/guest-code-repair.js";
 import type { FabricTypeError } from "./runtime/type-checker.js";
 
 let runtimeDependencies:
@@ -207,8 +208,9 @@ export class FabricExecutionService {
             })) ?? [],
           )
         : undefined;
+    const code = repairFabricGuestCode(options.code);
     const checked = dependencies.typeCheckFabricCode(
-      options.code,
+      code,
       dependencies.guestTypeDeclarations(effectiveFullCodeMode, {
         excludeGlobals: [...unavailable.keys()],
         dynamic: dependencies.buildDynamicGuestDeclarations(guestTypeSources),
@@ -377,7 +379,7 @@ export class FabricExecutionService {
         ? Math.max(1, Math.floor(options.requestedTimeoutMs))
         : 0;
     const effectiveTimeoutMs = Math.max(
-      codeUsesOrchestration(options.code)
+      codeUsesOrchestration(code)
         ? orchestrationTimeoutMs
         : this.config.executor.timeoutMs,
       Math.min(requestedTimeoutMs, this.config.executor.maxTimeoutMs),
@@ -519,7 +521,7 @@ export class FabricExecutionService {
         this.#runtimeKind = runtimeKind;
       }
       sandboxResult = await this.#runtime.execute(
-        options.code,
+        code,
         async (ref, args, runtimeSignal) => {
           const callContext = { ...baseContext, signal: runtimeSignal };
           switch (ref) {
