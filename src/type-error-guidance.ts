@@ -14,8 +14,10 @@ const PI_CALL_PATTERN = /\bpi\.(\w+)\s*\(/g;
 
 // fabric_exec envelope arguments that are commonly misplaced inside `code`.
 const FABRIC_EXEC_ARGUMENT_NOTES: Readonly<Record<string, string>> = {
+  payloads:
+    "named `payloads` belong in the outer `fabric_exec` arguments, then become available inside `code` as `π.key`.",
   strings:
-    "named `strings` belong in the outer `fabric_exec` arguments, then become available inside `code` as `π.key`.",
+    "`strings` is an alias for outer `payloads`; named values belong in the outer `fabric_exec` arguments, then become available inside `code` as `π.key`.",
   tokenBudget:
     "budget arguments (`tokenBudget`, `agentBudget`) belong to the outer `fabric_exec` call, not inside `code`.",
   agentBudget:
@@ -128,11 +130,11 @@ export const typeErrorRecoveryHint = (
     return "Recovery hint: match `Promise.all` destructuring one binding per promise; remove the extra binding or add the missing call.";
   }
   if (hasLiteralPayloadInterpolation(code, errors)) {
-    return "Recovery hint: a `${...}` expression in an edit/write payload is being evaluated by the Fabric TypeScript program. Declare it if intentional; for literal file content, move the payload to top-level `strings` and reference `π.key`.";
+    return "Recovery hint: a `${...}` expression in an edit/write payload is being evaluated by the Fabric TypeScript program. Declare it if intentional; for literal file content, move the payload to top-level `payloads` and reference `π.key`.";
   }
   if (!PAYLOAD_CALL_PATTERN.test(code)) return undefined;
   if (!errors.some((error) => SYNTAX_ERROR_PATTERN.test(error.message))) {
     return undefined;
   }
-  return "Recovery hint: if embedded edit/write payload text caused the syntax error, pass it through top-level `strings` and reference `π.key` instead of escaping it inside `code`.";
+  return "Recovery hint: if embedded edit/write payload text caused the syntax error, pass it through top-level `payloads` and reference `π.key` instead of escaping it inside `code`.";
 };

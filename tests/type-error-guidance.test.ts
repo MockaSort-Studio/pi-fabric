@@ -42,11 +42,11 @@ describe("typeErrorRecoveryHint", () => {
     }
   });
 
-  it("guides malformed edit payloads toward named strings", () => {
+  it("guides malformed edit payloads toward named payloads", () => {
     expect(typeErrorRecoveryHint(
       'await pi.edit({ path: "x", oldText: "a", newText: "broken });',
       [{ line: 1, column: 55, message: "Unterminated string literal." }],
-    )).toContain("top-level `strings`");
+    )).toContain("top-level `payloads`");
   });
 
   it("routes unknown properties to the core tool that owns them", () => {

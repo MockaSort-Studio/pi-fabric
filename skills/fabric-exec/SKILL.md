@@ -50,7 +50,7 @@ const window = await pi.read({ path: "src/engine.ts", offset: 120, limit: 80 });
 
 An unbounded `pi.read('/x')` returns at most 2000 lines or 50KB (whichever is hit first); truncated output ends with a `[Showing lines a-b of N. Use offset=n to continue.]` notice — continue with `offset` only when you truly need the full file. Reserve whole-file reads for small files you will use in full (configs, tests or files you are about to edit, sources under a few hundred lines). Batching several large whole-file reads into one program inflates the single tool result, and that enlarged result stays in every later turn's context.
 
-Keep multiline or syntax-heavy payloads out of `code`: pass them through `strings` and read `π.key` (for example, `await pi.write("path", π.content)`). TypeScript still parses template-literal contents, including shell heredocs.
+Keep multiline or syntax-heavy payloads out of `code`: pass them through `payloads` and read `π.key` (for example, `await pi.write("path", π.content)`). TypeScript still parses template-literal contents, including shell heredocs. The legacy `strings` argument is accepted as an alias.
 
 ## First-class provider calls
 Use direct proxies when the action is known. Parallelize only independent calls: provider effect footprints record conflicts for overlapping or unknown non-commutative resources, and Fabric does not silently reorder them. No-argument actions such as `schema.status()`, `state.get()`, and `compact.status()` take no options object. Provider calls still cross the same registry validation, approval, audit, timeout, and cancellation path as generic calls.

@@ -62,7 +62,7 @@ describe("prewalk prompt isolation", () => {
     expect(guidelines).toContain("`timeout` in seconds once");
     expect(guidelines).toContain("batch only independent, bounded work");
     expect(guidelines).toContain("not raw logs or unused intermediate results");
-    expect(guidelines).toContain("pass payloads through top-level `strings`");
+    expect(guidelines).toContain("pass named payloads through top-level `payloads`");
     expect(guidelines).toContain("prefer `pi.edit`/`pi.write`");
     expect(guidelines).toContain("`pi.bash`: no stdin");
     expect(guidelines).toContain("`display.name` and objective `display.description`");

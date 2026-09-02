@@ -5,6 +5,8 @@ describe("prepareFabricExecArguments", () => {
   it("keeps canonical arguments unchanged", () => {
     const input = { code: "return 1;", tokenBudget: 10 };
     expect(prepareFabricExecArguments(input)).toBe(input);
+    const withPayloads = { code: "return 1;", payloads: { body: "ok" } };
+    expect(prepareFabricExecArguments(withPayloads)).toBe(withPayloads);
   });
 
   it("wraps a root code string before schema validation", () => {
@@ -22,6 +24,7 @@ describe("prepareFabricExecArguments", () => {
   it("omits null optional fields but preserves a null required code", () => {
     expect(prepareFabricExecArguments({
       code: null,
+      payloads: null,
       strings: null,
       resultFormat: null,
       tokenBudget: null,
@@ -41,6 +44,66 @@ describe("prepareFabricExecArguments", () => {
     })).toEqual({
       code: "return 1;",
       display: { name: "Probe", description: "check" },
+    });
+  });
+
+  it("remaps the strings alias onto payloads", () => {
+    expect(prepareFabricExecArguments({
+      code: "return π.body;",
+      strings: { body: "ok" },
+    })).toEqual({
+      code: "return π.body;",
+      payloads: { body: "ok" },
+    });
+    expect(prepareFabricExecArguments({
+      code: "return π.body;",
+      payloads: { body: "canonical" },
+      strings: { body: "alias" },
+    })).toEqual({
+      code: "return π.body;",
+      payloads: { body: "canonical" },
+    });
+  });
+
+  it("parses JSON-object payload maps before schema validation", () => {
+    const payload = { lifecycle: "#!/bin/sh\n# inventory" };
+    expect(prepareFabricExecArguments({
+      code: "return π.lifecycle;",
+      payloads: JSON.stringify(payload),
+    })).toEqual({
+      code: "return π.lifecycle;",
+      payloads: payload,
+    });
+    expect(prepareFabricExecArguments({
+      code: "return π.body;",
+      strings: JSON.stringify(JSON.stringify({ body: "ok" })),
+    })).toEqual({
+      code: "return π.body;",
+      payloads: { body: "ok" },
+    });
+  });
+
+  it("leaves malformed payload maps invalid on the canonical key", () => {
+    expect(prepareFabricExecArguments({
+      code: "return 1;",
+      strings: "not-json",
+    })).toEqual({
+      code: "return 1;",
+      payloads: "not-json",
+    });
+    expect(prepareFabricExecArguments({
+      code: "return 1;",
+      payloads: '["lifecycle"]',
+    })).toEqual({
+      code: "return 1;",
+      payloads: '["lifecycle"]',
+    });
+    expect(prepareFabricExecArguments({
+      code: "return 1;",
+      strings: '{"n":1}',
+    })).toEqual({
+      code: "return 1;",
+      payloads: '{"n":1}',
     });
   });
 });

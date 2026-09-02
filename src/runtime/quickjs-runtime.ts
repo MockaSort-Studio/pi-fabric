@@ -46,7 +46,7 @@ let quickJsModulePromise: Promise<QuickJsModule> | undefined;
 // Static π.<identifier> references (bracket access like π[k] is not provable).
 const PI_REF_PATTERN = /(?:^|[^\w$.])π\.([A-Za-z_$][\w$]*)/g;
 
-// Models routinely reference π.<key> without providing the strings parameter,
+// Models routinely reference π.<key> without providing the payloads parameter,
 // and the runtime error only lands after a full execution round trip (#68).
 // Reject up front when a referenced key is statically provable missing, before
 // QuickJS is even loaded.
@@ -424,10 +424,10 @@ globalThis["π"] = new Proxy(__piStrings, {
     }
     const provided = Object.keys(target);
     throw new Error(
-      "π." + name + " is not defined. π only exposes keys from the fabric_exec strings parameter" +
+      "π." + name + " is not defined. π only exposes keys from the fabric_exec payloads parameter" +
       (provided.length ? " (provided: " + provided.join(", ") + ")" : " (none provided)") +
-      ". Pass strings: { " + name + ": '...' } to use π." + name + "." +
-      " For large or quote-heavy content, keep it in top-level strings and reference π." + name + " instead of escaping it inside code."
+      ". Pass payloads: { " + name + ": '...' } to use π." + name + "." +
+      " For large or quote-heavy content, keep it in top-level payloads and reference π." + name + " instead of escaping it inside code."
     );
   },
   ownKeys(target) { return Reflect.ownKeys(target); },
@@ -832,11 +832,11 @@ export class QuickJsRuntime {
         terminationReason: "runtime_error",
         error:
           "Pre-execution check: " + missingKeys.map((key) => "π." + key).join(", ")
-          + (missingKeys.length === 1 ? " is referenced in code but its key is missing from the strings parameter"
-            : " are referenced in code but their keys are missing from the strings parameter")
+          + (missingKeys.length === 1 ? " is referenced in code but its key is missing from the payloads parameter"
+            : " are referenced in code but their keys are missing from the payloads parameter")
           + (provided.length ? " (provided: " + provided.join(", ") + ")" : " (none provided)")
-          + ". Add strings: { " + missingKeys.join(": '...', ") + ": '...' } to the fabric_exec arguments, then reference the value as π.<key>."
-          + " For large or quote-heavy content, keep it in top-level strings and reference π.<key> instead of escaping it inside code.",
+          + ". Add payloads: { " + missingKeys.join(": '...', ") + ": '...' } to the fabric_exec arguments, then reference the value as π.<key>."
+          + " For large or quote-heavy content, keep it in top-level payloads and reference π.<key> instead of escaping it inside code.",
       };
     }
     if (

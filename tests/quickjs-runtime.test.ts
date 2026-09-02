@@ -519,7 +519,7 @@ await Promise.all([
     expect(failed.terminationReason).toBe("runtime_error");
     expect(failed.error).toContain("Pre-execution check: π.body is referenced");
     expect(failed.error).toContain("(provided: other)");
-    expect(failed.error).toContain("Add strings: { body: '...' }");
+    expect(failed.error).toContain("Add payloads: { body: '...' }");
 
     const none = await new QuickJsRuntime().execute(
       'return π.summary;',

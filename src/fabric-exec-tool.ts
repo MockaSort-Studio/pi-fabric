@@ -25,7 +25,10 @@ import {
 import { DEFAULT_FABRIC_CONFIG } from "./config.js";
 import type { FabricState } from "./fabric-state.js";
 import { formatFailureProgress } from "./failure-progress.js";
-import { prepareFabricExecArguments } from "./fabric-exec-arguments.js";
+import {
+  prepareFabricExecArguments,
+  resolveFabricExecPayloads,
+} from "./fabric-exec-arguments.js";
 import { typeErrorRecoveryHint } from "./type-error-guidance.js";
 import { normalizeRunDisplay } from "./run-display.js";
 import type { PendingFabricHandoff } from "./prewalk/handoff.js";
@@ -141,7 +144,7 @@ export const createFabricExecTool = (
       "Search before reading: use `pi.grep`/`pi.find` to locate relevant lines, then `pi.read({path, offset, limit})` that range. Escape regex metacharacters, or use `literal:true` for exact punctuated text. Keep fan-out search limits small and widen only on misses. An unbounded `pi.read` returns at most 2000 lines or 50KB and, when truncated, ends with a `Use offset=…` continuation notice; reserve whole-file reads for small files you will use in full.",
       "For coding tasks, keep an acceptance ledger: turn the request into concrete checks, trace the relevant execution path before editing, implement end to end, then run targeted tests and direct behavioral probes. Mechanically confirm requested public symbols, registrations, and configuration entries. Use the smallest checks that cover the ledger, escalating only for failures or cross-cutting risk; inspect failures and iterate instead of rerunning unchanged passing checks. A build alone is not completion.",
       "Amortize round trips without inflating context: batch only independent, bounded work. Keep search→read and edit→verify sequential when an output determines the next action. Use `settle:true` for tests or probes whose nonzero result is evidence rather than an exceptional stop; for a known long suite, set `pi.bash` `timeout` in seconds once instead of retrying a timed-out call. Filter or summarize noisy command output inside the program and return decisions, failures, and evidence—not raw logs or unused intermediate results.",
-      "For multiline edits/writes, pass payloads through top-level `strings` and use `π.key`; prefer `pi.edit`/`pi.write`. `pi.bash`: no stdin.",
+      "For multiline edits/writes, pass named payloads through top-level `payloads` and use `π.key`; prefer `pi.edit`/`pi.write`. `pi.bash`: no stdin.",
       "Use `display.name` and objective `display.description`; Fabric pairs them with verified outcomes in deterministic compaction.",
     ],
     // The model-facing schema is intentionally flat: one large `code` string
@@ -155,15 +158,19 @@ export const createFabricExecTool = (
     // display also accepts a bare (or JSON-object) string, silently repaired
     // to { name } via normalizeRunDisplay: flash-tier models cold-start with
     // that near-miss, and repairing beats a zero-work rejection round trip.
+    // payloads is the remaining nested map (legacy alias: strings). The old
+    // name collides with the JSON string type, so models stringify it;
+    // prepareArguments remaps `strings` and parses a JSON-object string
+    // back to Record<string, string> before Pi validates.
     parameters: Type.Object({
       code: Type.String({
         description:
           "TypeScript function body. Top-level await and return are supported. Globals include `tools`, `mcp`, `memory`, `state`, `schema`, `compact`, `agents`, `mesh`, `print`, and `π`; full-code mode adds `pi` and `extensions`. See session guidance / `fabric-exec` skill for exact signatures.",
       }),
-      strings: Type.Optional(
+      payloads: Type.Optional(
         Type.Record(Type.String(), Type.String(), {
           description:
-            "Named strings exposed as π.key, useful for content that is awkward to quote",
+            "Named payloads exposed as π.key, useful for content that is awkward to quote inside code. Prefer an object of string values; a JSON-object string is parsed.",
         }),
       ),
       resultFormat: Type.Optional(Type.Union(RESULT_FORMATS.map((value) => Type.Literal(value)))),
@@ -242,7 +249,7 @@ export const createFabricExecTool = (
         : renderFabricWriteArgumentPreview(
             {
               bindings: rendererState.fabricWriteBindings ?? [],
-              strings: params.strings,
+              strings: resolveFabricExecPayloads(params),
               expanded: context.expanded,
               cwd: context.cwd,
               settings: codePreviewSettings,
@@ -781,13 +788,15 @@ export const createFabricExecTool = (
     },
     async execute(toolCallId, params, signal, onUpdate, context) {
       await state.ensure(context);
-      // prepareArguments joins code arrays before Pi validates this call; keep
-      // the same coercion here for direct internal invocations of the definition.
+      // prepareArguments joins code arrays / remaps `strings` → `payloads`
+      // before Pi validates this call; keep the same coercion here for
+      // direct internal invocations of the definition.
       const code = Array.isArray(params.code) ? params.code.join("\n") : params.code;
       const runDisplay = normalizeRunDisplay(params.display);
+      const strings = resolveFabricExecPayloads(params);
       const result = await state.execution.execute({
         code,
-        ...(params.strings ? { strings: params.strings } : {}),
+        ...(strings ? { strings } : {}),
         signal,
         parentToolCallId: toolCallId,
         context,
