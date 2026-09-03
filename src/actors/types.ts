@@ -66,6 +66,17 @@ export const isFabricActorHostEvent = (value: unknown): value is FabricActorHost
 export type FabricActorDelivery = "mailbox" | "steer" | "followUp" | "nextTurn";
 export type FabricActorResponseMode = "text" | "directive";
 export type FabricActorStatus = "idle" | "queued" | "running" | "stopped";
+
+/** A persisted actor-owned interval that emits ordinary mesh events. */
+interface FabricActorScheduleRequest {
+  topic: string;
+  everyMs: number;
+}
+
+export interface FabricActorSchedule extends FabricActorScheduleRequest {
+  nextDueAt: number;
+  sequence: number;
+}
 export type FabricActorBindingScope = "session" | "project";
 
 export interface FabricActorRunBinding {
@@ -138,6 +149,8 @@ export interface FabricActorRequest {
   /** Asynchronous observations of session-bound Pi events plus synthetic tool_error. */
   events?: FabricActorHostEvent[];
   topics?: string[];
+  /** Emits periodic mesh ticks on a topic this actor subscribes to. Durable actors retain it across host transfer. */
+  schedule?: FabricActorScheduleRequest;
   /** Defaults to mailbox. steer/followUp require an explicit triggerTurn choice. */
   delivery?: FabricActorDelivery;
   responseMode?: FabricActorResponseMode;
@@ -176,6 +189,7 @@ export interface FabricActorInfo {
   runner: FabricAgentRunner;
   events: FabricActorHostEvent[];
   topics: string[];
+  schedule?: FabricActorSchedule;
   delivery: FabricActorDelivery;
   responseMode: FabricActorResponseMode;
   triggerTurn: boolean;

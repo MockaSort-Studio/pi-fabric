@@ -7,5 +7,7 @@ describe("actor lifecycle action contracts", () => {
   it("distinguishes retained stop from permanent remove", () => {
     expect(action("stop")?.description).toMatch(/retains.*registry.*mailbox.*session/i);
     expect(action("remove")?.description).toMatch(/permanently delete.*registry.*bindings.*mailbox.*session/i);
+    const inputSchema = action("create")?.inputSchema as { properties?: Record<string, unknown> };
+    expect(inputSchema.properties?.schedule).toMatchObject({ required: ["topic", "everyMs"] });
   });
 });

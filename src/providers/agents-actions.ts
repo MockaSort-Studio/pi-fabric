@@ -328,6 +328,16 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
           },
         },
         topics: { type: "array", items: { type: "string" } },
+        schedule: {
+          type: "object",
+          description: "Persisted actor-owned interval that publishes a normal mesh event to one of this actor's subscribed topics.",
+          properties: {
+            topic: { type: "string" },
+            everyMs: { type: "integer", minimum: 1000, maximum: 604800000 },
+          },
+          required: ["topic", "everyMs"],
+          additionalProperties: false,
+        },
         delivery: {
           type: "string",
           enum: ["mailbox", "steer", "followUp", "nextTurn"],

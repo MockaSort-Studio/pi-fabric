@@ -34,6 +34,7 @@ import type {
   FabricActorRequest,
   FabricActorResponseMode,
   FabricActorRunBinding,
+  FabricActorSchedule,
   FabricActorStatus,
   FabricActorValidWhileSource,
 } from "./types.js";
@@ -74,6 +75,7 @@ interface ManagedActor {
   status: FabricActorStatus;
   events: FabricActorHostEvent[];
   topics: string[];
+  schedule?: FabricActorSchedule;
   delivery: FabricActorDelivery;
   responseMode: FabricActorResponseMode;
   triggerTurn: boolean;
@@ -120,6 +122,8 @@ const ACTOR_REGISTRY_LOCK_TIMEOUT_MS = 5_000;
 const ORPHAN_ADOPTION_RETRY_MS = 30_000;
 const ACTOR_REGISTRY_STALE_LOCK_MS = 30_000;
 const RETENTION_SWEEP_INTERVAL_MS = 15 * 60 * 1_000;
+const MIN_ACTOR_SCHEDULE_INTERVAL_MS = 1_000;
+const MAX_ACTOR_SCHEDULE_INTERVAL_MS = 7 * 24 * 60 * 60 * 1_000;
 const RESIDENT_HOST_EVENT_TOPIC = "fabric.actor.host-event";
 const ACTOR_MESSAGE_ENVELOPE_BYTES = 4_096;
 const ACTOR_TRUNCATION_SUFFIX = "\n[actor message truncated]";
@@ -290,6 +294,8 @@ export class ActorManager {
   readonly #listeners = new Set<() => void>();
   #pollTimer: NodeJS.Timeout | undefined;
   #retentionTimer: NodeJS.Timeout | undefined;
+  #scheduleTimer: NodeJS.Timeout | undefined;
+  readonly #scheduleRetries = new Map<string, number>();
   #meshWatcher: FSWatcher | undefined;
   #meshOffset: number;
   #meshPollScheduled = false;
@@ -357,6 +363,7 @@ export class ActorManager {
     this.#retentionTimer.unref();
     this.#meshOffset = this.#readMeshCursor() ?? mesh.latestOffset();
     this.#startMeshMonitor();
+    this.#scheduleActorTicks();
   }
 
   subscribe(listener: () => void): () => void {
@@ -401,6 +408,7 @@ export class ActorManager {
     for (const topic of topics) {
       if (!TOPIC_PATTERN.test(topic)) throw new Error(`Invalid Fabric actor topic: ${topic}`);
     }
+    const schedule = this.#newSchedule(request.schedule, topics);
     const deliveryPolicy = resolveActorDeliveryPolicy(request.delivery, request.triggerTurn);
     const residency = request.residency ?? "session";
     if (residency !== "session" && residency !== "durable") {
@@ -426,6 +434,7 @@ export class ActorManager {
       status: "idle",
       events,
       topics,
+      ...(schedule ? { schedule } : {}),
       delivery: deliveryPolicy.delivery,
       responseMode: request.responseMode ?? "text",
       triggerTurn: deliveryPolicy.triggerTurn,
@@ -452,6 +461,7 @@ export class ActorManager {
     this.#locallyCreated.add(id);
     this.#ownership.set(id, true);
     await this.#publishPresence(actor);
+    this.#scheduleActorTicks();
     await this.mesh
       .publish({
         topic: "fabric.actor.lifecycle",
@@ -1064,6 +1074,7 @@ export class ActorManager {
     const actor = this.#requireOwnedActor(id);
     if (actor.status === "stopped") return this.#publicInfo(actor);
     actor.status = "stopped";
+    this.#scheduleRetries.delete(actor.id);
     actor.updatedAt = Date.now();
     actor.abortController?.abort();
     for (const item of actor.queue.splice(0)) {
@@ -1082,6 +1093,7 @@ export class ActorManager {
         data: this.#publicInfo(actor),
       })
       .catch(() => undefined);
+    this.#scheduleActorTicks();
     return this.#publicInfo(actor);
   }
 
@@ -1146,11 +1158,13 @@ export class ActorManager {
     const retainedRunId = actor.lastRunId;
     await this.#bindings.delete(actor.id);
     this.#actors.delete(actor.id);
+    this.#scheduleRetries.delete(actor.id);
     this.#emitChange();
     fs.rmSync(path.dirname(actor.sessionFile), { recursive: true, force: true });
     await this.#saveActors(new Set([actor.id]));
     await this.mesh.delete({ key: this.#presenceKey(actor.id) }).catch(() => ({ deleted: false }));
     if (retainedRunId) await this.agents.cleanup(retainedRunId).catch(() => ({ cleaned: false }));
+    this.#scheduleActorTicks();
     return { removed: true };
   }
 
@@ -1159,6 +1173,8 @@ export class ActorManager {
     this.#closing = true;
     if (this.#pollTimer) clearInterval(this.#pollTimer);
     this.#pollTimer = undefined;
+    if (this.#scheduleTimer) clearTimeout(this.#scheduleTimer);
+    this.#scheduleTimer = undefined;
     if (this.#retentionTimer) clearInterval(this.#retentionTimer);
     this.#retentionTimer = undefined;
     this.#meshWatcher?.close();
@@ -1666,6 +1682,65 @@ export class ActorManager {
     item.reject?.(new Error(`Fabric actor activation invalidated: ${reason}`));
   }
 
+  #newSchedule(
+    request: FabricActorRequest["schedule"],
+    topics: readonly string[],
+  ): FabricActorSchedule | undefined {
+    if (!request) return undefined;
+    if (!topics.includes(request.topic)) {
+      throw new Error("Fabric actor schedule topic must be one of its subscribed topics");
+    }
+    if (!Number.isSafeInteger(request.everyMs) || request.everyMs < MIN_ACTOR_SCHEDULE_INTERVAL_MS || request.everyMs > MAX_ACTOR_SCHEDULE_INTERVAL_MS) {
+      throw new Error(`Fabric actor schedule everyMs must be an integer from ${MIN_ACTOR_SCHEDULE_INTERVAL_MS} to ${MAX_ACTOR_SCHEDULE_INTERVAL_MS}`);
+    }
+    return { topic: request.topic, everyMs: request.everyMs, nextDueAt: Date.now() + request.everyMs, sequence: 0 };
+  }
+
+  #loadedSchedule(value: unknown, topics: unknown): FabricActorSchedule | undefined {
+    if (!Array.isArray(topics) || typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+    const schedule = value as Partial<FabricActorSchedule>;
+    const { topic, everyMs, nextDueAt, sequence } = schedule;
+    if (typeof topic !== "string" || !topics.includes(topic) || !TOPIC_PATTERN.test(topic) || typeof everyMs !== "number" || !Number.isSafeInteger(everyMs) || everyMs < MIN_ACTOR_SCHEDULE_INTERVAL_MS || everyMs > MAX_ACTOR_SCHEDULE_INTERVAL_MS) return undefined;
+    return { topic, everyMs, nextDueAt: typeof nextDueAt === "number" && Number.isFinite(nextDueAt) ? nextDueAt : Date.now() + everyMs, sequence: typeof sequence === "number" && Number.isSafeInteger(sequence) && sequence >= 0 ? sequence : 0 };
+  }
+
+  #scheduleActorTicks(): void {
+    if (this.#scheduleTimer) clearTimeout(this.#scheduleTimer);
+    this.#scheduleTimer = undefined;
+    if (this.#closing || !this.meshConfig.enabled) return;
+    const due = [...this.#actors.values()]
+      .filter(actor => actor.status !== "stopped" && actor.schedule && this.#canManageCached(actor.id))
+      .map(actor => Math.max(actor.schedule!.nextDueAt, this.#scheduleRetries.get(actor.id) ?? 0))
+      .reduce<number | undefined>((next, candidate) => next === undefined ? candidate : Math.min(next, candidate), undefined);
+    if (due === undefined) return;
+    this.#scheduleTimer = setTimeout(() => { void this.#runActorSchedules(); }, Math.max(0, due - Date.now()));
+    this.#scheduleTimer.unref();
+  }
+
+  async #runActorSchedules(): Promise<void> {
+    this.#scheduleTimer = undefined;
+    this.#syncActorsFromRegistry();
+    this.#refreshOwnership();
+    const now = Date.now();
+    for (const actor of this.#actors.values()) {
+      const schedule = actor.schedule;
+      if (!schedule || actor.status === "stopped" || !this.#canManageCached(actor.id) || schedule.nextDueAt > now) continue;
+      const dueAt = schedule.nextDueAt;
+      try {
+        await this.mesh.publish({ topic: schedule.topic, kind: "fabric.actor.schedule", from: this.identity, data: { actorId: actor.id, dueAt, sequence: schedule.sequence + 1 } });
+        this.#scheduleRetries.delete(actor.id);
+        schedule.sequence += 1;
+        schedule.nextDueAt = dueAt + (Math.floor((now - dueAt) / schedule.everyMs) + 1) * schedule.everyMs;
+        actor.updatedAt = Date.now();
+        await this.#publishPresence(actor);
+      } catch {
+        // Keep the due time for at-least-once delivery, but back off local retries.
+        this.#scheduleRetries.set(actor.id, Date.now() + MIN_ACTOR_SCHEDULE_INTERVAL_MS);
+      }
+    }
+    this.#scheduleActorTicks();
+  }
+
   #startMeshMonitor(): void {
     if (!this.meshConfig.enabled || this.#closing) return;
     if (process.platform === "win32") {
@@ -1936,6 +2011,7 @@ export class ActorManager {
       status: actor.status,
       events: actor.events,
       topics: actor.topics,
+      ...(actor.schedule ? { schedule: actor.schedule } : {}),
       delivery: actor.delivery,
       responseMode: actor.responseMode,
       triggerTurn: actor.triggerTurn,
@@ -2085,6 +2161,7 @@ export class ActorManager {
       for (const actor of this.#actors.values()) {
         this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
       }
+      this.#scheduleActorTicks();
       return;
     }
     const owned = new Set<string>();
@@ -2104,6 +2181,7 @@ export class ActorManager {
         this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
       }
     }
+    this.#scheduleActorTicks();
   }
 
   #loadActors(onlyMissing = false): void {
@@ -2157,6 +2235,12 @@ export class ActorManager {
       } catch {
         continue;
       }
+      const topics = Array.isArray(record.topics)
+        ? record.topics.filter(
+            (topic): topic is string => typeof topic === "string" && TOPIC_PATTERN.test(topic),
+          )
+        : [];
+      const schedule = this.#loadedSchedule(record.schedule, topics);
       const actor: ManagedActor = {
         id: record.id,
         name: record.name,
@@ -2167,11 +2251,8 @@ export class ActorManager {
         events: Array.isArray(record.events)
           ? record.events.filter((event): event is FabricActorHostEvent => HOST_EVENTS.has(event))
           : [],
-        topics: Array.isArray(record.topics)
-          ? record.topics.filter(
-              (topic): topic is string => typeof topic === "string" && TOPIC_PATTERN.test(topic),
-            )
-          : [],
+        topics,
+        ...(schedule ? { schedule } : {}),
         delivery,
         responseMode: record.responseMode === "directive" ? "directive" : "text",
         triggerTurn,
@@ -2269,6 +2350,7 @@ export class ActorManager {
       runner: actor.runner,
       events: [...actor.events],
       topics: [...actor.topics],
+      ...(actor.schedule ? { schedule: structuredClone(actor.schedule) } : {}),
       delivery: actor.delivery,
       responseMode: actor.responseMode,
       triggerTurn: actor.triggerTurn,
