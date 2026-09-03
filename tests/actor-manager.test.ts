@@ -682,6 +682,34 @@ describe("ActorManager", () => {
     expect(registry.actors.find((row) => row.id === actor.id)?.rootId).toBe(resident.identity.id);
   });
 
+  it("withdraws durable presence on shutdown so a resident successor adopts", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({
+      name: "reloadable-durable",
+      instructions: "Survive only through an adopted resident.",
+      residency: "durable",
+    });
+    const presenceKey = `actors/test/${actor.id}`;
+    await waitFor(() => Boolean(state.mesh.get(presenceKey)));
+    await state.actors.close();
+    expect(state.mesh.get(presenceKey)).toBeUndefined();
+
+    const identity: MeshIdentity = { id: "session:resident-reload", name: "main", kind: "main", sessionId: "resident-reload" };
+    const successor = new ActorManager(
+      "resident-reload", identity, state.mesh, state.meshConfig, state.agents, () => {},
+      {
+        actorRoot: path.join(state.root, "actors"), persistent: true, claimResidency: "durable",
+        rootId: identity.id,
+        canManageActor: id => state.mesh.get(`actors/test/${id}`) ? false : undefined,
+        lineageAlive: () => false,
+      },
+    );
+    actorManagers.push(successor);
+    await waitFor(() => successor.owns(actor.id));
+    await expect(successor.create({ name: "after-reload", instructions: "Creation is no longer blocked." }))
+      .resolves.toMatchObject({ name: "after-reload" });
+  });
+
   it("re-adopts once a dead adopter's grace window has elapsed", async () => {
     const state = setup(true);
     const actor = await state.actors.create({

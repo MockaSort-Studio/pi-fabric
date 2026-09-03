@@ -1201,6 +1201,9 @@ export class ActorManager {
         actor.updatedAt = Date.now();
       }
       if (owned.length > 0) await this.#saveActors();
+      // Durable rows survive reload, but their old host must not advertise a live owner.
+      // A successor resident can then adopt through the fenced registry handoff.
+      await Promise.all(owned.map((actor) => this.mesh.delete({ key: this.#presenceKey(actor.id) })));
       return;
     }
     await Promise.allSettled([...this.#actors.keys()].map((id) => this.stop(id)));
