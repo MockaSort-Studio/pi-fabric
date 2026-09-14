@@ -265,6 +265,11 @@ const actorRequest = (
       )
     : undefined;
   const topics = stringArray(args.topics);
+  const schedule = typeof args.schedule === "object" && args.schedule !== null && !Array.isArray(args.schedule) &&
+    typeof (args.schedule as { topic?: unknown }).topic === "string" &&
+    typeof (args.schedule as { everyMs?: unknown }).everyMs === "number"
+    ? { topic: (args.schedule as { topic: string }).topic, everyMs: (args.schedule as { everyMs: number }).everyMs }
+    : undefined;
   const tools = stringArray(args.tools);
   const requires = Array.isArray(args.requires)
     ? args.requires.reduce<Array<string | FabricCapabilityRequirement>>(
@@ -314,6 +319,7 @@ const actorRequest = (
     runner,
     ...(events ? { events } : {}),
     ...(topics ? { topics } : {}),
+    ...(schedule ? { schedule } : {}),
     ...(args.delivery === "mailbox" ||
     args.delivery === "steer" ||
     args.delivery === "followUp" ||
