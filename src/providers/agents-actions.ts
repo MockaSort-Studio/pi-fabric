@@ -409,7 +409,7 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
     description: "Create a homogeneous batch of live persistent actors. The batch is cleaned up if a later definition fails; durable actors are materialized before ownership transfers to the resident host.",
     inputSchema: {
       type: "object",
-      properties: { actors: { type: "array", minItems: 1, items: spawnSchema } },
+      properties: { actors: { type: "array", minItems: 1, items: { type: "object", properties: { name: { type: "string" }, instructions: { type: "string" } }, required: ["name", "instructions"], additionalProperties: true } } },
       required: ["actors"],
       additionalProperties: false,
     },
