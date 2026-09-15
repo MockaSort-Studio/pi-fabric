@@ -1088,6 +1088,30 @@ export class AgentsProvider implements FabricProvider {
           ? this.residency.cleanupAgent(id, args.deleteBranch === true)
           : this.manager.cleanup(id, args.deleteBranch === true);
       }
+      case "createMany": {
+        const inputs = Array.isArray(args.actors) ? args.actors : [];
+        if (inputs.length === 0) throw new Error("agents.createMany requires at least one actor");
+        const requests = inputs.map((input) => actorRequest(this.#resolvePiModelArgs(input as Record<string, unknown>, context), context, this.manager));
+        if (requests.some((request) => request.residency !== requests[0]!.residency)) {
+          throw new Error("agents.createMany requires all actors to use the same residency");
+        }
+        if (requests[0]!.residency === "durable" && !this.residency) {
+          const client = this.#residentActorClient();
+          const actors: FabricActorInfo[] = [];
+          try { for (const request of requests) actors.push(await client.createActor(request)); }
+          catch (error) { await Promise.allSettled(actors.map((actor) => client.removeActor(actor.id))); throw error; }
+          return actors;
+        }
+        const actors = await this.actorManager.createMany(requests);
+        try {
+          for (const actor of actors) if (actor.residency === "durable") await this.#activateDurableActor(actor);
+          this.participants.scheduleRefresh();
+          return actors;
+        } catch (error) {
+          await Promise.allSettled(actors.map((actor) => this.actorManager.remove(actor.id)));
+          throw error;
+        }
+      }
       case "create": {
         const createArgs = this.#resolvePiModelArgs(args, context);
         if (createArgs.scope === "global") {

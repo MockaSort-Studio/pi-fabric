@@ -75,6 +75,20 @@ afterEach(async () => {
 });
 
 describe("ActorManager", () => {
+  it("creates a batch or removes its successful prefix on failure", async () => {
+    const { actors } = setup();
+    await expect(actors.createMany([
+      { name: "first", instructions: "First." },
+      { name: "first", instructions: "Duplicate." },
+    ])).rejects.toThrow(/already active/);
+    expect(actors.list()).toEqual([]);
+
+    const created = await actors.createMany([
+      { name: "architect", instructions: "Design." },
+      { name: "advisor", instructions: "Advise." },
+    ]);
+    expect(created.map(actor => actor.name)).toEqual(["architect", "advisor"]);
+  });
   it("uses event monitoring where supported and polling fallback on Windows", async () => {
     const { mesh } = setup();
     const tail = vi.spyOn(mesh, "tail");

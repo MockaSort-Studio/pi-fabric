@@ -507,6 +507,7 @@ globalThis.agents = Object.freeze({
   stop: (args) => __call("agents.stop", args),
   cleanup: (args) => __call("agents.cleanup", args),
   create: __createActor,
+  createMany: (args) => __call("agents.createMany", args),
   ask: (args) => __call("agents.ask", args),
   tell: (args) => __call("agents.tell", args),
   steer: (args) => __call("agents.steer", args),

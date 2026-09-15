@@ -405,6 +405,17 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
     risk: "agent",
   },
   {
+    name: "createMany",
+    description: "Create a homogeneous batch of live persistent actors. The batch is cleaned up if a later definition fails; durable actors are materialized before ownership transfers to the resident host.",
+    inputSchema: {
+      type: "object",
+      properties: { actors: { type: "array", minItems: 1, items: spawnSchema } },
+      required: ["actors"],
+      additionalProperties: false,
+    },
+    risk: "agent",
+  },
+  {
     name: "ask",
     description: "Send a message to a persistent actor through its live owner and wait for its next response. Optional model/thinking values apply only to this activation.",
     inputSchema: {

@@ -379,6 +379,18 @@ export class ActorManager {
     });
   }
 
+  async createMany(requests: readonly FabricActorRequest[]): Promise<FabricActorInfo[]> {
+    if (requests.length === 0) throw new Error("Fabric actor batch must not be empty");
+    const created: FabricActorInfo[] = [];
+    try {
+      for (const request of requests) created.push(await this.create(request));
+      return created;
+    } catch (error) {
+      await Promise.allSettled(created.reverse().map((actor) => this.remove(actor.id)));
+      throw error;
+    }
+  }
+
   async create(request: FabricActorRequest): Promise<FabricActorInfo> {
     this.#refreshOwnership();
     if (
